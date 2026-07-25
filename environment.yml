@@ -1,0 +1,8 @@
+name: product-model-with-memory
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - pip
