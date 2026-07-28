@@ -11,6 +11,7 @@
 #SBATCH --output=output/ctree_v16384_d2/slurm-%j.out
 
 cd "$SLURM_SUBMIT_DIR"
+export PYTHONPATH="$SLURM_SUBMIT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p output/ctree_v16384_d2
 # pick the first usable python (>=3.7 with numpy+scipy)
 PY=""

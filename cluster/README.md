@@ -26,8 +26,8 @@ set in the job files are generous.
    only — no python involved in the transfer):
 
        rsync -av --exclude output --exclude .venv \
-           ~/Projects/product_model_with_memory/  lth.epfl.ch:~/pmm/
-       rsync -av ~/Projects/product_model_with_memory/data/text8  lth.epfl.ch:~/pmm/data/
+           ~/Projects/product_model_with_memory/  lth.epfl.ch:~/product_model_with_memory/
+       rsync -av ~/Projects/product_model_with_memory/data/text8  lth.epfl.ch:~/product_model_with_memory/data/
 
 2. Install python (one-time, per the admin's instructions): on lth run
 
@@ -42,7 +42,7 @@ set in the job files are generous.
 
    Verify with:
 
-       bash ~/pmm/cluster/env_setup.sh
+       bash ~/product_model_with_memory/cluster/env_setup.sh
 
    (must print at least one USABLE line; the job files try, in order:
    the pmm conda env, a miniforge pmm env, the system python3, the
@@ -59,7 +59,7 @@ set in the job files are generous.
 
 ## Submitting
 
-    cd ~/pmm
+    cd ~/product_model_with_memory
     sbatch cluster/job_state_family_mid.sbatch     # intermediate-M, full vocab
     sbatch cluster/job_ctree_v16384_d2.sbatch      # context tree V=16,384 D=2
     sbatch cluster/job_ctree_fullvocab_d2.sbatch   # context tree full vocab D=2 (big; start last)
@@ -73,7 +73,7 @@ CACHE_ROOT in the job files to node-local or shared scratch.
 
 ## Getting results back
 
-    rsync -av lth.epfl.ch:~/pmm/output/ ~/Projects/product_model_with_memory/output/
+    rsync -av lth.epfl.ch:~/product_model_with_memory/output/ ~/Projects/product_model_with_memory/output/
 
 Then tell Claude, who reads them via the synced folder.
 

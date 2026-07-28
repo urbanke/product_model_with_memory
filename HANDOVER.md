@@ -980,3 +980,12 @@ User creates the gz on Mac once: gzip -k data/text8.
 Cluster onboarding after clone: python scripts/get_text8.py, then
 sbatch the three cluster/job_*.sbatch. GitHub auth from lth via
 ssh key (Settings -> SSH keys) or repo deploy key.
+
+## 2026-07-28 — Cluster job 2160 failed: missing PYTHONPATH; fixed
+
+First cluster submission failed at import (line 24,
+product_model_with_memory not installed in cluster anaconda). Fix:
+job files now `export PYTHONPATH="$SLURM_SUBMIT_DIR/src..."`.
+Cluster clone lives at ~/product_model_with_memory (not ~/pmm);
+README paths updated. Loop: user commits+pushes on Mac, pulls on
+lth, resubmits.

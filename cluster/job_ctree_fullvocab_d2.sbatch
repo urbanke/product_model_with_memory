@@ -13,6 +13,7 @@
 # The big one: the adaptive tree that can decline unaffordable rows.
 # Size unknown in advance; the script prints contexts/profiles early.
 cd "$SLURM_SUBMIT_DIR"
+export PYTHONPATH="$SLURM_SUBMIT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p output/ctree_fullvocab_d2
 # pick the first usable python (>=3.7 with numpy+scipy)
 PY=""
