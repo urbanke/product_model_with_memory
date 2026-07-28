@@ -173,10 +173,7 @@ def build_tables_fast(
         cache_path.mkdir(parents=True, exist_ok=True)
 
     missing = [
-        r
-        for r in selected_r
-        if (cached := _load_cached(cache_path, r)) is None
-        or cached.shape[0] < max_L
+        r for r in selected_r if _cached_levels(cache_path, r) < max_L
     ]
 
     if missing:
@@ -327,6 +324,26 @@ def _cache_file(cache_path: Path | None, r: int) -> Path | None:
     if cache_path is None:
         return None
     return cache_path / f"r{r}.npy"
+
+
+def _cached_levels(cache_path: Path | None, r: int) -> int:
+    """Number of levels stored for ``r``, WITHOUT reading the data.
+
+    Opens the .npy via mmap: the shape comes from the header, and mmap
+    creation itself fails if the file is truncated relative to its
+    header, so partial writes are detected as missing.  This keeps the
+    warm-cache completeness scan at header-read cost (the full-data scan
+    read the entire multi-GB cache on every start).
+    """
+
+    f = _cache_file(cache_path, r)
+    if f is None or not f.exists():
+        return 0
+    try:
+        arr = np.load(f, mmap_mode="r")
+        return int(arr.shape[0])
+    except Exception:  # noqa: BLE001 - unreadable/truncated cache: rebuild
+        return 0
 
 
 def _load_cached(cache_path: Path | None, r: int) -> FloatArray | None:

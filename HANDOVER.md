@@ -1049,3 +1049,74 @@ lines (serial was ~190 s/depth; expect a few s/depth; >30 s/depth =
 investigate), (b) CPULoad during eval near worker count.
 NOTE from user (process): be methodical, verify rather than assume —
 applies esp. to environment-dependent performance claims.
+
+## 2026-07-28 — Measured table geometry; header-only cache scan
+
+COMPUTED (not assumed): full-vocab D=2 cache is G=36,354 grid points
+-> 1.44 GB PER LEVEL, 85 GB total. Consequence found in code: the
+warm-start completeness check (_load_cached full np.load per r) reads
+all 85 GB in the parent before evaluation -> the silent 5-15 min
+window after the contexts line in job 2173. Fix: _cached_levels()
+header-only scan via mmap (truncated files detected at mmap creation
+-> rebuilt); missing-check now header cost. Tests:
+tests/test_cache_scan.py (warm scan <5s + truncation detection +
+agreement with full load); 23 tests pass total.
+Expected timeline for resubmitted ct-full: contexts (88s) -> scan
+(seconds) -> depth 5 line within ~2-4 min -> ~10-30 s/level after
+(1.4 GB NFS read + eval per level). FAILURE CRITERION: >60 s/level
+sustained, or no depth line 10 min after contexts.
+
+## 2026-07-28 — Three cluster results in. NEW HEADLINE: 1.6979 bpc
+
+1. sf-mid (34 min): INTERIOR OPTIMUM. Full first-order curve over
+   M in {0,1024,4096,16384,65536,253854} =
+   {10.8942, 9.8316, 9.7826, 9.8682, 10.0060, 10.0909}.
+   M*=4096, posterior 1.0. Pooling rare words into ONE backoff row
+   beats the complete map by 0.3083 b/t. X=9.7826 ->
+   (X+0.2018)/5.8806 = **1.6979 bpc**. Gap to ppmd: 0.098 bpc
+   (X target 9.2072; 0.575 b/t to go).
+2. ct-full (29 min): tree at full vocab: d2 catastrophic (13.0817),
+   family 10.0919 ~ complete d1 (slightly above: split prior cost);
+   DEPTH IS THE WRONG AXIS at full vocab. Cross-check: ctree d1 vs
+   state-family M=V agree to 5e-7 (independent programs).
+3. ct-16k (43 min): family 8.2383 (beats fixed d1 by 0.0135, 49
+   splits), capture 57.6% (trend 92.9 -> 78.2 -> 57.6).
+Paper: tab:context-tree-large, tab:interior-m, subsubsections added;
+Sec 6 tally + Prospects updated; Roadmap Phase 1 marked largely done.
+21 pages, compiles.
+NEXT (direct product of these measurements): context tree over the
+POOLED alphabet (b_{M*} applied to history: depth on top of ~4k
+affordable contexts, full-vocab emissions) + multi-tier backoff
+(several pooled tiers, not one). Then Phase 2 (pooled lag evaluator).
+Parallel eval + header-scan now proven on cluster (21 s/depth vs 190).
+
+## 2026-07-28 — Phase 2 v1 built: pooled lags, BOTH rules (mixture + tempered product)
+
+User decision: implement both pooling rules, let the data decide.
+New module src/product_model_with_memory/pooled_lags.py:
+- experts: memoryless + one per lag; rows = counts smoothed toward
+  checkpointed unigram (alpha=1); tables frozen at C checkpoints
+  (valid sequential code; staleness measurable via C).
+- mixture rule p = sum lambda_e p_e (latent-switch story); grids:
+  lambda ~ powerlaw(a) over lags x share s x memoryless m + one-hots.
+- tempered product p ~ q0 prod (p_d/q0)^beta_d normalized per step
+  (conditional-independence story); beta = b*(1+i)^-c grids + one-hots.
+- one grand uniform family over all members; posterior reported.
+- perf: per-chunk gather cache + ThreadPoolExecutor over beta members
+  (numpy releases GIL); step_chunk auto-capped for memory.
+Tests (tests/test_pooled_lags.py, 5, all pass): exact brute-force
+agreement BOTH rules; onehot-mix == onehot-prod identity; staleness
+decreases with C; switching source: pooling beats best single; family
+tracks best member.
+SMOKE (2M tokens, V=256, lags 1,2,4, C=8; output/pooled_smoke):
+mem 4.7613, lag1 4.1419, best product 4.1259 (b=0.66,c=2 — strongly
+tempered => lags NOT cond. independent), best mixture 4.0821 (a=3,
+s=1) — mixture wins round 1, both beat best single expert.
+CALIBRATION: 2-core cloud 233 s for that smoke; projected V=4096
+full-corpus 6-lag both-rules: ~17 h single-thread-equivalent ->
+cluster/job_pooled_v4096.sbatch (32 threads node15) est. 1-2 h —
+PROJECTION, not yet measured on cluster.
+User to run: commit/push, pull on lth, sbatch cluster/job_pooled_v4096.sbatch.
+NOT yet: gates (context-dependent weights), layered checkpoints
+(currently simple smoothing), full-vocab pooled emissions. Paper: not
+yet updated with pooled-lag machinery (write section after V=4096 run).

@@ -703,13 +703,48 @@ conditional entropy is now $2.8046$ bits/token.  At this scale the
 complete first-order map is a blunt instrument: it buys every word its
 own successor row, including hundreds of thousands of rows that can
 never repay their cost individually and are carried only by the
-aggregate.  The instruments that spend resolution selectively ---
-intermediate $M$ (frequent words resolved, rare words pooled), and the
-adaptive tree of the next subsection at this vocabulary --- are
-exactly what the remaining $2.8$ bits/token of learning cost pay for;
-the intermediate-$M$ members at full vocabulary are the natural next
-run, and for the first time in the first-order family the optimum
-could plausibly be interior.
+aggregate.
+
+\subsubsection*{The interior optimum}
+The intermediate members settle where the resolution should stop
+(Table~\ref{tab:interior-m}; cluster run, $34$ minutes).  For the
+first time in the first-order family the optimum is \emph{interior}:
+$M^\star = 4{,}096$, i.e.\ the code that gives the $4{,}096$ most
+frequent words their own successor row and pools the remaining
+$249{,}758$ words into one shared backoff row is the best member ---
+better than the complete map by $0.3083$ bits/token and better than
+every neighbor on the grid, with posterior mass $1.0$.  The boundary
+optima of Table~\ref{tab:state-family} were a small-$V$ phenomenon:
+once the vocabulary is no longer capped, the data can finally express
+where refinement stops paying, and it stops at a few thousand words.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{rrr}
+\toprule
+$M$ & states obs. & bits/token \\
+\midrule
+      0 &        1 & 10.8942 \\
+ 1{,}024 &  1{,}025 &  9.8316 \\
+ 4{,}096 &  4{,}097 & \textbf{9.7826} \\
+16{,}384 & 16{,}385 &  9.8682 \\
+65{,}536 & 65{,}537 & 10.0060 \\
+253{,}854 & 253{,}854 & 10.0909 \\
+\bottomrule
+\end{tabular}
+\caption{The first-order family at the full emission vocabulary
+  ($V = 253{,}855$), members $\sigma_M$: top-$M$ words are states of
+  their own, all others pool into one backoff state.  The two boundary
+  rows are the endpoint run above; the four interior rows are the
+  cluster run, with posterior mass $1.0$ on $M = 4{,}096$.  The curve
+  is the textbook bias--variance valley, measured: too little
+  resolution wastes structure ($M=0$), too much wastes learning cost
+  ($M=V$), and the floor at $M^\star = 4{,}096$ sits $0.3083$
+  bits/token below the complete map.  Mixing over the six-member grid
+  costs $(\log_2 6)/n \approx 10^{-7}$ bits/token over the best
+  member, so the family codelength is $9.7826$.}
+\label{tab:interior-m}
+\end{table}
 
 \subsection{Adaptive depth: the context-tree family}
 \label{sec:context-tree}
@@ -922,6 +957,58 @@ MAP: depth-2 leaves & 26{,}506 & 2{,}038 & & & 31{,}626 & 0 & \\
 
 A remaining experiment is $D=3$ at $V=1{,}024$: whether any context
 supports a third token of depth.
+
+\subsubsection*{Third and fourth runs: $V=16{,}384$ and the full
+vocabulary}
+Two further scales, run on the laboratory cluster
+(Table~\ref{tab:context-tree-large}), complete the vocabulary sweep at
+$D=2$.  At $V=16{,}384$ every trend of the sweep continues in the same
+direction: the tree still beats the best fixed depth, but by less
+($0.0135$ bits/token from $49$ split contexts), and the sequential
+code now captures $57.6\%$ of the in-sample memory value (after
+$92.9\%$ and $78.2\%$).  At the full vocabulary the sweep reaches its
+endpoint: the complete depth-2 tree is catastrophic ($13.08$ ---
+almost three bits worse than depth 1), the family lands within
+$0.001$ of complete depth 1, and second-order memory is, for the
+first time, not worth its cost \emph{anywhere}: adaptivity in depth
+alone has nothing left to allocate.  Two facts make this a
+trustworthy conclusion rather than an artifact.  First, the tree's
+complete depth-1 code and the state family's $M{=}V$ member --- the
+same mathematical object computed by two independent programs ---
+agree to $5\cdot 10^{-7}$ bits/token.  Second, the failure is
+informative: combined with the interior optimum of
+Table~\ref{tab:interior-m} below, it says the useful degree of freedom
+at the full vocabulary is not \emph{how deep} to look but \emph{which
+words deserve their own context row at all}.  The natural next
+construction combines the two: a context tree whose splits are by
+\emph{pooled} token ($b_{M^\star}$ applied to the history), so that
+depth is spent only on top of an affordable context alphabet.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrcr}
+\toprule
+ & $V=16{,}384$ & & $V=253{,}855$ \\
+\midrule
+complete depth $0$      & 9.7068  & & 10.8942 \\
+complete depth $1$      & 8.2518  & & 10.0909 \\
+complete depth $2$      & 9.8690  & & 13.0817 \\
+\textbf{family}         & \textbf{8.2383} & & 10.0919 \\
+MAP split contexts      & 49      & & --- \\
+plug-in $\hat H(x'|x)$  & 7.1541  & & 7.2863 \\
+\bottomrule
+\end{tabular}
+\caption{The context-tree family at the two largest scales (full
+  \texttt{text8}, $D=2$, bits/token; $73{,}091$ and $70{,}090$ unique
+  profiles; cluster runs).  At $V=16{,}384$ the pattern of
+  Table~\ref{tab:context-tree-4096} continues: a small, real gain over
+  the best fixed depth, concentrated in few contexts.  At the full
+  vocabulary the tree family is marginally \emph{above} complete
+  depth 1 (the split/no-split prior now costs more than any split
+  recovers): depth is the wrong axis at this scale, and the gain of
+  Table~\ref{tab:interior-m} comes from pooling contexts instead.}
+\label{tab:context-tree-large}
+\end{table}
 
 \subsection{The distance profile: the lag family}
 \label{sec:lag-family}
@@ -1247,11 +1334,17 @@ $X = 10.895$ gives
 \]
 the first number in this paper that is the length of a code for the
 file.  It is below \texttt{bzip2} ($2.11$) and above \texttt{ppmd}
-($1.60$), and uses no memory at all.  The first-order code at the full
-vocabulary ($X = 10.0909$, Section~\ref{sec:state-family-endpoints})
-gives $\mathbf{1.7503}$ bits/character --- the first full-fidelity
-number with memory.  The tally so far: $1.8870$ memoryless, $1.7503$
-first order; the remaining distance to \texttt{ppmd} is $0.15$ bpc.
+($1.60$), and uses no memory at all.  The first-order codes at the
+full vocabulary improve it twice: the complete map ($X = 10.0909$,
+Section~\ref{sec:state-family-endpoints}) gives $1.7503$, and the
+pooled family with its interior optimum
+($X = 9.7826$, Table~\ref{tab:interior-m}) gives
+\[
+  \textbf{1.6979 bits/character}.
+\]
+The tally: $1.8870$ memoryless, $1.7503$ complete first order,
+$1.6979$ pooled first order; the remaining distance to \texttt{ppmd}
+is $0.098$ bpc.
 
 \paragraph{Prospects.}
 With the conversion $(X + 0.202)/5.8806$ in hand, the remaining
@@ -1263,14 +1356,19 @@ For scale: the memoryless code has $X = 10.895$, and the in-sample
 first-order conditional entropy of the full-vocabulary stream is
 $7.286$ (Section~\ref{sec:text8}), so a first-order sequential code
 beats \texttt{ppmd} if its learning cost stays below $1.9$ bits/token
-and \texttt{paq8h} if it stays below $0.75$.  The \emph{complete}
-first-order map is now measured and does not meet either threshold:
-its learning cost is $2.805$ bits/token
-(Section~\ref{sec:state-family-endpoints}).  The burden therefore
-falls on structures that spend resolution selectively --- intermediate
-$M$ (frequent words resolved, rare words pooled) and the adaptive tree
-at full vocabulary, which can decline a successor row where it cannot
-pay --- and on depth where it is affordable.  Two further reductions follow the two regimes of
+and \texttt{paq8h} if it stays below $0.75$.  Both full-vocabulary
+structures are now measured.  The complete first-order map misses both
+thresholds (learning cost $2.805$ bits/token); the pooled family
+recovers $0.31$ of that (learning cost $2.496$ over the plug-in
+value, but only $M^\star$-resolution structure attempted), and the
+depth-2 tree at full vocabulary adds nothing --- depth is not where
+the next bits are (Table~\ref{tab:context-tree-large}).  What has NOT
+yet been tried, and is the direct product of these two measurements,
+is their combination: trees whose context alphabet is the pooled one
+($b_{M^\star}$ applied to the history), spending depth only on the
+few thousand contexts that can afford it, and pooled analogues with
+several backoff tiers rather than one.  The remaining token-level
+distance to \texttt{ppmd} is $9.7826 - 9.2072 = 0.575$ bits/token.  Two further reductions follow the two regimes of
 Figure~\ref{fig:lag-profile}: deeper adaptive context trees for the
 short-range regime ($\alpha_s \approx 2$), and the pooled lag
 predictors of scheme 5 for the tail ($\alpha_t \approx 1$).  The
@@ -1288,17 +1386,15 @@ in this paper as they stand.
 The work is organized in four phases.  \emph{Phase 0} (done, this
 section): the full-fidelity accounting --- escape mechanism, spelling
 model, index correction --- giving the conversion above and the
-$1.8870$ bpc memoryless figure.  \emph{Phase 1} (compute-bound; the
-code exists): the state-family and context-tree experiments at
-$V = 16{,}384$, $65{,}536$, and the full vocabulary; profile
-evaluations are independent, so the work parallelizes over cluster
-nodes with a shared moment-table cache.  Alongside: the KT-leaf
-version of the context tree (same tree, KT estimators in place of
-layered mixtures), which isolates the contribution of the layered
-prior, and depth $3$.  Expected outcome: a full-fidelity first-order
-and depth-$2$ figure; the targets for $X$ above say what the
-learning cost must be for these to pass \texttt{ppmd} and
-\texttt{paq8h}.  \emph{Phase 2} (code, then compute): the sequential
+$1.8870$ bpc memoryless figure.  \emph{Phase 1} (largely done): the
+vocabulary sweep of the state-family and context-tree experiments up
+to the full vocabulary, run on the laboratory cluster, and the
+KT-leaf ablation.  Outcome: the interior optimum
+(Table~\ref{tab:interior-m}), the $1.6979$ bpc figure, and the
+finding that further gains at full vocabulary lie in pooled context
+alphabets --- pooled-context trees and multi-tier backoff are the
+remaining Phase-1 runs; depth $3$ awaits a disk-backed statistics
+builder.  \emph{Phase 2} (code, then compute): the sequential
 pooled evaluator --- per-step predictive distributions from
 checkpointed expert tables, weight grids mixed at sequence level,
 context-dependent weights, doubling distance bands --- with its test
