@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Download and verify the text8 corpus into data/text8.
+"""Provide the text8 corpus at data/text8.
 
-Primary source: http://mattmahoney.net/dc/text8.zip
-Mirror:         https://github.com/piskvorky/gensim-data/releases/download/text8/text8.gz
+Order of preference:
+  1. data/text8 already present (verified)
+  2. data/text8.gz bundled in the git repo (decompressed locally --
+     works offline, e.g. on cluster nodes without internet)
+  3. download from the canonical source or its mirror
 
-The result is the canonical 100,000,000-byte file (lowercase a-z and space),
-md5 3bea1919949baf155f99411df5fada7e.
+The result is the canonical 100,000,000-byte file (lowercase a-z and
+space), md5 3bea1919949baf155f99411df5fada7e.
 """
 
 import gzip
@@ -30,10 +33,16 @@ def fetch(url: str) -> bytes:
 
 
 def main() -> int:
-    out = Path(__file__).resolve().parent.parent / "data" / "text8"
-    out.parent.mkdir(exist_ok=True)
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    out = data_dir / "text8"
+    local_gz = data_dir / "text8.gz"
+    data_dir.mkdir(exist_ok=True)
     if out.exists() and out.stat().st_size == EXPECTED_BYTES:
         data = out.read_bytes()
+    elif local_gz.exists():
+        print(f"decompressing bundled {local_gz} ...")
+        data = gzip.decompress(local_gz.read_bytes())
+        out.write_bytes(data)
     else:
         try:
             data = zipfile.ZipFile(io.BytesIO(fetch(ZIP_URL))).read("text8")

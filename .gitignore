@@ -5,7 +5,8 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 .DS_Store
-data/
+data/*
+!data/text8.gz
 paper/main.aux
 paper/main.log
 paper/main.out

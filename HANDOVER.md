@@ -964,3 +964,19 @@ anaconda3/envs/pmm -> miniforge3/envs/pmm -> /usr/bin/python3 (RHEL9
 env_setup.sh now reports all candidates with USABLE/not-usable lines.
 Plan B if conda create has no network: Miniforge downloaded on Mac,
 scp'd over. Awaiting user's conda create result.
+
+## 2026-07-28 — Git-based cluster deployment; text8.gz bundled in repo
+
+Switched cluster deployment from rsync to git (existing repo
+git@github.com:urbanke/product_model_with_memory.git). IMPORTANT:
+git must NOT be run via the device bridge (cannot unlink lock files;
+a probe left a stale .git/index.lock the user removed). User runs
+git on Mac/cluster himself.
+Data in git: raw text8 (100MB) sits at GitHub's file cap, so the repo
+carries data/text8.gz (~32MB) instead; .gitignore now data/* with
+!data/text8.gz; get_text8.py prefers (1) existing data/text8,
+(2) bundled data/text8.gz decompressed offline, (3) download.
+User creates the gz on Mac once: gzip -k data/text8.
+Cluster onboarding after clone: python scripts/get_text8.py, then
+sbatch the three cluster/job_*.sbatch. GitHub auth from lth via
+ssh key (Settings -> SSH keys) or repo deploy key.
