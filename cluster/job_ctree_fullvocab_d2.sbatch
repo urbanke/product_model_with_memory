@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH --job-name=ct-full
+#SBATCH --mail-user=ruediger@gmail.com
+#SBATCH --mail-type=END,FAIL
+#SBATCH --time=7-00:00:00
+#SBATCH --mem=120G
+#SBATCH --nodes=1
+#SBATCH -c 64
+#SBATCH --partition=slurm-cluster
+#SBATCH --constraint=epyc7302   # node15: 64 cores, 124G
+#SBATCH --output=output/ctree_fullvocab_d2/slurm-%j.out
+
+# The big one: the adaptive tree that can decline unaffordable rows.
+# Size unknown in advance; the script prints contexts/profiles early.
+cd "$SLURM_SUBMIT_DIR"
+mkdir -p output/ctree_fullvocab_d2
+# pick the first usable python (>=3.7 with numpy+scipy)
+PY=""
+for cand in "$HOME/anaconda3/envs/pmm/bin/python" \
+            "$HOME/miniforge3/envs/pmm/bin/python" \
+            /usr/bin/python3 \
+            "$HOME/anaconda3/bin/python"; do
+  if [ -x "$cand" ] && "$cand" -c 'import sys; assert sys.version_info>=(3,7); import numpy, scipy' 2>/dev/null; then
+    PY="$cand"; break
+  fi
+done
+[ -n "$PY" ] || { echo "ERROR: no python >=3.7 with numpy/scipy found; see cluster/README.md"; exit 1; }
+echo "using python: $PY"
+srun "$PY" scripts/context_tree_experiment.py \
+    --corpus data/text8 --top-k 300000 --depth 2 \
+    --jobs "$SLURM_CPUS_PER_TASK" \
+    --out output/ctree_fullvocab_d2
