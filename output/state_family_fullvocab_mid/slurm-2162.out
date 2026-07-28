@@ -1,6 +1,0 @@
-using python: /home/urbanke/anaconda3/bin/python
-Traceback (most recent call last):
-  File "/home/urbanke/Projects/product_model_with_memory/scripts/state_family_experiment.py", line 24, in <module>
-    from product_model_with_memory.corpus import load_tokens
-ModuleNotFoundError: No module named 'product_model_with_memory'
-srun: error: node15.clusterbc.epfl.ch: task 0: Exited with exit code 1

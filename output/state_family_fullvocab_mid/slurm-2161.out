@@ -1,3 +1,0 @@
-using python: ~/anaconda3/bin/python
-slurmstepd: error: execve(): ~/anaconda3/bin/python: No such file or directory
-srun: error: node15.clusterbc.epfl.ch: task 0: Exited with exit code 2
