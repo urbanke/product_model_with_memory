@@ -1,0 +1,8 @@
+using python: /home/urbanke/anaconda3/bin/python
+V=16384 n=17,005,207 max depth=2  targets: H_unigram=9.702 H(next|prev)=7.154
+  2,594,431 contexts observed, 73,091 unique profiles (364s)
+  tables: 100/5181 orders built (772s)
+  tables: 200/5181 orders built (1074s)
+  tables: 300/5181 orders built (1220s)
+  tables: 400/5181 orders built (1487s)
+  tables: 500/5181 orders built (1703s)

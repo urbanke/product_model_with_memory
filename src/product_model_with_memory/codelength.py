@@ -192,29 +192,54 @@ def depth_averaged_codelength_profiles(
     )
     assert isinstance(cache, TableCache)
 
-    from product_model_with_memory.layered import log_q_lambda_scan
-
     log2_q: dict[int, list[float]] = {n: [] for n in profiles}
-    for L in range(1, l_max + 1):
-        tables = None if L == 1 else cache.level_tables(L, all_r)
-        for n, partition in profiles.items():
-            if L == 1:
-                result = log_q_lambda_closed_l1(d=d, partition=partition)
-            else:
-                result = log_q_lambda_scan(
-                    d=d, L=L, partition=partition, tables=tables
-                )
-            if not result.converged:
-                raise RuntimeError(f"L={L}, n={n}: {result.message}")
-            if result.log2_q > 1e-9:
-                raise RuntimeError(
-                    f"L={L}, n={n}: log2 q = {result.log2_q:.6g} > 0 is "
-                    "impossible for a sequence probability"
-                )
-            log2_q[n].append(result.log2_q)
-        if progress is not None:
-            progress(("depth", L, l_max), None)
-        del tables
+    if jobs <= 1 or len(profiles) < 2 * jobs:
+        from product_model_with_memory.layered import log_q_lambda_scan
+
+        for L in range(1, l_max + 1):
+            tables = None if L == 1 else cache.level_tables(L, all_r)
+            for n, partition in profiles.items():
+                if L == 1:
+                    result = log_q_lambda_closed_l1(d=d, partition=partition)
+                else:
+                    result = log_q_lambda_scan(
+                        d=d, L=L, partition=partition, tables=tables
+                    )
+                _check_eval(result, L, n)
+                log2_q[n].append(result.log2_q)
+            if progress is not None:
+                progress(("depth", L, l_max), None)
+            del tables
+    else:
+        # Parallel evaluation: profiles are independent, so each level's
+        # work is split into one chunk per worker.  Workers open the (fully
+        # built) cache themselves in the initializer and memory-map only
+        # the level being evaluated, so parent and workers share pages.
+        import multiprocessing as mp
+
+        items = sorted(
+            profiles.items(), key=lambda kv: len(kv[1]), reverse=True
+        )
+        chunks = [items[w::jobs] for w in range(jobs)]
+        chunks = [c for c in chunks if c]
+        # default start method, matching build_tables_fast (fork on Linux;
+        # spawn on macOS, where the experiment scripts' __main__ guards
+        # make re-import safe)
+        with mp.Pool(
+            processes=len(chunks),
+            initializer=_init_eval_worker,
+            initargs=(str(cache_dir), l_max, sorted(all_r), laguerre_order),
+        ) as pool:
+            for L in range(1, l_max + 1):
+                for part in pool.starmap(
+                    _eval_level_chunk,
+                    [(d, L, chunk) for chunk in chunks],
+                    chunksize=1,
+                ):
+                    for n, value in part:
+                        log2_q[n].append(value)
+                if progress is not None:
+                    progress(("depth", L, l_max), None)
 
     results = {}
     for n, partition in profiles.items():
@@ -227,6 +252,53 @@ def depth_averaged_codelength_profiles(
             log2_q_avg=float(_log2sumexp(values) - math.log2(l_max)),
         )
     return results
+
+
+def _check_eval(result, L: int, n: int) -> None:
+    if not result.converged:
+        raise RuntimeError(f"L={L}, n={n}: {result.message}")
+    if result.log2_q > 1e-9:
+        raise RuntimeError(
+            f"L={L}, n={n}: log2 q = {result.log2_q:.6g} > 0 is "
+            "impossible for a sequence probability"
+        )
+
+
+_EVAL_CACHE = None
+_EVAL_ALL_R = None
+
+
+def _init_eval_worker(cache_dir: str, l_max: int, all_r, laguerre_order: int):
+    """Open the (already fully built) table cache in a worker process."""
+
+    global _EVAL_CACHE, _EVAL_ALL_R
+    cache = build_tables_fast(
+        max_L=l_max,
+        r_values=set(all_r),
+        laguerre_order=laguerre_order,
+        cache_dir=cache_dir,
+        jobs=1,
+        materialize=False,
+    )
+    _EVAL_CACHE = cache
+    _EVAL_ALL_R = set(all_r)
+
+
+def _eval_level_chunk(d: int, L: int, chunk):
+    """Evaluate one level for a chunk of (id, partition) pairs."""
+
+    from product_model_with_memory.layered import log_q_lambda_scan
+
+    tables = None if L == 1 else _EVAL_CACHE.level_tables(L, _EVAL_ALL_R)
+    out = []
+    for n, partition in chunk:
+        if L == 1:
+            result = log_q_lambda_closed_l1(d=d, partition=partition)
+        else:
+            result = log_q_lambda_scan(d=d, L=L, partition=partition, tables=tables)
+        _check_eval(result, L, n)
+        out.append((n, result.log2_q))
+    return out
 
 
 def _log2sumexp(values: Iterable[float]) -> float:

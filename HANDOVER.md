@@ -989,3 +989,44 @@ job files now `export PYTHONPATH="$SLURM_SUBMIT_DIR/src..."`.
 Cluster clone lives at ~/product_model_with_memory (not ~/pmm);
 README paths updated. Loop: user commits+pushes on Mac, pulls on
 lth, resubmits.
+
+## 2026-07-28 — Three cluster jobs RUNNING; fetch_results.sh added
+
+sf-mid + ct-16k + ct-full submitted successfully and running on
+node15 after the PYTHONPATH fix. Result retrieval:
+`bash cluster/fetch_results.sh` on the Mac pulls results.json +
+slurm-*.out from lth (never the caches). Outputs are self-describing
+(dir name + params inside results.json) — after fetching, the user
+just tells Claude, who scans output/ for new results.json.
+Expected order: sf-mid (intermediate-M full vocab — interior optimum
+question) and ct-16k first, ct-full (whole node, 7d limit) after.
+
+## 2026-07-28 — fetch_results.sh v2: auto-discovers remote repo
+
+User's cluster username is urbanke (not the Mac's ruediger); repo on
+lth is NOT at ~/product_model_with_memory (first fetch failed with
+"No such file or directory"). Script now hardcodes
+REMOTE_HOST=urbanke@lth.epfl.ch and discovers the repo dir by ssh,
+trying ~/product_model_with_memory, ~/Projects/product_model_with_memory,
+~/pmm (first with an output/ dir wins), then rsyncs results.json +
+slurm-*.out only.
+
+## 2026-07-28 — Evaluation phase parallelized (was single-core)
+
+User caught ct-full using ONE core in evaluation: jobs was only wired
+to table building; the per-level profile loop ran serially in the
+parent. Fix in codelength.py: depth_averaged_codelength_profiles now
+splits each level's profiles into one chunk per worker (sorted by
+size, striped, for balance); workers open the already-built cache in
+an initializer and mmap only the current level; default mp start
+method (fork on Linux, spawn on macOS — matches build_tables_fast).
+Serial path kept for jobs=1 / tiny profile sets. Verified bit-for-bit
+identical to serial (60 profiles, d=1024, L_max=14) + regression test
+tests/test_parallel_eval.py; existing tests pass.
+RESTART ADVICE for ct-full (job 2165): worth it — scancel, pull,
+resubmit; tables are cached, profile-building (~45 min, inherently
+serial pass) re-runs, then eval uses all 64 cores (~5h serial eval
+becomes minutes-to-tens-of-minutes). sf-mid/ct-16k nearly done; let
+them finish serial.
+KNOWN REMAINING SERIAL PHASES: corpus profile building (Python dict
+pass), and the "orders built" table build parallelizes already.
