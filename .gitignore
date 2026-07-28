@@ -12,3 +12,5 @@ paper/main.log
 paper/main.out
 output/**/cache/
 output/_sync/
+slurm-*.out
+._*

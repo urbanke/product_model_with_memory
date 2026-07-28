@@ -1030,3 +1030,22 @@ becomes minutes-to-tens-of-minutes). sf-mid/ct-16k nearly done; let
 them finish serial.
 KNOWN REMAINING SERIAL PHASES: corpus profile building (Python dict
 pass), and the "orders built" table build parallelizes already.
+
+## 2026-07-28 — Parallel eval v2: NFS-safe shared-memory design
+
+v1 stalled on the cluster (job 2167: CPULoad ~8, no progress at 13
+min). Root cause FOUND IN CODE, not assumed: each worker's initializer
+called build_tables_fast, whose `missing` check np.load()s ALL ~4,936
+per-r table files IN FULL — several GB per worker x 64 workers over
+NFS. v2: workers do NO file I/O at all; the parent reads each level
+once (the pattern job 2165 proved works on this NFS) and shares rows
+via multiprocessing.shared_memory; workers attach untracked
+(track=False on py>=3.13, resource_tracker.unregister fallback) so
+shutdown is clean. VERIFIED locally: bit-identical to serial (60
+profiles, d=1024, L=14), no tracker warnings, 20 tests pass.
+NOT YET VERIFIED: actual behavior on the cluster NFS — check
+observables after resubmit: (a) time between "evaluation: depth"
+lines (serial was ~190 s/depth; expect a few s/depth; >30 s/depth =
+investigate), (b) CPULoad during eval near worker count.
+NOTE from user (process): be methodical, verify rather than assume —
+applies esp. to environment-dependent performance claims.

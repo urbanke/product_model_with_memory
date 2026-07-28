@@ -212,32 +212,63 @@ def depth_averaged_codelength_profiles(
             del tables
     else:
         # Parallel evaluation: profiles are independent, so each level's
-        # work is split into one chunk per worker.  Workers open the (fully
-        # built) cache themselves in the initializer and memory-map only
-        # the level being evaluated, so parent and workers share pages.
+        # work is split into one chunk per worker.  The PARENT alone reads
+        # the cache (one pass per level, as the serial path does) and
+        # exposes the level's rows to workers through POSIX shared memory;
+        # workers never touch the filesystem.  This matters on network
+        # filesystems (cluster homes), where per-worker file access is
+        # pathologically slow.
         import multiprocessing as mp
+        from multiprocessing import shared_memory
+
+        from product_model_with_memory.fast_tables import _cache_file
 
         items = sorted(
             profiles.items(), key=lambda kv: len(kv[1]), reverse=True
         )
         chunks = [items[w::jobs] for w in range(jobs)]
         chunks = [c for c in chunks if c]
+        rs = sorted(all_r)
+        u_grid = np.asarray(cache.u_grid, dtype=np.float64)
         # default start method, matching build_tables_fast (fork on Linux;
         # spawn on macOS, where the experiment scripts' __main__ guards
         # make re-import safe)
         with mp.Pool(
             processes=len(chunks),
             initializer=_init_eval_worker,
-            initargs=(str(cache_dir), l_max, sorted(all_r), laguerre_order),
+            initargs=(u_grid, rs, l_max),
         ) as pool:
             for L in range(1, l_max + 1):
-                for part in pool.starmap(
-                    _eval_level_chunk,
-                    [(d, L, chunk) for chunk in chunks],
-                    chunksize=1,
-                ):
-                    for n, value in part:
-                        log2_q[n].append(value)
+                shm = None
+                try:
+                    if L == 1:
+                        args = [(d, L, None, None, chunk) for chunk in chunks]
+                    else:
+                        G = len(u_grid)
+                        shm = shared_memory.SharedMemory(
+                            create=True, size=len(rs) * G * 8
+                        )
+                        M = np.ndarray(
+                            (len(rs), G), dtype=np.float64, buffer=shm.buf
+                        )
+                        for i, r in enumerate(rs):
+                            arr = np.load(
+                                _cache_file(cache.cache_path, r), mmap_mode="r"
+                            )
+                            M[i] = arr[L - 1]
+                        args = [
+                            (d, L, shm.name, (len(rs), G), chunk)
+                            for chunk in chunks
+                        ]
+                    for part in pool.starmap(
+                        _eval_level_chunk, args, chunksize=1
+                    ):
+                        for n, value in part:
+                            log2_q[n].append(value)
+                finally:
+                    if shm is not None:
+                        shm.close()
+                        shm.unlink()
                 if progress is not None:
                     progress(("depth", L, l_max), None)
 
@@ -264,41 +295,83 @@ def _check_eval(result, L: int, n: int) -> None:
         )
 
 
-_EVAL_CACHE = None
-_EVAL_ALL_R = None
+_EVAL_UGRID = None
+_EVAL_RS = None
+_EVAL_LMAX = None
 
 
-def _init_eval_worker(cache_dir: str, l_max: int, all_r, laguerre_order: int):
-    """Open the (already fully built) table cache in a worker process."""
+def _init_eval_worker(u_grid, rs, l_max: int):
+    """Store the (small) shared evaluation context in the worker process."""
 
-    global _EVAL_CACHE, _EVAL_ALL_R
-    cache = build_tables_fast(
-        max_L=l_max,
-        r_values=set(all_r),
-        laguerre_order=laguerre_order,
-        cache_dir=cache_dir,
-        jobs=1,
-        materialize=False,
-    )
-    _EVAL_CACHE = cache
-    _EVAL_ALL_R = set(all_r)
+    global _EVAL_UGRID, _EVAL_RS, _EVAL_LMAX
+    _EVAL_UGRID = u_grid
+    _EVAL_RS = rs
+    _EVAL_LMAX = l_max
 
 
-def _eval_level_chunk(d: int, L: int, chunk):
-    """Evaluate one level for a chunk of (id, partition) pairs."""
+def _attach_shm_untracked(name):
+    """Attach to an existing shared-memory block WITHOUT registering it
+    with this process's resource tracker.
 
+    The parent owns the block and unlinks it; if workers also register
+    it, every worker's tracker attempts a second cleanup at shutdown and
+    warns.  Python >= 3.13 has track=False for exactly this; on older
+    versions the registration is reverted manually.
+    """
+
+    from multiprocessing import shared_memory
+
+    try:
+        return shared_memory.SharedMemory(name=name, track=False)
+    except TypeError:  # Python < 3.13
+        shm = shared_memory.SharedMemory(name=name)
+        try:
+            from multiprocessing import resource_tracker
+
+            resource_tracker.unregister(shm._name, "shared_memory")
+        except Exception:  # noqa: BLE001 - cosmetic only; never fail eval
+            pass
+        return shm
+
+
+def _eval_level_chunk(d: int, L: int, shm_name, shape, chunk):
+    """Evaluate one level for a chunk of (id, partition) pairs.
+
+    For L >= 2 the level's moment-table rows are read from the shared
+    memory block the parent filled; this function does no file I/O.
+    """
+
+    from product_model_with_memory.fast_tables import ProductMomentTables
     from product_model_with_memory.layered import log_q_lambda_scan
 
-    tables = None if L == 1 else _EVAL_CACHE.level_tables(L, _EVAL_ALL_R)
-    out = []
-    for n, partition in chunk:
-        if L == 1:
-            result = log_q_lambda_closed_l1(d=d, partition=partition)
-        else:
-            result = log_q_lambda_scan(d=d, L=L, partition=partition, tables=tables)
-        _check_eval(result, L, n)
-        out.append((n, result.log2_q))
-    return out
+    shm = None
+    tables = None
+    try:
+        if L > 1:
+            shm = _attach_shm_untracked(shm_name)
+            M = np.ndarray(shape, dtype=np.float64, buffer=shm.buf)
+            tables = ProductMomentTables(
+                max_L=_EVAL_LMAX,
+                max_r=_EVAL_RS[-1],
+                r_values=tuple(_EVAL_RS),
+                u_grid=_EVAL_UGRID,
+                log_phi={(L, r): M[i] for i, r in enumerate(_EVAL_RS)},
+            )
+        out = []
+        for n, partition in chunk:
+            if L == 1:
+                result = log_q_lambda_closed_l1(d=d, partition=partition)
+            else:
+                result = log_q_lambda_scan(
+                    d=d, L=L, partition=partition, tables=tables
+                )
+            _check_eval(result, L, n)
+            out.append((n, result.log2_q))
+        return out
+    finally:
+        if shm is not None:
+            del tables
+            shm.close()
 
 
 def _log2sumexp(values: Iterable[float]) -> float:
