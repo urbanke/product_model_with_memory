@@ -25,7 +25,7 @@ PY=""
 #    PY="$cand"; break
 #  fi
 #done
-PY="~/anaconda3/bin/python"
+PY="/home/urbanke/anaconda3/bin/python"
 #[ -n "$PY" ] || { echo "ERROR: no python >=3.7 with numpy/scipy found; see cluster/README.md"; exit 1; }
 echo "using python: $PY"
 srun "$PY" scripts/state_family_experiment.py \
