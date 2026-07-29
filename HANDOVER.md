@@ -1260,3 +1260,115 @@ rebuilding it", "Refresh on growth", "Count on disk", suffix array
 explained in one sentence). 9 pages, compiles clean.
 Also earlier: paper/*.aux|log|out|toc now gitignored by pattern
 (user hit committed complexity.aux etc.).
+
+## 2026-07-29 — complexity.tex v5 (user review round 4)
+
+User: position range of t unstated; count-row set comprehension had
+no range for t; (discovered in fixing: "we write s for nonzero
+entries" collided with s = state). Fixes: States paragraph now says
+t in {1..n}, notes the rule is undefined at the first positions,
+defines the starting position t_0 (e.g. t_0 = delta+1 for lag rule),
+and states all models in one experiment code the same t range.
+Count rows: explicit t in {t_0..n} inside the set; symbol collision
+removed (k = nonzero entries, N = row total, consistent with symbol
+table); added worked example (the row of the word "the" under the
+previous-symbol rule). T6 sum now t = t_0..n with t_0 = 1+max lag.
+9 pages, compiles.
+
+## 2026-07-29 — complexity.tex v6 (user review round 5: formal definitions)
+
+User: t_0 appeared in m_x(s) without being part of any notation; s
+ambiguous (element of undefined state set vs the function s_t); s_t's
+dependence on the sequence unstated. Rewrite: alphabet A introduced
+as a set (|A| = d); memory rule = (S, sigma) with S the finite state
+set, three concrete rules (a)(b)(c) each with its S; s_t :=
+sigma(x_1..x_{t-1}) with explicit statement that it depends on
+positions 1..t-1 only and NOT on x_t (prediction must not peek);
+t_0 = first position where the rule is defined, with values for
+rules (b) and (c), coded range t_0..n stated BEFORE m_x(s) uses it;
+m_x(s) defined for s in S with the range inside the set-builder;
+worked example (row of state "the" under rule (a)). Symbol table
+gains A and (S, t_0) rows. 9 pages, compiles.
+
+## 2026-07-29 — complexity.tex v7 (user review round 6: the model)
+
+User: estimator paragraph incomprehensible — estimates what? where is
+the averaging? where is the whole length-n sequence? Rewrote as three
+fields: (1) "The probability model": given known vectors p(s) per
+state, symbols are independent draws from p(s_t); probability of the
+CODED SEQUENCE factorizes over states (eq:factorize); vectors
+unknown -> drawn independently per state from a prior and AVERAGED
+(first averaging, eq:corpusprob); total length = -log2 of it = sum
+over states of per-row terms; explicit remark that the model assigns
+a probability rather than estimating a quantity, with the word
+"estimator" justified via the T3 predictive. (2) "The prior": Pi_L
+via product-of-exponentials weights; Pi = uniform average of Pi_L
+over L<=L_max (second averaging, explicit); each state's vector ~ Pi
+independently. (3) "The central quantity": q_L as expectation under
+Pi_L, exchangeability => profile-only, q_avg, and the displayed total
+codelength sum_s -log2 q_avg(profile(m(s))). Remaining "estimator's"
+usages renamed to "model's". 10 pages, compiles.
+
+## 2026-07-29 — Mellin prototype built; DISCOVERED: production tables
+## inaccurate for large counts (r >~ 600) in the far-left u region
+
+Prototype (user-approved, hooks-first) for the universal-table design:
+src/product_model_with_memory/mellin.py — three independent methods:
+(A) production recursion+Laguerre tables, (B) Mellin-Barnes contour
+integral + certified small-t series (self-certifying dispatch,
+certificate = first-omitted-term/total < 1e-12), (C) closed-form
+saddle approx (order 1/2 with F''''/F''' correction).
+Tests (tests/test_mellin.py, 5 pass): contour==L=1 closed form (1e-8),
+contour==t->0 limit, saddle error decreasing in r, log-convexity in
+r, derivative identity phi_{r+1} = -d phi_r/dt.
+Contour pitfalls found+fixed: pole regime (small t) = catastrophic
+cancellation -> series; width/sampling regime split.
+
+MEASUREMENT (scripts/mellin_prototype.py, output/mellin_proto):
+- saddle order-2 vs reference: median 1e-5..4e-3 nats falling with r;
+  by L: worse for small L (L=2 median 1.3e-3), excellent for L>=16;
+  by u: worst at far-left (covered by series anyway) and right edge.
+- residual (ref - saddle2) interpolation on geometric r-ladder:
+  median 1.7e-7, p90 1.5e-4 nats -> correction-grid design viable.
+- *** TABLES vs reference: errors grow with r: max |err| 2.19e2 nats
+  at r=610, 1.15e3 at r=1000, 1.8e4 at r=4000; confined to the
+  far-left/plateau u region (u <= -5), worst at SMALL L (L=2: flat
+  -6000 nats plateau at r=4000); cause identified: fixed-order (Q=96)
+  Gauss-Laguerre cannot represent v^r integrand once r >> largest
+  node (~350); error compounds per level. Also ubiquitous ~1-4 nats
+  errors at right edge u>=20 (likely harmless: integrand negligible
+  there). Test-harness artifacts ruled out (production grid spec used;
+  uniform-grid and u_min artifacts were separately found and fixed).
+IMPACT: UNKNOWN YET. Heavy rows (counts >600: frequent words) read
+these regions via the multimodal far-left peaks of psi. NEXT STEP
+(before any conclusions about published numbers): impact probe —
+recompute q_avg for real heavy profiles (e.g. biggest V=1024
+first-order rows; d=2^18 unigram profile) with mellin-corrected
+columns, compare vs production values, translate to bits/token.
+FIX PATH: build large-r columns from series/saddle/contour instead of
+Laguerre recursion == exactly the universal-table hybrid design.
+
+## 2026-07-29 — Impact probe built; needs cluster (cloud box = 8GB, OOM)
+
+Probe design (scripts/impact_probe.py): three real heavy text8
+profiles at V=256, production l_max=26, production grid (26,200 pts,
+[-452, 35]) — memoryless profile (includes r up to ~5M via <unk>),
+row of the top state, row of rank-100 state. |R|=1,602 needed count
+values (1,489 >= R_SWITCH=500). Side A: production recursion tables +
+production scan. Side B: SAME tables with all columns r>=500 replaced
+by certified mellin columns (mellin_columns_batch: vectorized
+bisection saddle order-2 + certified series; spot-checked vs contour
+at <=1.3e-3 nats). Same scan, same grid: delta isolates the table
+error. Reports per profile: bits A, bits B, delta, delta/n
+(bits/token-equivalent), per-level deltas.
+Cloud attempts OOM-killed (dict alone 8.7GB, box has 8GB; two
+restructures: side-A-first + in-place mutation still short).
+=> cluster job: cluster/job_impact_probe.sbatch (40G, 4c, any node,
+~30-60 min). mellin.py gained log_phi_column + mellin_columns_batch
+lives in the probe script.
+READ THE RESULT: delta_bits per profile; if |delta|/17M << 1e-4
+bits/token summed over plausible heavy-row counts -> published
+numbers safe; else identify affected runs. Note deltas expected
+NEGATIVE-or-positive: corrected q larger where far-left peaks were
+suppressed -> bits_B < bits_A (delta<0) means production OVERSTATED
+codelengths.

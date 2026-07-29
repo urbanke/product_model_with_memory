@@ -14,3 +14,4 @@ output/**/cache/
 output/_sync/
 slurm-*.out
 ._*
+paper/*.pdf

@@ -31,38 +31,60 @@ used before it is defined there.
 \label{sec:defs}
 
 \field{The data}
-The data is a sequence $x_1, x_2, \dots, x_n$ of \emph{symbols}.  In
-our experiments a symbol is an English word, and the sequence is the
-corpus \texttt{text8} with $n = 1.7 \cdot 10^7$ words.  There are $d$
-possible symbols (the \emph{alphabet size}); depending on the
-experiment, $d$ ranges from $256$ to the full number of distinct
-words, $253{,}855$.
+Fix a finite set $\mathcal{A}$, the \emph{alphabet}, with
+$|\mathcal{A}| = d$ elements, called \emph{symbols}.  The data is a
+sequence $x_1, x_2, \dots, x_n$ with every $x_t \in \mathcal{A}$.
+In our experiments a symbol is an English word, and the sequence is
+the corpus \texttt{text8} with $n = 1.7 \cdot 10^7$ words;
+depending on the experiment, $d$ ranges from $256$ to the full
+number of distinct words, $253{,}855$.
 
 \field{States}
-A predictor with memory works as follows.  A fixed rule $\sigma$
-assigns to every position $t$ a \emph{state}
-$s_t = \sigma(x_1, \dots, x_{t-1})$, computed from the symbols before
-position $t$.  Examples of rules used in this project: the state is
-the symbol immediately before position $t$; or the pair of the two
-preceding symbols; or the symbol that occurred $\delta$ positions
-earlier (we call $\delta$ the \emph{lag}).  The predictor keeps one
-table of statistics per state, and at position $t$ it predicts $x_t$
-using the table that belongs to the state $s_t$.
+A \emph{memory rule} consists of a finite set $\mathcal{S}$ of
+\emph{states} and a map $\sigma$ that assigns a state to every
+sufficiently long sequence of symbols.  Three rules are used in this
+project:
+(a)~$\sigma(x_1, \dots, x_{t-1}) = x_{t-1}$, the last symbol; here
+$\mathcal{S} = \mathcal{A}$;
+(b)~$\sigma(x_1, \dots, x_{t-1}) = (x_{t-2},\, x_{t-1})$, the last
+two symbols; here $\mathcal{S} = \mathcal{A} \times \mathcal{A}$;
+(c)~$\sigma(x_1, \dots, x_{t-1}) = x_{t-\delta}$ for a fixed
+integer $\delta \ge 1$, the symbol $\delta$ positions back (we
+call $\delta$ the \emph{lag}); here $\mathcal{S} = \mathcal{A}$.
+For a position $t$ we abbreviate
+\[
+  s_t \;:=\; \sigma(x_1, \dots, x_{t-1}) \;\in\; \mathcal{S}.
+\]
+The notation hides the arguments, so let us state them: $s_t$ is a
+function of the symbols at positions $1, \dots, t-1$ and of nothing
+else; in particular it does not depend on $x_t$, because $s_t$ will
+be used to predict $x_t$.  A rule may be undefined when the sequence
+before $t$ is too short (rule (c) needs at least $\delta$ preceding
+symbols).  Let $t_0$ denote the first position at which the rule is
+defined ($t_0 = \delta + 1$ for rule (c), $t_0 = 3$ for rule (b));
+then $s_t$ exists exactly for $t = t_0, \dots, n$, and these are the
+positions the experiment codes.  When several rules are used in one
+experiment, $t_0$ is the largest of their individual starting
+positions, the same for all models compared.
 
 \field{Count rows}
-Fix a state $s$.  Among the positions $t$ whose state equals $s$,
-count, for each symbol $x$, how many of these positions actually
-carried the symbol $x$:
+For each state $s \in \mathcal{S}$ and each symbol
+$x \in \mathcal{A}$ define
 \[
-  m_x(s) \;=\; \#\{\, t \;:\; s_t = s \text{ and } x_t = x \,\}.
+  m_x(s) \;=\; \#\bigl\{\, t \in \{t_0, \dots, n\}
+  \;:\; s_t = s \ \text{ and }\ x_t = x \,\bigr\},
 \]
-The vector $\bigl(m_1(s), \dots, m_d(s)\bigr)$ is called the
-\emph{row} of the state $s$.  In words: the row of $s$ records how
-often each symbol occurred at the positions where the state was $s$.
-We write $s$ for the number of nonzero entries of a row when no
-confusion with the state is possible, $N = \sum_x m_x$ for the sum of
-the row's entries, and we call a symbol \emph{observed in the row} if
-its entry is nonzero.
+that is: among the coded positions $t$ whose state $s_t$ equals $s$,
+the number $m_x(s)$ counts those at which the symbol $x$ occurred.
+The vector $m(s) = \bigl(m_x(s)\bigr)_{x \in \mathcal{A}}$ is
+called the \emph{row} of the state $s$.  Under rule (a), for
+instance, the row of the state $s = \textit{the}$ records, for
+every word $x$ of the vocabulary, how many times $x$ occurred
+immediately after \emph{the} in the corpus.  For one fixed row we
+write $N = \sum_{x} m_x(s)$ for the sum of its entries (equivalently
+the number of coded positions with state $s$), $k$ for the number of
+its nonzero entries, and we call a symbol \emph{observed} in the row
+if its entry is nonzero.
 
 \field{Profiles}
 The \emph{profile} of a row is the list of its nonzero entries,
@@ -75,49 +97,103 @@ among its entries (the example has $\tilde k = 2$: the values $1$
 and $3$), and the multiplicity $\mu_c$ of each distinct value $c$
 (here $\mu_1 = 2$, $\mu_3 = 1$).
 
-\field{The estimator}
-All experiments use one estimator of probabilities from counts, the
-\emph{layered mixture} of the companion paper.  It is a Bayesian
-mixture: a prior distribution over probability vectors, updated by
-the observed counts.  The prior is built in \emph{levels}.  At level
-$L$, attach to each symbol $x$ a random weight
+\field{The probability model}
+All experiments use one probability model for the coded symbols; the
+compressed length is, as always, $-\log_2$ of the probability this
+model assigns to the data.  The model has three ingredients.
+
+First: \emph{given} a probability vector for every state, symbols
+are independent draws.  Suppose for a moment that every state $s \in
+\mathcal{S}$ came with a known probability vector $p(s) =
+\bigl(p_x(s)\bigr)_{x \in \mathcal{A}}$.  The model then says:
+at each coded position $t$, the symbol $x_t$ is drawn from the
+vector of the current state, $p(s_t)$, independently of everything
+else.  Under this assumption the probability of the whole coded
+sequence $x_{t_0}, \dots, x_n$ factorizes into one factor per
+state, and the factor of state $s$ depends only on that state's
+row:
+\begin{equation}
+  \prod_{t = t_0}^{n} p_{x_t}(s_t)
+  \;=\; \prod_{s \in \mathcal{S}}\;
+  \prod_{x \in \mathcal{A}} p_x(s)^{\,m_x(s)} .
+  \label{eq:factorize}
+\end{equation}
+
+Second: the vectors $p(s)$ are not known, so the model treats them
+as random and \emph{averages} over them (this is the Bayesian
+mixture).  The vectors of different states are drawn independently,
+each from the same prior distribution on the set of probability
+vectors; the prior is defined next.  Averaging
+Eq.~\eqref{eq:factorize} over these independent draws keeps the
+product over states:
+\begin{equation}
+  P(\text{coded sequence})
+  \;=\; \prod_{s \in \mathcal{S}}
+  \;\mathbb{E}\Bigl[\, \prod_{x \in \mathcal{A}}
+  p_x(s)^{\,m_x(s)} \Bigr],
+  \label{eq:corpusprob}
+\end{equation}
+one expectation per state, each depending only on the state's row.
+The total compressed length is $-\log_2$ of
+Eq.~\eqref{eq:corpusprob}, i.e.\ a sum over states of per-row
+contributions.  (So the model does not ``estimate'' a single
+quantity; it assigns a probability to the data.  We nevertheless
+speak of an estimator because the same construction, applied one
+position at a time, turns counts into predictions: that is
+Eq.~\eqref{eq:pred} of task T3.)
+
+\field{The prior}
+The prior over a probability vector is built in \emph{levels}.  At
+level $L \ge 1$, attach to each symbol $x$ a random weight
 \[
   W_x \;=\; E_{x,1} \cdot E_{x,2} \cdots E_{x,L},
 \]
-where all $E_{x,\ell}$ are independent random variables with the
-standard exponential distribution (density $e^{-v}$ for $v > 0$).
-The random probability vector of level $L$ is
-$p_x = W_x / (W_1 + \dots + W_d)$.  The larger $L$ is, the more
-uneven these probability vectors tend to be, so $L$ acts as a
-roughness parameter.  The full estimator does not choose $L$; it
-averages uniformly over $L = 1, \dots, L_{\max}$, with
-$L_{\max} = \lceil 2 c^{*} \ln d \rceil$ and $c^{*} \approx 2.365$ a
-constant from the companion paper.  In our runs $L_{\max}$ is between
-$33$ and $59$.
+where the $E_{x,\ell}$ are independent random variables, each with
+the standard exponential distribution (density $e^{-v}$ for $v >
+0$), and set $p_x = W_x / (W_1 + \dots + W_d)$.  The distribution
+of the vector $(p_1, \dots, p_d)$ obtained this way is the
+\emph{level-$L$ prior} $\Pi_L$.  The larger $L$ is, the more
+uneven the vectors drawn from $\Pi_L$ tend to be, so $L$ acts as a
+roughness parameter.  The model does not choose a level; the prior
+actually used is the uniform average
+\[
+  \Pi \;=\; \frac{1}{L_{\max}} \sum_{L=1}^{L_{\max}} \Pi_L,
+  \qquad L_{\max} = \lceil 2 c^{*} \ln d \rceil,\;\;
+  c^{*} \approx 2.365
+\]
+($c^{*}$ is a constant from the companion paper; in our runs
+$L_{\max}$ is between $33$ and $59$).  This average over levels is
+the second averaging in the model; each state's vector is drawn from
+$\Pi$, independently across states.
 
 \field{The central quantity}
-For a profile $\prof$ and a level $L$, define
+The expectation in Eq.~\eqref{eq:corpusprob}, evaluated for one
+state, is the number everything else computes.  Two simplifications
+reduce it to a function of the profile alone.  Because $\Pi_L$
+treats all symbols symmetrically (it is exchangeable), the
+expectation does not depend on \emph{which} symbols carry the
+nonzero counts --- only on the profile $\prof$ of the row.  And
+because $\Pi$ is an average, the expectation under $\Pi$ is the
+average of the expectations under the $\Pi_L$.  So define, for a
+profile $\prof = (m_1, \dots, m_k)$,
 \begin{equation}
-  q_L(\prof) \;=\; \mathbb{E}\Bigl[\, p_{y_1}^{\,m_1} \cdot
-  p_{y_2}^{\,m_2} \cdots p_{y_k}^{\,m_k} \Bigr],
+  q_L(\prof) \;=\; \mathbb{E}_{p \sim \Pi_L}
+  \Bigl[\, p_{y_1}^{\,m_1} \cdots p_{y_k}^{\,m_k} \Bigr]
+  \quad (y_1, \dots, y_k \text{ any distinct symbols}),
   \qquad
   q_{\mathrm{avg}}(\prof) \;=\; \frac{1}{L_{\max}}
-  \sum_{L=1}^{L_{\max}} q_L(\prof),
+  \sum_{L=1}^{L_{\max}} q_L(\prof).
   \label{eq:qdef}
 \end{equation}
-where $y_1, \dots, y_k$ are any $k$ distinct symbols and the
-expectation is over the random vector $p$ of level $L$.  Because the
-prior treats all symbols in the same way (it is exchangeable), the
-value does not depend on which distinct symbols are chosen --- only
-the profile matters.  This is the number the whole project runs on:
-$q_{\mathrm{avg}}(\prof)$ is the probability that the estimator
-assigns to any one particular sequence of symbols whose counts form
-the profile $\prof$.  The compressed length contributed by one row is
-$-\log_2 q_{\mathrm{avg}}$ of its profile; the length of a whole
-model is the sum of this over its rows.  Because rows with equal
-profiles contribute equal amounts, all computations deduplicate rows
-by profile first; this typically shrinks the workload by a factor of
-$50$ to $100$.
+With this notation, the total compressed length of a model with
+states $\mathcal{S}$ is exactly
+\[
+  \sum_{s \in \mathcal{S}} -\log_2
+  q_{\mathrm{avg}}\bigl(\text{profile of } m(s)\bigr).
+\]
+Rows with equal profiles contribute equal terms, so every
+computation first deduplicates rows by profile; in our runs this
+shrinks the workload by a factor of $50$ to $100$.
 
 \field{The integral form}
 Eq.~\eqref{eq:qdef} is an expectation over $d$ random weights; to
@@ -185,7 +261,8 @@ runs:
 symbol & meaning & measured \\
 \midrule
 $n$ & length of the corpus, in symbols & $1.7\cdot 10^7$ \\
-$d$ & alphabet size & $256$ -- $2.6\cdot 10^5$ \\
+$\mathcal{A}$, $d$ & alphabet; its size & $256$ -- $2.6\cdot 10^5$ \\
+$\mathcal{S}$, $t_0$ & state set of a rule; first coded position & \\
 $L_{\max}$ & number of levels, $\lceil 2c^{*}\ln d\rceil$ & $33$ -- $59$ \\
 $G$ & number of grid points on the $u$ axis & $3.6\cdot 10^4$ \\
 $Q$ & quadrature order used to build tables (T1) & $96$ \\
@@ -349,7 +426,7 @@ Let $\prof$ be the row's profile and let $c$ be the row's entry for
 some symbol ($c = 0$ if the symbol is not observed in the row).
 Write $\prof \oplus c$ for the profile obtained from $\prof$ by
 increasing one entry with value $c$ by one (for $c = 0$: by
-appending a new entry $1$).  The estimator's probability that the
+appending a new entry $1$).  The model's probability that the
 next symbol is that particular symbol is
 \begin{equation}
   p \;=\;
@@ -496,9 +573,11 @@ $t$ (read from its current prediction table, T3).  For each weight
 vector $\lambda = (\lambda_0, \dots, \lambda_D)$ of a grid of size
 $K$ (nonnegative entries summing to one):
 \[
-  \mathrm{bits}(\lambda) \;=\; \sum_{t}\; -\log_2 \Bigl(\,
-  \sum_{e=0}^{D} \lambda_e\; p_{e,t} \Bigr).
+  \mathrm{bits}(\lambda) \;=\; \sum_{t = t_0}^{n}\; -\log_2
+  \Bigl(\, \sum_{e=0}^{D} \lambda_e\; p_{e,t} \Bigr),
 \]
+with $t_0 = 1 + \max_j \delta_j$ the first position at which all
+$D$ lag rules are defined.
 
 \field{Input}
 The $n \times (D+1)$ array of the numbers $p_{e,t}$; the grid of
