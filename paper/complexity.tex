@@ -1,0 +1,499 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.05in]{geometry}
+\usepackage{amsmath, amssymb, booktabs}
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue]{hyperref}
+
+\title{Computational tasks of the layered-memory codes\\
+\large a structured inventory: definitions, algorithms, scaling, speedups}
+\author{}
+\date{July 2026 --- working notes}
+
+\newcommand{\prof}{\mathbf{m}}
+\newcommand{\field}[1]{\paragraph{#1.}}
+\newcommand{\Exp}{\mathrm{Exp}}
+
+\begin{document}
+\maketitle
+
+\section*{0. The model and the central objects}
+\label{sec:defs}
+
+All experiments use one estimator, the \emph{layered mixture} of the
+companion paper.  This section defines every object that the tasks
+below compute with; nothing later is used before it is defined here.
+
+\field{The prior, level by level}
+Fix an alphabet of size $d$.  For a \emph{level} (depth) $L \ge 1$,
+attach to each symbol $x$ the weight
+\[
+  W_x \;=\; \prod_{\ell=1}^{L} E_{x,\ell},
+  \qquad E_{x,\ell} \sim \Exp(1) \text{ i.i.d.},
+\]
+and let the random probability vector be $p_x = W_x / \sum_{y=1}^{d}
+W_y$.  Larger $L$ produces sparser, rougher vectors; $L$ plays the
+role of a complexity (depth) parameter.  The full estimator averages
+uniformly over $L = 1, \dots, L_{\max}$ with $L_{\max} =
+\lceil 2 c^{*} \ln d \rceil$ ($c^{*} \approx 2.365$, the constant of
+the companion paper); measured $L_{\max} = 33$--$59$.
+
+\field{Profiles}
+A \emph{row} is a vector of successor counts $(m_x)_{x=1}^{d}$,
+$m_x \ge 0$ (how often each next-symbol followed a given context).
+Its \emph{profile} $\prof = (m_1, \dots, m_s)$ is the multiset of the
+$s$ \emph{nonzero} counts, sorted; $N = \sum_i m_i$ is the row total.
+By exchangeability of the prior, all quantities below depend on a row
+only through its profile --- the basis of all deduplication.  We
+write $\tilde k \le s$ for the number of \emph{distinct} count values
+in $\prof$, and $\mu_c$ for the multiplicity of the value $c$.
+
+\field{The profile probability}
+The central scalar is the probability that the level-$L$ model
+assigns to (any one) sequence with profile $\prof$:
+\begin{equation}
+  q_L(\prof) \;=\;
+  \mathbb{E}\Bigl[\, \prod_{x : m_x > 0} p_x^{\,m_x} \Bigr],
+  \qquad
+  q_{\mathrm{avg}}(\prof) \;=\; \frac{1}{L_{\max}}
+  \sum_{L=1}^{L_{\max}} q_L(\prof).
+  \label{eq:qdef}
+\end{equation}
+Every codelength in the project is a sum of $-\log_2
+q_{\mathrm{avg}}$ terms over rows; every predictive probability is a
+ratio of two $q_{\mathrm{avg}}$ values.
+
+\field{The integral representation}
+The normalization $\sum_y W_y$ is removed by the Gamma identity
+$(\sum_y W_y)^{-N} = \frac{1}{\Gamma(N)} \int_0^\infty t^{N-1}
+e^{-t \sum_y W_y}\, dt$.  Because the $W_x$ are i.i.d., the
+expectation factorizes under the integral, giving the exact formula
+\begin{equation}
+  q_L(\prof) \;=\; \frac{1}{\Gamma(N)} \int_0^{\infty} t^{N-1}
+  \prod_{x=1}^{d} \varphi^{(L)}_{m_x}(t)\, dt,
+  \qquad
+  \varphi^{(L)}_{r}(t) \;:=\; \mathbb{E}\bigl[\,Y^r e^{-tY}\bigr],
+  \;\; Y = \prod_{\ell=1}^{L} E_\ell .
+  \label{eq:integral}
+\end{equation}
+Here $\varphi^{(L)}_r$ --- the \emph{moment function} --- is the
+$r$-th moment of a product of $L$ independent unit exponentials,
+damped by $e^{-tY}$; $t > 0$ is a \emph{scalar} integration variable.
+The $d - s$ symbols with $m_x = 0$ contribute the common factor
+$\varphi^{(L)}_0(t)^{\,d-s}$.  Numerically everything lives on the
+logarithmic axis $u = \ln t$ (a scalar), on a finite grid
+$u_1 < \dots < u_G$ spanning $[u_{\min}, u_{\max}]$ (measured $G =
+3.6\cdot 10^4$ at the largest settings), and in log space:
+with the \emph{log-integrand}
+\begin{equation}
+  \psi_L(u) \;=\; N u \;+\; (d - s) \ln \varphi^{(L)}_0(e^u)
+  \;+\; \sum_{\text{distinct } c \in \prof} \mu_c
+  \ln \varphi^{(L)}_c(e^u),
+  \label{eq:psi}
+\end{equation}
+one has $q_L(\prof) = \frac{1}{\Gamma(N)} \int e^{\psi_L(u)}\, du$
+(the substitution $t = e^u$ contributes the extra factor $t$ that
+turns $t^{N-1}$ into $e^{Nu}$).
+
+\field{Two exact boundary facts}
+(i) $\varphi^{(1)}_r(t) = \Gamma(r+1)\,(1+t)^{-(r+1)}$ (closed form,
+the recursion's base).  (ii) As $t \to 0$,
+$\varphi^{(L)}_r(t) \to \Gamma(r+1)^{L}$; hence to the left of the
+grid $\psi_L(u) = Nu + \mathrm{const} + O(e^u)$ and the left tail of
+the integral is available in closed form.  For $L = 1$ the whole
+integral is closed-form (a Dirichlet--multinomial); no tables are
+needed.
+
+\bigskip
+\noindent
+The tasks, in dependency order.  Symbols and measured magnitudes on
+\texttt{text8} ($n = 1.7\cdot 10^7$ tokens):
+
+\begin{center}
+\small
+\begin{tabular}{llr@{\qquad}llr}
+\toprule
+sym. & meaning & measured & sym. & meaning & measured \\
+\midrule
+$n$ & corpus length (tokens) & $1.7\cdot 10^7$ &
+$N$ & row total $\sum_i m_i$ & $1$ -- $10^6$ \\
+$d$ & alphabet of a predictor & $256$--$2.6\cdot 10^5$ &
+$s$ & nonzero successors of a row & $1$--$4{,}096$ \\
+$L_{\max}$ & levels, $\lceil 2c^{*}\ln d\rceil$ & $33$--$59$ &
+$\tilde k$ & distinct count values of a row & $1$--$\sim 300$ \\
+$G$ & grid points on the $u$-axis & $3.6\cdot 10^4$ &
+$\mathcal{N}$ & rows (context states) of a model & $10^3$--$2.5\cdot 10^5$ \\
+$Q$ & Gauss--Laguerre order (T1) & $96$ &
+$P$ & distinct (context, succ.) pairs & up to $1.5\cdot 10^7$ \\
+$\mathcal{R}$ & set of count values needed & $10^3$--$5\cdot 10^3$ &
+$U$ & unique profiles after dedup & $2.6$--$7\cdot 10^4$ \\
+$C$ & refreshes of a sequential code & $8$--$32$ &
+$D$ & pooled lag experts & $6$ \\
+$K$ & family members (weight grid) & $\sim 10^2$ & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{T1 --- Building the moment tables}
+
+\field{Task}
+Tabulate the moment functions $\varphi^{(L)}_r$ of
+Eq.~\eqref{eq:integral} on the $u$-grid, for every level $L \le
+L_{\max}$ and every count value $r$ that occurs in the data.  Built
+once per alphabet size, cached on disk, read by all later tasks.
+
+\field{Formula}
+Conditioning on the last factor $E_L = e$ of $Y = Y' E_L$ gives the
+recursion in the level:
+\begin{equation}
+  \varphi^{(\ell)}_r(t)
+  \;=\; \mathbb{E}\bigl[E^r\, \varphi^{(\ell-1)}_r(tE)\bigr]
+  \;=\; \int_0^\infty e^{-e}\, e^{r}\,
+  \varphi^{(\ell-1)}_r(t e)\, de,
+  \qquad
+  \varphi^{(1)}_r(t) = \frac{\Gamma(r+1)}{(1+t)^{r+1}} .
+  \label{eq:recursion}
+\end{equation}
+
+\field{Input/Output}
+In: the set $\mathcal{R}$ of needed count values (from the data:
+every value occurring in any profile), $L_{\max}$, the grid
+$\{u_g\}_{g=1}^{G}$.  Out: the array $\ln \varphi^{(L)}_r(e^{u_g})
+\in \mathbb{R}^{|\mathcal{R}| \times L_{\max} \times G}$, stored on
+disk (one file per $r$).
+
+\field{Algorithm}
+For each $r$ independently: start from the closed form at $\ell = 1$;
+for $\ell = 2, \dots, L_{\max}$ evaluate
+Eq.~\eqref{eq:recursion} at every grid point by Gauss--Laguerre
+quadrature of order $Q$, reading $\varphi^{(\ell-1)}_r$ at the
+shifted points $u_g + \ln e_j$ by linear interpolation in $u$ (with
+the exact left fill $\Gamma(r+1)^{\ell-1}$ beyond the grid).
+Embarrassingly parallel over $r$; new $r$ values are built
+incrementally as the data produces them.
+
+\field{Cost and scaling}
+Build: $O(|\mathcal{R}| \cdot L_{\max} \cdot G \cdot Q)$ operations
+($\approx 10^{12}$ at the largest settings; measured $45$ minutes on
+$64$ cores).  Storage: $8\,|\mathcal{R}| L_{\max} G$ bytes $=
+85$\,GB there.  $|\mathcal{R}|$ grows slowly with corpus size (new
+count values become rare); $G$ must grow like the \emph{span} of the
+$u$-axis, i.e.\ with $\ln(\max r)$ and $L_{\max}$; $L_{\max} \propto
+\ln d$.  The recurring cost is \emph{reading}: T2/T3 gather $\tilde
+k$ table rows per profile per level, so layout and locality dominate
+in practice (network filesystems: measured failure mode).
+
+\field{Speedup routes}
+(1)~[exact] One shared cache across all experiments (measured waste:
+$219$\,GB of duplicate tables).
+(2)~[exact] Level-major single-file layout $+$ float32: $4\times$
+smaller, one file open per level instead of $|\mathcal{R}|$.
+(3)~[approx] Large-$r$ asymptotics: for $r \gg 1$,
+$\varphi^{(L)}_r$ concentrates (the integrand of
+Eq.~\eqref{eq:recursion} peaks sharply) and approaches a scaling
+form in $(r, t r^{L})$; replacing tables beyond a threshold
+$r^{\ast}$ by the asymptotic formula shrinks $\mathcal{R}$ to the
+small counts where tables are genuinely needed.  Needs a worked-out
+error bound before use.
+
+\section{T2 --- Evaluating a profile probability (the atom)}
+
+\field{Task}
+Compute $\log q_L(\prof)$ for all levels $L$, hence $\log
+q_{\mathrm{avg}}(\prof)$, for one profile; executed once per unique
+profile per model (static runs) and once per refresh per active row
+(sequential runs).
+
+\field{Formula}
+Eqs.~\eqref{eq:qdef}--\eqref{eq:psi}: $\log q_L =
+\log \int e^{\psi_L(u)} du - \ln \Gamma(N)$.
+
+\field{Input/Output}
+In: profile $\prof$ as pairs (distinct value $c$, multiplicity
+$\mu_c$); the tables (T1).  Out: the vector $\bigl(\log_2
+q_L(\prof)\bigr)_{L=1}^{L_{\max}}$ and $\log_2 q_{\mathrm{avg}}$.
+
+\field{Algorithm}
+Per level: (i) assemble $\psi_L$ on the grid by
+Eq.~\eqref{eq:psi} --- $\tilde k + 1$ table rows, $O(G \tilde k)$;
+(ii) locate every local maximum of $\psi_L$ within a significance
+window of the global one (the integrand can be multimodal: deep
+levels with heavy counts produce a second, far-left peak);
+(iii) refine each peak by a bracketed saddle solve (the derivative
+$\psi_L'(u)$ is available from neighboring table rows) and add
+Laplace contributions by log-sum-exp; (iv) add the closed-form left
+tail of Section~0.  Special cases short-circuit: $N \le 1$ by
+symmetry, $L = 1$ closed form.  Batched over profiles; parallelized
+over profile chunks, each level's table rows distributed to workers
+through shared memory.
+
+\field{Cost and scaling}
+Dominated by step (i): $O(L_{\max}\, G\, \tilde k)$ per profile ---
+from $4\cdot 10^6$ ops ($\tilde k = 2$) to $2\cdot 10^8$ ($\tilde k
+\sim 100$).  Measured: $7\cdot 10^4$ unique profiles at $L_{\max} =
+59$ in $17$ minutes on $64$ cores.  Static models invoke T2 only $U$
+times (deduplication); sequential models invoke it per refresh (T8).
+
+\field{Speedup routes}
+(1)~[exact] \emph{Warm-started peaks / local grids}: the full-grid
+sweep exists only to locate peaks robustly.  Peak locations vary
+smoothly with the profile (and, across refreshes of the same row,
+barely move); warm-starting the saddle solve from a stored or
+predicted location and evaluating $\psi_L$ only on a local window
+around it replaces $G$ by $G_{\mathrm{loc}} \sim 10^2$: up to
+$300\times$ on step (i), with a cheap global-sweep fallback when the
+bracketed solve fails or the result looks suspicious.
+(2)~[approx] \emph{Level truncation with certified bounds}: the
+$L$-sum of Eq.~\eqref{eq:qdef} is dominated by a few levels around
+the maximizing depth, with geometric decay away from it; exact
+evaluation of the top levels plus a tail bound replaces $L_{\max}$
+by $L_{\mathrm{eff}} \sim 5$--$10$.
+(3)~[approx] Coarser grids for small-$N$ profiles (their integrands
+are wide and smooth); per-profile grid selection by target accuracy.
+
+\section{T3 --- The predictive table of a row}
+
+\field{Task}
+Turn one row's counts into a next-symbol probability distribution ---
+the workhorse of sequential (pooled) codes, executed at every refresh
+for every row of every expert.
+
+\field{Formula}
+For a symbol whose current count in the row is $c$ (including $c = 0$
+for the unseen symbols, when $s < d$):
+\begin{equation}
+  p(\text{symbol} \mid \text{row}) \;=\;
+  \frac{q_{\mathrm{avg}}(\prof \oplus c)}{q_{\mathrm{avg}}(\prof)},
+  \qquad
+  \prof \oplus c := \prof \text{ with one count } c \to c + 1
+  \label{eq:pred}
+\end{equation}
+(exchangeability again: the value depends on the symbol only through
+$c$, so the table has $\tilde k + 1$ distinct entries; the entries
+sum to one exactly, and are renormalized to absorb quadrature error,
+measured $\sim 5\cdot 10^{-5}$ relative).
+
+\field{Input/Output}
+In: the row's counts; tables (T1).  Out: $\log_2 p$ over the
+alphabet ($\tilde k + 1$ distinct values).
+
+\field{Algorithm}
+Today: one T2 evaluation for $\prof$ and one for each of the $\tilde
+k + 1$ augmented profiles $\prof \oplus c$ --- i.e.\ $\tilde k + 2$
+independent atom evaluations per row, memoized by profile.
+
+\field{Cost and scaling}
+$O(L_{\max}\, G\, \tilde k^{2})$ per row.  Measured workload:
+$5.9\cdot 10^6$ atom evaluations for the $V = 1{,}024$, $C = 32$,
+six-lag pooled run --- the dominant cost of sequential codes, and
+memoization is weak because active rows change between refreshes.
+
+\field{Speedup routes}
+(1)~[exact; the largest single lever] \emph{Shared integrand}: by
+Eq.~\eqref{eq:psi}, every augmented profile differs from the base in
+ONE factor:
+\[
+  q_L(\prof \oplus c) \;=\; \frac{1}{\Gamma(N{+}1)} \int
+  e^{\psi_L(u)}\; e^{u}\,
+  \frac{\varphi^{(L)}_{c+1}(e^u)}{\varphi^{(L)}_{c}(e^u)}\; du .
+\]
+Assemble $\psi_L$ once ($O(G \tilde k)$); each predictive entry is
+then a single $O(G)$ weighted sum against a ratio of two table rows.
+Per-row cost falls from $O(G \tilde k^{2})$ to $O(G \tilde k)$: a
+factor $\tilde k$ ($\sim 100\times$ exactly on the rich rows that
+dominate), with bit-identical output up to quadrature details.
+(2)~[exact] \emph{Incremental integrand across refreshes}: between
+refreshes few counts of a row change; update $\psi_L' = \psi_L +
+\sum_{\text{changed}} \bigl(\ln \varphi^{(L)}_{c'} - \ln
+\varphi^{(L)}_{c}\bigr)$ in $O(G \cdot \#\text{changed})$ instead of
+reassembling.  Requires storing $\psi_L$ for active rows
+($G \times L_{\max}$ float32 $\approx 8$\,MB per row at the largest
+settings --- affordable exactly for the expensive frequent rows).
+(3)~T2's routes apply on top (warm peaks, level truncation).
+
+\section{T4 --- Counting: rows, profiles, deduplication}
+
+\field{Task}
+Extract from the token stream, for a given state map, the
+successor-count rows, their profiles, and the row-to-unique-profile
+map.
+
+\field{Formula}
+$\mathrm{count}[s, x] = \#\{t : \sigma(x^{t-1}) = s,\ x_t = x\}$ for
+a state map $\sigma$ (last token, product state, tree context, or
+lag-$\delta$ token); $\mathrm{profile}(s)$ as in Section~0; the
+dedup map $s \mapsto$ profile id.
+
+\field{Input/Output}
+In: token ids ($n$ integers), $\sigma$.  Out: $\mathcal{N}$ rows
+($P$ nonzero entries), $U$ unique profiles, dedup map.
+
+\field{Algorithm}
+One pass with hash-map counting; per-row sort of nonzero counts;
+profile hashing.
+
+\field{Cost and scaling}
+Time $O(n)$ per state map --- minutes, never the bottleneck.
+\emph{Memory} $O(P)$ with a dictionary constant of $30$--$60$ bytes
+per entry: measured $\approx 200$\,GB at $P \approx 1.5\cdot 10^7$
+(full vocabulary, depth $2$) --- this is what forbids depth $3$
+today.  Deduplication is the great equalizer downstream: $P =
+4.4\cdot 10^6$ contexts collapse to $U = 7\cdot 10^4$ profiles.
+
+\field{Speedup routes}
+(1)~[exact] External sort-and-merge counting: $O(n \log n)$ on disk,
+constant memory; standard technology.
+(2)~[exact] Suffix-array counting: one compact $O(n)$-memory index of
+the token stream yields the counts of \emph{all} contexts of
+\emph{all} depths (each context is an interval of the suffix array);
+the natural route to depth $\ge 3$ at full vocabulary.
+(3)~[exact] Fixed-width integer arrays instead of dictionary objects.
+
+\section{T5 --- Aggregation: families, trees, posteriors}
+
+\field{Task}
+Combine per-row atoms into model codelengths, mixtures over model
+families, and posteriors.
+
+\field{Formula}
+Member codelength $\sum_{\text{rows } s} -\log_2
+q_{\mathrm{avg}}(\prof_s)$; the context-tree mixture over all
+prunings of the depth-$D$ context trie by the recursion
+\[
+  \beta(v) = \tfrac12\, q_{\mathrm{avg}}(\prof_v) + \tfrac12
+  \prod_{c \in \mathrm{children}(v)} \beta(c)
+\]
+(bottom-up over observed contexts $v$); a family mixture over $K$
+members $= \mathrm{logsumexp}$ of member log-likelihood totals minus
+$\log_2 K$; the posterior is the normalized exponential of the same
+totals.
+
+\field{Input/Output/Algorithm/Cost}
+In: per-profile $\log_2 q_{\mathrm{avg}}$ (T2), trie structure.
+Out: bits/token per member, family bits, posterior.  Single passes,
+$O(\mathcal{N})$, $O(P)$, $O(K)$; measured seconds.  No scaling
+concern.
+
+\section{T6 --- The additive pooling pass}
+
+\field{Task}
+Sequentially code the corpus under every additive (mixture) weight
+vector of the grid simultaneously.
+
+\field{Formula}
+With experts $e = 0$ (memoryless) and $e = 1..D$ (lag $\delta_e$),
+per-step probabilities $p_e(x_t)$ read from the T3 tables of the
+current refresh window, and weight vectors $\lambda \in \Lambda$,
+$|\Lambda| = K$:
+\[
+  \mathrm{bits}(\lambda) = \sum_{t} -\log_2 \sum_{e=0}^{D}
+  \lambda_e\, p_e(x_t) .
+\]
+
+\field{Input/Output}
+In: the $n \times (D{+}1)$ matrix of realized-token probabilities
+(one gather per expert per step); $\Lambda$.  Out: $K$ codelengths.
+
+\field{Algorithm/Cost}
+Blocked gather, one $(\text{block} \times (D{+}1)) \cdot
+((D{+}1) \times K)$ matrix product per block, log, accumulate:
+$O(n (D{+}1) K) \approx 10^{10}$ flops --- minutes.  Linear in
+everything; never a concern.
+
+\section{T7 --- The multiplicative pooling pass}
+
+\field{Task}
+Same as T6 for the tempered-product rule, which must renormalize over
+the alphabet at \emph{every} position.
+
+\field{Formula}
+With exponents $\beta \in B$, $|B| = K_{\mathrm{prod}}$:
+\[
+  p_\beta(x_t) = \frac{s_\beta(x_t)}{Z_t}, \qquad
+  s_\beta(x) = q_0(x) \prod_{j=1}^{D}
+  \Bigl(\frac{p_j(x)}{q_0(x)}\Bigr)^{\beta_j}, \qquad
+  Z_t = \sum_{x=1}^{V} s_\beta(x),
+\]
+where $q_0$ is the memoryless expert's T3 table.
+
+\field{Input/Output}
+In: T3 tables of the $D$ experts and $q_0$; $B$.  Out:
+$K_{\mathrm{prod}}$ codelengths.
+
+\field{Algorithm (today) and cost}
+Dense: per block, gather each expert's full table rows for the
+occurring contexts, form the $V$-vector of logits per step per
+member, log-sum-exp.  $O(n\, V\, D\, K_{\mathrm{prod}})$: measured
+$68$ minutes at $V = 4{,}096$; $\sim 10^{16}$ at $V = 10^6$, $n =
+1.5\cdot 10^8$.  \textbf{The only truly bad exponent in the
+project.}
+
+\field{Speedup route}
+[exact; kills the $V$ factor]  By Eq.~\eqref{eq:pred} every T3 table
+is ``one background value plus $s_j$ exceptions'': $p_j(x) = a_{j}$
+for every $x$ unseen in row $j$'s counts, individual values only on
+the $s_j$ observed successors.  Let $S_t = \bigcup_j
+\mathrm{supp}_j(t)$ (union of the exception sets; $|S_t| \sim
+10^2$--$10^3 \ll V$).  For $x \notin S_t$ the product collapses to a
+constant times $q_0(x)^{1 - \sum_j \beta_j}$, so
+\[
+  Z_t = \Bigl(\prod_j a_{j,t}^{\beta_j}\Bigr)
+  \Bigl( T_\gamma - \!\!\sum_{x \in S_t}\! q_0(x)^{\gamma} \Bigr)
+  + \sum_{x \in S_t} s_\beta(x),
+  \qquad
+  \gamma = 1 - \textstyle\sum_j \beta_j,
+  \quad T_\gamma = \textstyle\sum_{x=1}^{V} q_0(x)^{\gamma},
+\]
+with the power sums $T_\gamma$ precomputed once per refresh per
+needed $\gamma$.  Exact $Z_t$ in $O(|S_t| D)$ per step per member
+instead of $O(V D)$.
+
+\section{T8 --- Refresh scheduling of sequential codes}
+
+\field{Task}
+Decide when each expert row's predictive table (T3) is rebuilt.  Any
+schedule that depends only on the past yields a valid sequential
+code; staleness only lengthens it.  This schedule is the multiplier
+on T3 that separates static runs (minutes) from pooled runs (hours).
+
+\field{Formula}
+Current schedule: a global clock; all rows rebuilt at $C$ equally
+spaced positions; T3 invocations $= C \times (\text{active rows})$.
+
+\field{Input/Output}
+In: running counts.  Out: refresh times per row; the tables used
+between refreshes.
+
+\field{Cost and scaling}
+T3 cost $\times C$, with memoization weakened by row churn (measured:
+$5.9\cdot 10^6$ atom evaluations at $V = 1{,}024$, $C = 32$).
+
+\field{Speedup routes}
+(1)~[valid code; controlled staleness] \emph{Growth-triggered
+refreshes}: rebuild a row when its total $N$ has grown by a factor
+$1 + \epsilon$ since its last rebuild.  Refreshes per row drop from
+$C$ to $O(\log_{1+\epsilon} N_{\mathrm{final}})$, staleness is
+bounded \emph{relatively} (the quantity that matters for predictive
+quality), and the trigger is past-measurable, so the code remains
+valid.  Combined with T3's shared/incremental integrands the
+compound gain on pooled runs is estimated at $10^{2}$--$10^{3}$.
+(2)~[exact] Shard rows across cluster nodes (rows are independent
+given the schedule).
+
+\section*{Scaling summary and discussion priority}
+
+At $10\times$ the corpus (enwik9-scale: $n \approx 1.4\cdot 10^8$,
+$V \sim 10^6$) with today's algorithms: T4 needs terabytes of RAM
+(blocked); T3$\times$T8 explodes (richer rows, $C$ multiplier:
+weeks); T7 dense is impossible; T1/T2 grow only through
+$|\mathcal{R}|$, $G$, $L_{\max}$ (manageable).  With the [exact]
+routes --- shared and incremental integrands (T3), warm-started
+peaks (T2), sparse normalization (T7), growth-triggered refreshes
+(T8), external or suffix-array counting (T4), sharding --- every
+task returns to node-hours; the [approx] routes (level truncation,
+large-$r$ asymptotics, coarse grids) are held in reserve, each with
+a checkable error.
+
+Suggested discussion order: T3(1) shared integrand; T7 sparse
+normalizer; T8 growth-triggered refreshes; T2(1) warm-started peaks;
+T4 suffix arrays; then the approximations if still needed.
+
+\end{document}

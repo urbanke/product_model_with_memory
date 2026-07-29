@@ -1172,3 +1172,71 @@ Job files (both -w node14, 200G, 64c, 4d limit):
   cluster/job_pooled_layered_v4096.sbatch  (C=8)
 Old cluster/job_pooled_v4096.sbatch (counts pilot) superseded — user
 may git rm it. AWAITING user's choice of configuration.
+
+## 2026-07-28 — paper/complexity.tex created: computational anatomy
+
+User request: technical inventory of WHAT quantities we compute (not
+run retrospectives), as basis for finding radically faster methods.
+New standalone doc paper/complexity.tex (+pdf, 5 pages):
+Q1 the atom: q_L(profile) via G-point quadrature of product of moment
+  tables; cost O(L*G*ktilde) per profile. ROUTES: (1) SHARED-INTEGRAND
+  predictives: all row ratios from ONE integrand Psi_L(u) -> per-row
+  O(G ktilde^2)->O(G ktilde), exact, ~100x on rich rows — TOP LEVER
+  for pooled runs; (2) incremental integrand updates across refreshes;
+  (3) saddle-point (Laplace) for large profiles, checkable error;
+  (4) certified level truncation (L_eff~5-10).
+Q2 moment tables phi_{L,r}(u): build O(R L G) parallel/cached;
+  routes: shared cache, level-major float32 files, large-r asymptotics.
+Q3 counts/rows/profiles: hash counting O(P) MEMORY wall (200GB @ D=2
+  full vocab); routes: external sort-merge, SUFFIX-ARRAY counting
+  (unlocks D>=3), fixed-width arrays.
+Q4 aggregation: trivial.
+Q5a refresh multiplier: routes = Q1.1 + Q1.2 + GROWTH-TRIGGERED
+  refreshes (refresh row when total grew by (1+eps): O(log n)
+  refreshes/row instead of C; still valid sequential code).
+Q5b product-rule normalizer: dense O(nVDK) — the only bad exponent;
+  route: EXACT sparse+background decomposition (predictive = const
+  background + sparse exceptions) -> Z_t in O(|union support| D).
+Scaling scenario (10x corpus, V~1e6) + priority list in doc.
+Meanwhile: pooled_layered_v1024 job running on node14 (cp3 ~20 min).
+
+## 2026-07-29 — complexity.tex v2: fixed CS-style task template
+
+Restructured per user request into 8 tasks, each with fields: Task /
+Formula / Input-Output / Algorithm / Cost & scaling / Speedup routes
+([exact] vs [approx] marked):
+T1 profile probability (atom, quadrature) — saddle point, level
+   truncation, adaptive grids.
+T2 moment tables — shared cache, level-major float32, large-r
+   asymptotics.
+T3 predictive table of a row (ratios) — SHARED INTEGRAND (O(G k~^2)
+   -> O(G k~), exact, top lever), incremental integrand.
+T4 counting/dedup — external sort, suffix arrays, fixed-width arrays.
+T5 aggregation — trivial.
+T6 additive pooling pass — O(n D K), fine.
+T7 multiplicative pooling pass — the V factor; EXACT sparse+background
+   normalizer via power sums of q0: O(V D) -> O(|S_t| D) per step.
+T8 refresh scheduling — growth-triggered refreshes: C -> O(log n)
+   per row, past-measurable => valid code.
+Scaling summary + priority list at end. 5 pages, compiles.
+
+## 2026-07-29 — complexity.tex v3: proper definitions (user review round 2)
+
+User: phi undefined, u scalar-or-vector unclear, tables must precede
+atom, T2 incomprehensible. Fixed by reading layered.py/fast_tables.py
+and writing the actual math: new Section 0 defines the layered prior
+(W_x = prod_{l<=L} E_{x,l}, p = W/sum W; uniform over L<=L_max =
+ceil(2 c* ln d), c*~2.365), profiles, q_L(m) = E[prod p_x^{m_x}],
+the Gamma-identity integral representation with
+phi^{(L)}_r(t) = E[Y^r e^{-tY}], Y = prod of L unit exponentials,
+u = ln t SCALAR, log-integrand psi_L(u) (Eq. psi), boundary facts
+(phi^{(1)} closed form; t->0 limit Gamma(r+1)^L; L=1 =
+Dirichlet-multinomial). Order now: T1 tables (recursion
+phi^(l)_r(t) = E[E^r phi^(l-1)_r(tE)], Gauss-Laguerre order Q=96,
+cost O(|R| L G Q)), T2 atom (algorithm now honestly described:
+grid sweep -> multimodal peak finding -> bracketed saddle + Laplace +
+closed-form left tail), T3 predictive (shared-integrand formula
+written out), T4-T8 as before with all inputs defined. New T2 route:
+warm-started peaks / local grids (G -> ~100, exact, fallback sweep).
+7 pages, compiles. Corrections vs v2: algorithm was scan+Laplace not
+plain quadrature; build cost includes Q.
