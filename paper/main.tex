@@ -1216,6 +1216,7 @@ after accounting for the overlap between lags has not been measured.
   the two regimes.}
 \label{fig:lag-profile}
 \end{figure}
+
 \section{Comparison with published results on \texttt{text8}}
 \label{sec:comparison}
 
@@ -1395,14 +1396,19 @@ finding that further gains at full vocabulary lie in pooled context
 alphabets --- pooled-context trees and multi-tier backoff are the
 remaining Phase-1 runs; depth $3$ awaits a disk-backed statistics
 builder.  \emph{Phase 2} (code, then compute): the sequential
-pooled evaluator --- per-step predictive distributions from
-checkpointed expert tables, weight grids mixed at sequence level,
-context-dependent weights, doubling distance bands --- with its test
-suite (exact enumeration on a small alphabet; a one-hot weight
-recovering the lag-1 member; the cost of checkpoint staleness
-measured directly).  Its scientific output is the marginal gain per
+pooled evaluator --- per-step predictive distributions of the
+\emph{layered} per-state mixtures, refreshed at checkpoints and held
+fixed in between (a valid sequential code; the staleness cost is
+measurable by varying the checkpoint count) --- pooled under both
+rules, weighted sums and tempered products, with weight and exponent
+grids averaged at sequence level.  Test suite: exact enumeration on a
+small alphabet; the telescoping identity (a per-step-refreshed
+memoryless expert must reproduce the layered codelength of the
+unigram profile exactly); one-hot weights under either rule agreeing
+with each other.  Its scientific output is the marginal gain per
 added lag compared with $I(\delta)$, i.e.\ how much of the tail
-survives the overlap between lags.  \emph{Phase 3}: one sequential
+survives the overlap between lags, and the data's choice between the
+additive and multiplicative combination.  \emph{Phase 3}: one sequential
 code containing all parts --- spelling, full-vocabulary adaptive
 tree, gated lag pool --- reported both as whole-file bits/character
 (comparable to Mahoney's table) and as bits on the last $5\%$ given

@@ -1120,3 +1120,55 @@ User to run: commit/push, pull on lth, sbatch cluster/job_pooled_v4096.sbatch.
 NOT yet: gates (context-dependent weights), layered checkpoints
 (currently simple smoothing), full-vocab pooled emissions. Paper: not
 yet updated with pooled-lag machinery (write section after V=4096 run).
+
+## 2026-07-28 — Pooled-lag V=4096 result: SUMS WIN; pooling worth 0.51 b/t
+
+output/pooled_lags_v4096/results.json (68 min, node14, 32 checkpoints,
+lags 1,2,3,4,6,8, 114 members). Key members (bits/token):
+mem 8.1727 | lag1 alone 7.3593 | best product untempered (beta=1)
+12.4894 (!) | best tempered product (b=0.66,c=2) 7.1702 | BEST: sum
+a=2,s=0.8,m=0.02 -> 6.8491, posterior 1.0.
+Findings: (1) pooling gain = 0.5102 over best single lag — first
+measurement of tail-after-overlap, substantial; (2) sums beat tempered
+products by 0.32; RAW INDEPENDENCE CATASTROPHIC (4 bits worse than no
+memory): lags are heavily redundant witnesses; (3) winning weights:
+72% prev word, 13% two-back, 6% three-back, 9% tail+mem — decay ~
+delta^-2, faster than I(delta)~1/delta (redundancy squares it).
+CAVEAT (stated in paper): experts here are crude checkpointed count
+tables — lag1 alone 7.3593 vs layered 6.7132 (gap 0.6461). Absolute
+numbers NOT comparable to layered tables; measurement = pooling value
++ rule choice. NEXT (Phase 2 v2): refresh expert tables from LAYERED
+predictive (if the 0.51 gain transfers onto 6.7132 -> ~6.2-6.4, below
+the in-sample first-order ceiling 6.3376 becomes possible); then
+gates; then doubling bands to extend horizon.
+Paper: new subsection sec:pooled-lags + tab:pooled-lags (plain-English
+style per user request); Roadmap Phase 2 updated. 22 pages, compiles.
+
+## 2026-07-28 — Pilot REMOVED from paper (user decision); layered pooled experiment built
+
+User was right to object: the count-table experts were a silent design
+substitution — estimator choices are HIS from now on. Pilot section
+removed from paper (21 pages, compiles; roadmap reverted to agreed
+design). Pilot results remain in output/pooled_lags_v4096/ for
+reference only.
+
+AGREED EXPERIMENT now implemented: expert_model="layered" in
+pooled_lags.py — per-row predictive = q_avg(profile+e_x)/q_avg(profile)
+via per-level memoized evaluations (one per distinct count value per
+row + unseen; saturated-row edge case handled); rows renormalized
+(absorbs ~5e-5 moment-table integration error). Both rules + grids
+unchanged. Tests (tests/test_pooled_lags_layered.py, 4 pass):
+row normalization; TELESCOPING IDENTITY (per-step-refreshed memoryless
+expert == core-machinery codelength of unigram profile, to 1e-4/token
+= integration accuracy); onehot mix==prod; layered beats counts
+expert on sparse Markov source.
+
+COST, measured not guessed (exact workload count on text8 + timed
+sample calibration): V=1024/C=32: 5.86M layered evals ~ 1-3 days
+node14. V=4096/C=8: 2.98M ~ 1.5-3 days. V=4096/C=32: 12.9M ~ week+.
+Cause: rows re-evaluated at every refresh as counts grow.
+Job files (both -w node14, 200G, 64c, 4d limit):
+  cluster/job_pooled_layered_v1024.sbatch  (recommended first)
+  cluster/job_pooled_layered_v4096.sbatch  (C=8)
+Old cluster/job_pooled_v4096.sbatch (counts pilot) superseded — user
+may git rm it. AWAITING user's choice of configuration.

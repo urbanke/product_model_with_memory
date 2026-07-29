@@ -158,6 +158,123 @@ def _smoothed_log_tables(
     return log_q0, tables
 
 
+def _log2sumexp_arr(v: FloatArray) -> float:
+    m = float(np.max(v))
+    return m + math.log2(float(np.exp2(v - m).sum()))
+
+
+def _augmented_profile(base: tuple, c: int) -> tuple:
+    """The profile after one more observation of a symbol with count c."""
+
+    if c == 0:
+        return tuple(sorted(base + (1,)))
+    lst = list(base)
+    lst[lst.index(c)] = c + 1
+    return tuple(sorted(lst))
+
+
+class _LayeredPredictiveBuilder:
+    """Builds per-row predictive tables of the layered per-state mixture.
+
+    The predictive probability of a symbol whose current count in the
+    row is c is the ratio  q_avg(profile + one more c) / q_avg(profile),
+    which depends on the row only through its count profile and on the
+    symbol only through c --- so one evaluation per DISTINCT count value
+    per row suffices (plus one for the unseen symbols).  Evaluated
+    per-level q values are memoized across rows, lags, and checkpoints.
+    """
+
+    def __init__(self, V, l_max, cache_dir, jobs, progress):
+        self.V = V
+        self.l_max = l_max
+        self.cache_dir = cache_dir
+        self.jobs = jobs
+        self.progress = progress
+        self.memo: dict[tuple, FloatArray] = {}
+
+    def _ensure(self, profiles: set[tuple]) -> None:
+        from product_model_with_memory.codelength import (
+            depth_averaged_codelength_profiles,
+        )
+
+        missing = {p for p in profiles if p and p not in self.memo}
+        if missing:
+            results = depth_averaged_codelength_profiles(
+                {p: p for p in missing},
+                d=self.V,
+                l_max=self.l_max,
+                cache_dir=self.cache_dir,
+                jobs=self.jobs,
+                progress=self.progress,
+            )
+            for p, res in results.items():
+                self.memo[p] = np.asarray(res.log2_q_by_depth)
+
+    def _log2_ratio(self, base: tuple, aug: tuple) -> float:
+        # q_avg(empty profile) = 1 (no observations)
+        top = _log2sumexp_arr(self.memo[aug])
+        bot = _log2sumexp_arr(self.memo[base]) if base else math.log2(self.l_max)
+        return top - bot
+
+    def row_log_table(self, counts_row: FloatArray) -> FloatArray:
+        """log2 predictive over the alphabet for one count row
+        (renormalized; deviation from 1 is numerical only)."""
+
+        V = self.V
+        nz = np.flatnonzero(counts_row)
+        base = tuple(sorted(int(counts_row[i]) for i in nz))
+        distinct = sorted(set(base))
+        saturated = len(base) >= V  # no unseen symbol exists
+        cs = distinct if saturated else distinct + [0]
+        wanted = {base} if base else set()
+        aug_of = {c: _augmented_profile(base, c) for c in cs}
+        wanted.update(aug_of.values())
+        self._ensure(wanted)
+        log_unseen = (
+            -np.inf if saturated else self._log2_ratio(base, aug_of[0])
+        )
+        row = np.full(V, log_unseen)
+        if len(nz):
+            distinct_arr = np.array(distinct)
+            lut = np.array([self._log2_ratio(base, aug_of[c]) for c in distinct])
+            vals = counts_row[nz].astype(np.int64)
+            row[nz] = lut[np.searchsorted(distinct_arr, vals)]
+        row -= _log2sumexp_arr(row)
+        return row
+
+
+def _layered_log_tables(
+    builder: _LayeredPredictiveBuilder,
+    uni_counts: FloatArray,
+    lag_counts: list[FloatArray],
+) -> tuple[FloatArray, list[FloatArray]]:
+    """Assemble q0 and per-lag dense log tables from cumulative counts.
+
+    Pre-collects every needed profile across all rows so the layered
+    evaluations happen in ONE batched (parallel) call per refresh.
+    """
+
+    wanted: set[tuple] = set()
+    all_rows = [uni_counts[None, :]] + lag_counts
+    for block in all_rows:
+        for r in range(block.shape[0]):
+            nz = np.flatnonzero(block[r])
+            base = tuple(sorted(int(block[r][i]) for i in nz))
+            if base:
+                wanted.add(base)
+            cs = set(base) if len(base) >= block.shape[1] else set(base) | {0}
+            for c in cs:
+                wanted.add(_augmented_profile(base, c))
+    builder._ensure(wanted)
+
+    log_q0 = builder.row_log_table(uni_counts)
+    tables = [
+        np.vstack([builder.row_log_table(cnt[r]) for r in range(cnt.shape[0])])
+        for cnt in lag_counts
+    ]
+    return log_q0, tables
+
+
 def pooled_lag_codelengths(
     ids,
     *,
@@ -165,13 +282,21 @@ def pooled_lag_codelengths(
     lags: tuple[int, ...] = (1, 2, 3, 4, 6, 8),
     checkpoints: int = 32,
     alpha: float = 1.0,
+    expert_model: str = "layered",
+    l_max: int | None = None,
+    cache_dir=None,
     mix_grid: tuple[list[str], FloatArray] | None = None,
     prod_grid: tuple[list[str], FloatArray] | None = None,
     step_chunk: int = 65_536,
     jobs: int = 1,
     progress=None,
 ) -> PooledLagResult:
-    """Evaluate mixture and tempered-product pooling over the corpus."""
+    """Evaluate mixture and tempered-product pooling over the corpus.
+
+    expert_model selects the per-lag predictor refreshed at each
+    checkpoint: "layered" (the per-state layered mixture predictive,
+    the estimator of this paper; requires cache_dir) or "counts"
+    (count tables smoothed toward the unigram; the cheap pilot)."""
 
     ids = np.asarray(ids, dtype=np.int64)
     V = int(vocabulary_size)
@@ -204,13 +329,34 @@ def pooled_lag_codelengths(
         z = mx + np.log2(np.exp2(logits - mx[:, None]).sum(axis=1))
         return k, float((logits[steps_idx, tgt] - z).sum())
 
+    if expert_model == "layered":
+        if cache_dir is None:
+            raise ValueError("expert_model='layered' requires a cache_dir")
+        from product_model_with_memory.codelength import default_l_max
+
+        if l_max is None:
+            l_max = default_l_max(V)
+        builder = _LayeredPredictiveBuilder(V, l_max, cache_dir, jobs, progress)
+    elif expert_model != "counts":
+        raise ValueError(f"unknown expert_model: {expert_model!r}")
+
     bounds = np.linspace(start, n, checkpoints + 1).astype(int)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         for ck in range(checkpoints):
             lo, hi = int(bounds[ck]), int(bounds[ck + 1])
             if hi <= lo:
                 continue
-            log_q0, log_tabs = _smoothed_log_tables(ids, V, lags, lo, alpha)
+            if expert_model == "layered":
+                uni = np.bincount(ids[:lo], minlength=V).astype(np.float64)
+                lag_counts = []
+                for d in lags:
+                    cnt = np.zeros((V, V), dtype=np.float64)
+                    if lo > d:
+                        np.add.at(cnt, (ids[: lo - d], ids[d:lo]), 1.0)
+                    lag_counts.append(cnt)
+                log_q0, log_tabs = _layered_log_tables(builder, uni, lag_counts)
+            else:
+                log_q0, log_tabs = _smoothed_log_tables(ids, V, lags, lo, alpha)
             for c0 in range(lo, hi, step_chunk):
                 c1 = min(c0 + step_chunk, hi)
                 tgt = ids[c0:c1]

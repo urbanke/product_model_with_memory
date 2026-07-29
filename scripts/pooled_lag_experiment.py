@@ -36,6 +36,13 @@ def main() -> None:
         "--rules", default="mix,prod",
         help="which pooling rules to evaluate (mix,prod or one of them)",
     )
+    parser.add_argument(
+        "--expert-model", choices=["layered", "counts"], default="layered",
+        help="per-lag predictor refreshed at checkpoints: the layered "
+             "mixture predictive (default, the paper's estimator) or "
+             "plain smoothed counts (cheap pilot)")
+    parser.add_argument("--cache-dir", default=None,
+                        help="moment-table cache (default: OUT/cache)")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument(
         "--max-tokens", type=int, default=None,
@@ -83,12 +90,15 @@ def main() -> None:
         kind, done, total = evt
         print(f"  {kind}: {done}/{total} ({time.time() - t0:.0f}s)", flush=True)
 
+    cache_dir = args.cache_dir or (out_dir / "cache")
     result = pooled_lag_codelengths(
         ids,
         vocabulary_size=V,
         lags=lags,
         checkpoints=args.checkpoints,
         alpha=args.alpha,
+        expert_model=args.expert_model,
+        cache_dir=cache_dir,
         mix_grid=mix_grid,
         prod_grid=prod_grid,
         jobs=args.jobs,
@@ -101,6 +111,7 @@ def main() -> None:
         "vocabulary_size": V,
         "n_tokens": len(ids),
         "alpha": args.alpha,
+        "expert_model": args.expert_model,
         "rules": rules,
         "empirical": {
             "unigram_bits": ent["unigram_bits"],
