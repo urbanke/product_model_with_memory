@@ -1240,3 +1240,23 @@ written out), T4-T8 as before with all inputs defined. New T2 route:
 warm-started peaks / local grids (G -> ~100, exact, fallback sweep).
 7 pages, compiles. Corrections vs v2: algorithm was scan+Laplace not
 plain quadrature; build cost includes Q.
+
+## 2026-07-29 — complexity.tex v4: plain-English rewrite (user review round 3)
+
+User: "how often each next-symbol followed a given context" is not
+proper English and unclear; write plainly and mean it; also why a
+Section 0. Full rewrite: Definitions is now numbered Section 1 with
+\label{sec:defs}; every term defined in complete sentences before use
+(data/symbols; states via rule sigma with the three concrete examples;
+count rows via m_x(s) = #{t : s_t = s and x_t = x} explained in
+words; profiles with worked example (0,3,0,1,1)->(1,1,3), ktilde and
+multiplicities on the example; estimator; q_L as expectation with
+exchangeability explained; Gamma-identity derivation; phi defined in
+words; u scalar stated; psi; the two boundary facts). All T1-T8 prose
+rewritten in plain sentences (no invented compounds); speedup ideas
+now in full sentences ("Remember where the peaks are", "Compute all
+the ratios from one integrand", "Update the integrand instead of
+rebuilding it", "Refresh on growth", "Count on disk", suffix array
+explained in one sentence). 9 pages, compiles clean.
+Also earlier: paper/*.aux|log|out|toc now gitignored by pattern
+(user hit committed complexity.aux etc.).
