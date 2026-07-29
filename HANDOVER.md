@@ -1372,3 +1372,72 @@ numbers safe; else identify affected runs. Note deltas expected
 NEGATIVE-or-positive: corrected q larger where far-left peaks were
 suppressed -> bits_B < bits_A (delta<0) means production OVERSTATED
 codelengths.
+
+## 2026-07-29 — IMPACT PROBE VERDICT: published numbers STAND
+
+Probe ran on user's laptop (96 min, single-core — mea culpa, no
+--jobs). Results (output/impact_probe/results.json):
+  memoryless (75.2M bits): delta +0.73 bits  = +4.3e-8 b/t
+  row:<unk>  (33.7M bits): delta +0.26 bits  = +1.5e-8 b/t
+  row:while  (44k bits):   delta -0.0003 bits
+=> table error (100s-10,000s nats in far-left columns at r>~600) is
+NEGLIGIBLE in results: the corrupted region is where these profiles'
+integrals carry no mass (dominant peaks elsewhere; exact left tail
+covers the extreme left). NO CORRECTION RERUNS NEEDED; all published
+numbers valid at reporting precision.
+Fix remains necessary (other regimes could weight that region; the
+universal-table design builds on certified values), but it is now
+hygiene + efficiency work, not damage control. User killed the big
+cluster run earlier; plan = efficiency pause (hybrid builder, shared
+integrand, refresh-on-growth, sparse normalizer), then restart
+workflows once, on the faster foundation.
+
+## 2026-07-29 — UNIVERSAL TABLE STORE v1 implemented (core done,
+## integration into the evaluator PENDING)
+
+User approved: permanent universal table, per-level files, grow on
+demand ("check if exists at computation start; build if missing").
+src/product_model_with_memory/universal_tables.py:
+- Design constants: H=0.02 uniform master u-grid, U_MAX=35, L_MAX=70,
+  R_SPLIT=256, columns start at series boundary (tau_log margin -8);
+  location: PMM_UNIVERSAL_TABLES env var or ./tables/universal_v1
+  (tables/ gitignored — artifact, not source).
+- Hybrid builders BY MEASURED REGIME: r<=256 classical recursion
+  (its clean range — r=512 was already 118 nats off at far left, so
+  split moved 512->256 after certification caught it); r>256
+  certified series + order-2 saddle (mellin_saddle_column).
+- log_phi(L, r, u): series on the fly left of stored column,
+  interpolation inside; L=1 closed form never stored.
+- certify(): random spot checks vs contour on cert domain (u<=10),
+  appended to manifest. Current: median 1.2e-6, max 1.3e-2 nats
+  (fringes documented in manifest accuracy note).
+- Tests tests/test_universal_tables.py (4, pass): grow/persist/
+  reopen; series handoff; both regimes vs contour; certification.
+DEAD END DOCUMENTED: exact_column_recursion (quantile-trapezoid
+generalized recursion) in mellin.py FAILS at deep L + large t (its
+quadrature span misses the peak reshaped by the shifted phi factor;
+established by bound/typical-path argument vs contour at
+(r=34,L=32,u=10): recursion -495 vs correct -259). Do NOT use it as
+a builder; kept for reference. v1 accuracy target relaxed 1e-6 ->
+certified ~1e-2 worst / 1e-6 median (paper-precision safe per impact
+probe); path to 1e-6 everywhere = v2 (right-pole series, order-3
+saddle).
+NEXT (first thing next session): integrate — 
+depth_averaged_codelength_profiles(universal=...) building per-level
+ProductMomentTables adapters from the store (dict-like lazy columns),
+regression test vs legacy path on small d, THEN experiments start
+using ensure_universal_tables() and per-run caches die. After that:
+T3 shared integrand, T8 refresh-on-growth, T7 sparse normalizer.
+
+## 2026-07-29 (evening): universal table v2 --- accuracy upgrade
+Files updated: src/product_model_with_memory/mellin.py (new: log_phi_right_series,
+exact_log_phi_column; pole-aware contour sampling), universal_tables.py (v2: exact
+builder for ALL r, per-column certified series boundary, degree-7 interpolation,
+full-axis off-grid certification), tests updated/extended; test_pooled_lags now
+explicitly requests the counts pilot estimator (pre-existing failure fix).
+Measured on a 6-level x 16-count store (r up to 1e6), 900 random off-grid checks
+vs the independent contour reference: median 7e-14 nats, max 2.4e-7 nats (the max
+is the float64 representation floor at values of magnitude ~1e9 nats, not a
+method error). v1 was: median 1.2e-6, max 1.3e-2.
+Old v1 table dirs are incompatible; default path is now tables/universal_v2
+(a v2 store builds itself on first use).

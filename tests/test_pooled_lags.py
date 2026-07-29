@@ -12,11 +12,18 @@ import random
 
 import numpy as np
 
+# These tests exercise the COUNTS pilot estimator explicitly (the
+# layered estimator has its own suite, test_pooled_lags_layered).
+import functools
+
 from product_model_with_memory.pooled_lags import (
     pooled_lag_codelengths,
     power_law_mixture_grid,
     power_law_product_grid,
 )
+
+pooled_lag_codelengths = functools.partial(
+    pooled_lag_codelengths, expert_model="counts")
 
 
 def _tiny_case():
@@ -139,6 +146,7 @@ def test_pooling_beats_single_experts_on_switching_source():
 
 def test_family_tracks_best_member():
     ids, V = _tiny_case()
-    res = pooled_lag_codelengths(ids, vocabulary_size=V, lags=(1, 2), checkpoints=3)
+    res = pooled_lag_codelengths(ids, vocabulary_size=V, lags=(1, 2),
+                             checkpoints=3, expert_model="counts")
     K = len(res.member_names)
     assert res.family_bits <= res.member_bits.min() + math.log2(K) / res.n_coded + 1e-12

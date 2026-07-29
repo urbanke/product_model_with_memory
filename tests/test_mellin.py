@@ -11,11 +11,49 @@ import math
 import numpy as np
 
 from product_model_with_memory.mellin import (
+    exact_log_phi_column,
     log_phi_closed_l1,
     log_phi_contour,
     log_phi_limit_t0,
+    log_phi_right_series,
     log_phi_saddle,
 )
+
+
+def test_right_series_matches_closed_form_at_level_one():
+    for r in [0, 5, 1000]:
+        for u in [math.log(2.0 * (r + 1)), math.log(50.0 * (r + 1)), 34.0]:
+            v, cert = log_phi_right_series(r, 1, u)
+            assert cert < 1e-12
+            assert abs(v - log_phi_closed_l1(r, u)) < 1e-8
+
+
+def test_right_series_agrees_with_pure_contour():
+    # independent methods, overlap regime
+    for L, r, u in [(2, 0, 5.0), (5, 40, 12.0), (17, 700, 20.0),
+                    (33, 6, 20.0), (2, 10**6, 35.0)]:
+        v, cert = log_phi_right_series(r, L, u)
+        assert cert < 1e-9, (L, r, u)  # store threshold is 1e-10
+        ref = log_phi_contour(r, L, u, dispatch=False)
+        assert abs(v - ref) < 1e-6, (L, r, u, v - ref)
+
+
+def test_right_series_certificate_flags_breakdown():
+    # deep-level regime: the expansion cancels catastrophically and
+    # must say so rather than return a wrong value
+    _, cert = log_phi_right_series(0, 70, 20.0)
+    assert cert > 1e-6
+
+
+def test_exact_column_matches_scalar_reference():
+    for L, r in [(2, 5), (8, 100), (33, 5000), (70, 3)]:
+        u_lo = -8.0 - L * math.log(r + 1.0)
+        grid = np.arange(u_lo, 35.0 + 1e-9, 0.37)
+        col = exact_log_phi_column(r, L, grid)
+        assert np.all(np.isfinite(col))
+        for j in [0, len(grid) // 3, 2 * len(grid) // 3, len(grid) - 1]:
+            ref = log_phi_contour(r, L, float(grid[j]))
+            assert abs(col[j] - ref) < 1e-6, (L, r, grid[j])
 
 
 def test_contour_matches_closed_form_at_level_one():
