@@ -338,6 +338,35 @@ def log_q_lambda_scan(
         psi_grid = psi_grid + count * tables.log_phi[(L, part)]
         left_constant += count * L * math.lgamma(part + 1)
 
+    return _scan_from_psi(
+        d=d, L=L, N=N, s=s, partition=tuple(partition),
+        multiplicity_pairs=multiplicity_pairs, tables=tables,
+        psi_grid=psi_grid, left_constant=left_constant,
+        significance_gap=significance_gap,
+    )
+
+
+def _scan_from_psi(
+    *,
+    d: int,
+    L: int,
+    N: int,
+    s: int,
+    partition: tuple[int, ...],
+    multiplicity_pairs,
+    tables: ProductMomentTables,
+    psi_grid: FloatArray,
+    left_constant: float,
+    significance_gap: float,
+) -> QLambdaResult:
+    """The peak-finding / refinement half of log_q_lambda_scan, split
+    out so that FAMILIES of profiles sharing a grid integrand (a base
+    profile and its one-observation augmentations; complexity notes,
+    T3) pay for the O(G k) integrand once and reuse it in O(G) per
+    member."""
+
+    u_grid = tables.u_grid
+
     def derivative(u: float) -> float:
         return N - _weighted_rho_sum(
             d=d,
@@ -444,6 +473,96 @@ def log_q_lambda_scan(
         message="; ".join(notes) if notes else "left tail only",
         peaks=tuple(zip(peak_locations, contributions)),
     )
+
+
+def augmented_partition(base: tuple[int, ...], c: int) -> tuple[int, ...]:
+    """The profile after one more observation of a symbol whose current
+    count is c (c = 0: a previously unseen symbol)."""
+
+    if c == 0:
+        return tuple(sorted(base + (1,)))
+    lst = list(base)
+    lst[lst.index(c)] = c + 1
+    return tuple(sorted(lst))
+
+
+def log_q_lambda_scan_family(
+    *,
+    d: int,
+    L: int,
+    base_partition: tuple[int, ...],
+    cs: tuple[int, ...],
+    tables: ProductMomentTables,
+    significance_gap: float = 40.0,
+) -> tuple[QLambdaResult, dict[int, QLambdaResult]]:
+    """Scan for a base profile AND each one-observation augmentation,
+    sharing the grid integrand (complexity notes, T3).
+
+    Augmenting a symbol of count c multiplies the integrand by
+    t phi_{c+1}/phi_c (c = 0: one of the d-s unseen symbols moves to
+    count one, giving t phi_1/phi_0), so on the grid each member costs
+    one O(G) update on top of the base's O(G k).  Requires L >= 2 and
+    a nonempty base with sum(base) >= 2; peak refinement runs per
+    member (it is the cheap part).  Returns (base result, {c: result}).
+    """
+
+    if L < 2:
+        raise ValueError("family scan requires L >= 2 (use closed form)")
+    base = tuple(base_partition)
+    if not base or sum(base) < 1:
+        raise ValueError("family scan requires a nonempty base profile")
+    for c in cs:
+        if c != 0 and c not in base:
+            raise ValueError(f"augmentation count {c} not present in base")
+    _validate_tables_for_partition(
+        tables=tables, L=L, partition=base, extra_orders=2
+    )
+    for c in cs:
+        _validate_tables_for_partition(
+            tables=tables, L=L, partition=augmented_partition(base, c),
+            extra_orders=2,
+        )
+
+    N = sum(base)
+    s = len(base)
+    u_grid = tables.u_grid
+    psi_base = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
+    left_constant = 0.0
+    multiplicity_pairs = partition_multiplicities(base)
+    for part, count in multiplicity_pairs:
+        psi_base = psi_base + count * tables.log_phi[(L, part)]
+        left_constant += count * L * math.lgamma(part + 1)
+
+    if N == 1:
+        base_result = QLambdaResult(
+            log_q=-math.log(d), method="symmetry", d=d, L=L, N=1,
+            partition=base, message="one-symbol profile by exchangeability",
+        )
+    else:
+        base_result = _scan_from_psi(
+            d=d, L=L, N=N, s=s, partition=base,
+            multiplicity_pairs=multiplicity_pairs, tables=tables,
+            psi_grid=psi_base, left_constant=left_constant,
+            significance_gap=significance_gap,
+        )
+
+    aug_results: dict[int, QLambdaResult] = {}
+    for c in cs:
+        aug = augmented_partition(base, c)
+        # multiply by t phi_{c+1}/phi_c: O(G) on the shared integrand
+        psi_aug = (
+            psi_base + u_grid
+            + tables.log_phi[(L, c + 1)] - tables.log_phi[(L, c)]
+        )
+        left_aug = left_constant + L * (
+            math.lgamma(c + 2.0) - math.lgamma(c + 1.0))
+        aug_results[c] = _scan_from_psi(
+            d=d, L=L, N=N + 1, s=len(aug), partition=aug,
+            multiplicity_pairs=partition_multiplicities(aug), tables=tables,
+            psi_grid=psi_aug, left_constant=left_aug,
+            significance_gap=significance_gap,
+        )
+    return base_result, aug_results
 
 
 def _logaddexp_scalar(a: float, b: float) -> float:

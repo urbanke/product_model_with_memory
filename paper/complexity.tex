@@ -312,43 +312,98 @@ $r \in \mathcal{R}$, $L \le L_{\max}$, $g \le G$ --- an array of
 $|\mathcal{R}| \times L_{\max} \times G$ values, stored on disk.
 
 \field{Algorithm}
-For each $r$ separately: start from the closed form at level one;
-then, for $\ell = 2, 3, \dots, L_{\max}$, evaluate the integral in
-Eq.~\eqref{eq:recursion} at every grid point by Gauss--Laguerre
-quadrature with $Q$ nodes.  The quadrature needs the previous level
-at the shifted arguments $t v_j$; these values are obtained by linear
-interpolation on the $u$ grid, using the exact limit
-$\Gamma(r+1)^{\ell-1}$ to the left of the grid.  The work for
-different values of $r$ is independent, so it is spread over all
-processor cores; when the data later produces a count value that has
-no table yet, that table is built on demand and added to the store.
+\emph{(Replaced July 2026; the old per-run recursion builder and its
+accuracy problems are described at the end of this section.)}
+The values now live in one \emph{permanent store} (``the universal
+table''), shared by all experiments and grown on demand: the first
+computation that needs a value computes and files it; every later
+computation reads it.  One file per level; a uniform master grid with
+spacing $0.02$ in $u$; a manifest that records the design constants
+and every accuracy check ever run.
+
+Each stored value is produced by one of three independent methods,
+each used only where it can \emph{certify its own error}:
+(i)~for small $t$, the alternating series
+$\varphi = \sum_j (-t)^j\, \Gamma(r{+}j{+}1)^L / j!$, truncated where
+its terms turn; the first omitted term bounds the error, and a column
+only starts where this bound is below $10^{-13}$;
+(ii)~in the middle, direct numerical integration of the exact contour
+representation
+$\varphi = \frac{1}{2\pi i}\int \Gamma(z)\, t^{-z}\,
+\Gamma(r{+}1{-}z)^L\, dz$
+along a vertical line through the saddle, with the sampling density
+tied to the distance from the line to the nearest pole and the
+integration width extended until the measured integrand has dropped
+$34$ nats below its peak;
+(iii)~for large $t$, the residue series at the poles
+$z = r{+}1, r{+}2, \dots$ (a sum of powers of $1/t$ times polynomials
+in $\ln t$), which converges exactly where the contour degenerates,
+and whose implementation reports a bound covering truncation and
+round-off.  The three regimes overlap, and on the overlaps the methods
+agree to about $10^{-8}$ or better; where nothing else was available
+(deep levels, very large $t$) the contour values were checked against
+direct Monte Carlo simulation.
+
+Between grid points, queries are answered by degree-$7$ polynomial
+interpolation.  This matters: the curvature of
+$u \mapsto \ln\varphi_r^{(L)}(e^u)$ grows like the saddle position
+(up to $\sim r$), so on the $0.02$ grid \emph{linear} interpolation
+would cost whole nats at $r = 10^6$ even on exactly stored values,
+and cubic still $\sim 10^{-5}$.
+
+Building a column exactly at every grid point costs $0.1$ to a few
+seconds, so columns are built on a $4\times$ coarser sub-lattice and
+filled by the same degree-$7$ rule, \emph{except} where the eighth
+difference of the coarse values says interpolation cannot reach
+$10^{-8}$ (there the points are computed exactly), and the filled
+column is spot-checked against exact values, falling back to a full
+exact build on failure.  Columns are independent, so the build runs
+on all cores.
+
+\field{Measured accuracy}
+End-to-end (what a query actually receives, interpolation included),
+$900$ random off-grid points against the independent contour
+reference: median error $7 \cdot 10^{-14}$ nats, maximum
+$2.4 \cdot 10^{-7}$ nats --- and the maximum occurs only at points
+where the value itself is $\sim 10^9$ nats, i.e.\ at the resolution
+limit of $64$-bit floating point, not a method error.
+
+\field{The old builder, and why it was replaced}
+The previous builder ran the level recursion
+Eq.~\eqref{eq:recursion} per run with fixed-node Gauss--Laguerre
+quadrature.  Checked against the certified methods it fails in two
+regions: at the far right of the grid (harmless: the values there are
+astronomically negative and never carry weight), and --- destructively
+--- at the far left for $r \gtrsim 360$, with errors of tens to
+hundreds of nats, growing with $L$ (at $L{=}26$, $r{=}450$:
+$290$ nats).  The far-left region is exactly where the second
+integrand peak of deep levels sits, so these errors reach real
+codelengths: profile-level deviations of $5 \cdot 10^{-3}$ bits were
+measured already at maximum count $301$, growing with depth.  The
+planned rerun of the paper's experiments on the new store will
+quantify the aggregate effect on published numbers.
 
 \field{Cost and scaling}
-Building: about $|\mathcal{R}| \cdot L_{\max} \cdot G \cdot Q$
-interpolate-and-multiply steps; at the largest settings this is
-$\approx 10^{12}$ steps, measured as $45$ minutes on $64$ cores.
-Storage: $8 \cdot |\mathcal{R}| \cdot L_{\max} \cdot G$ bytes, which
-reached $85$\,GB.  Growth: on a larger corpus, $|\mathcal{R}|$ grows
-slowly (a new count value must appear for the first time, which
-becomes rare); $G$ grows in proportion to the length of the $u$
-interval, which grows like the logarithm of the largest count;
-$L_{\max}$ grows like the logarithm of $d$.  The recurring cost after
-building is \emph{reading} the tables, and the storage layout
-determines whether reading is fast (a lesson learned on the shared
-cluster file system).
+Storage: about $60$\,kB per column ($8$ bytes per grid point); the
+column for $(L, r)$ spans from the series boundary (roughly
+$u = -L \ln r$) to $u = 35$.  An experiment needing $3{,}000$
+column builds was measured at $\sim 0.4$\,s per column per core ---
+currently the \emph{dominant cost of first runs}, and the store makes
+it a one-time cost per column ever, across all experiments.  Growth:
+$|\mathcal{R}|$ grows slowly with corpus size, $L_{\max}$ like
+$\ln d$, and column length like $L \ln r$.
 
-\field{Ideas for speedup}
-(1)~[exact] Keep one shared table store for all experiments; when we
-audited the disk we found $219$\,GB of identical tables stored by
-different runs.
-(2)~[exact] Store the array level by level in single files, in
-single precision: four times smaller, and a task that needs level
-$L$ opens one file instead of $|\mathcal{R}|$ files.
-(3)~[approx] For large $r$ the integrand of
-Eq.~\eqref{eq:recursion} is sharply peaked and
-$\varphi^{(L)}_r$ approaches a smooth limiting shape; beyond some
-threshold the table could be replaced by this limiting formula.  The
-error must be worked out before this is used.
+\field{Ideas for further speedup}
+(1)~[exact] A native-code kernel for the contour quadrature (the
+inner loop is complex $\ln\Gamma$ over large arrays); see the
+language section below.
+(2)~[exact] Coarser strides where the eighth difference permits ---
+the machinery already measures exactly this.
+(3)~[exact] A repaired level recursion (stable quadrature with
+per-point peak tracking) as a fast bulk builder for small $r$,
+admitted only where it agrees with the certified methods; the
+previous attempt is shelved because its quadrature window misses the
+integrand peak at deep levels.
 
 \section{T2 --- Evaluating the probability of one profile}
 
@@ -461,7 +516,7 @@ little because an active row's profile is different at every
 refresh.
 
 \field{Ideas for speedup}
-(1)~[exact; the largest single lever in this document]
+(1)~[exact; IMPLEMENTED July 2026]
 \emph{Compute all the ratios from one integrand.}  The profiles
 $\prof \oplus c$ differ from $\prof$ in a single factor of the
 integrand in Eq.~\eqref{eq:integral}.  Concretely,
@@ -473,10 +528,12 @@ integrand in Eq.~\eqref{eq:integral}.  Concretely,
 with $\psi_L$ the log-integrand of the \emph{base} profile,
 Eq.~\eqref{eq:psi}.  So: assemble $\psi_L$ once, at cost
 $O(G\tilde k)$; then every one of the $\tilde k + 1$ entries is a
-single weighted sum over the grid, at cost $O(G)$ each.  The cost
-per row falls from $O(G \tilde k^{2})$ to $O(G \tilde k)$ --- a
-factor $\tilde k$, which is about $100$ exactly for the rich rows
-that dominate --- and the result is the same numbers.
+single $O(G)$ update of the shared integrand.  The cost per row
+falls from $O(G \tilde k^{2})$ to $O(G \tilde k)$ --- a factor
+$\tilde k$, about $100$ for the rich rows that dominate.  The
+implementation (the ``family'' evaluator) was verified to reproduce
+the member-by-member results \emph{exactly}, and the sequential
+codes of T6--T8 now route every prediction table through it.
 (2)~[exact] \emph{Update the integrand instead of rebuilding it.}
 Between two refreshes only a few entries of a row change.  If the
 row's $\psi_L$ is kept in memory, it can be updated by adding
@@ -485,7 +542,7 @@ entry: cost proportional to the number of changes, not to $\tilde
 k$.  Keeping $\psi_L$ for one row costs $G \times L_{\max}$ single-
 precision numbers ($\approx 8$\,MB at the largest settings), which
 is affordable for the busy rows --- and the busy rows are exactly
-the expensive ones.
+the expensive ones.  Not yet implemented.
 (3)~The ideas of T2 apply on top.
 
 \section{T4 --- Counting}
@@ -670,36 +727,84 @@ positions.  T3 work: $C$ times the number of active rows; measured
 $5.9\cdot 10^6$ atom evaluations at $d = 1{,}024$, $C = 32$.
 
 \field{Ideas for speedup}
-(1)~[valid code; staleness controlled] \emph{Refresh on growth.}
-Rebuild a row's table when the row's total $N$ has grown by a fixed
-factor $1 + \epsilon$ since the last rebuild.  A row that ends with
-total $N$ is then rebuilt only $\log_{1+\epsilon} N$ times ---
-logarithmic instead of $C$ --- and the table a position actually
+(0)~[exact; already in effect] \emph{Memoize by profile.}  Every
+evaluated profile is cached, so a refresh only pays for rows whose
+profile actually changed since the last refresh --- the cost is
+already driven by growth, not by the clock.  What the clock still
+controls is the number of refresh \emph{moments} and the assembly of
+the dense tables.
+(1)~[valid code; staleness controlled; changes the coded numbers ---
+an experiment-design decision, not a drop-in] \emph{Refresh on
+growth.}  Rebuild a row's table when the row's total $N$ has grown by
+a fixed factor $1 + \epsilon$ since the last rebuild.  A row that
+ends with total $N$ is then rebuilt only $\log_{1+\epsilon} N$ times
+--- logarithmic instead of $C$ --- and the table a position actually
 uses is never based on counts more than a factor $1 + \epsilon$
 behind, which is the kind of error that matters for prediction
 quality.  The trigger depends only on the past, so the code remains
-valid.  Combined with ideas T3(1) and T3(2), the estimated overall
-gain on sequential runs is two to three orders of magnitude.
+valid.
 (2)~[exact] Distribute rows over cluster nodes; rows are independent
 once the schedule is fixed.
+
+\section*{Implementation status (July 2026)}
+
+Done and verified: the permanent certified table store with its exact
+builders, interpolation, and full-axis certification (T1); the
+shared-integrand family evaluator for prediction tables (T3(1)),
+verified to reproduce the member-by-member results exactly; parallel
+table builds and parallel profile evaluation through shared memory
+(T1, T2); profile memoization (T8(0)).  Pending, in suggested order:
+the sparse product normalization (T7), remembered peaks (T2(1)),
+integrand updates (T3(2)), suffix-array counting (T4(2)), refresh on
+growth (T8(1), an experiment-design decision).  The current
+first-run bottleneck is building new table columns (T1); recurring
+runs are dominated by T2/T3 evaluation.
+
+\section*{The choice of language}
+
+Everything is Python today, and the question is what a faster
+language would buy.  The answer differs by task, because the heavy
+inner loops are already \emph{vectorized}: they execute inside
+NumPy's compiled kernels (C), not in the Python interpreter.
+
+Where native code would help little: the T2/T3 grid work (adding and
+exponentiating long arrays), the T6/T7 member loops (matrix products
+over positions), and the counting passes.  These spend their time in
+compiled array kernels already; rewriting them in C, Rust or Julia
+mainly removes the glue between kernel calls --- worth perhaps
+$1.5$--$3\times$ where the arrays are short and the glue is
+proportionally large (many small profiles), and close to nothing
+where the arrays are long.
+
+Where native code would help a lot: (i)~the T1 column builder, whose
+cost is complex $\ln\Gamma$ evaluations over quadrature lattices ---
+a tight native loop with a fast complex-$\ln\Gamma$ (or a
+precomputed-coefficient Lanczos evaluation) could plausibly give
+$5$--$10\times$ on the build, on top of the strided scheme;
+(ii)~the per-peak refinement logic of T2, which is scalar Python
+(root brackets, a few dozen function calls per peak) and would
+vectorize poorly but compile well --- a few $\times$ on
+refinement-heavy workloads.  The pragmatic route for both is a small
+compiled extension (Cython/Rust) or just-in-time compilation
+(Numba) for two or three kernels, keeping the orchestration,
+storage, and certification machinery in Python.  A wholesale rewrite
+is not justified by the measurements: parallelism and the
+algorithmic levers above dominate every observed bottleneck.
 
 \section*{Scaling summary}
 
 Consider a corpus ten times larger ($n \approx 1.4\cdot 10^8$,
 alphabet $\sim 10^6$).  With today's algorithms: T4 would need
 terabytes of memory (it already blocks depth three); T3 under the
-schedule of T8 would take weeks; T7 in its dense form is out of the
-question; T1 and T2 grow only through $|\mathcal{R}|$, $G$ and
-$L_{\max}$ and remain manageable.  With the ideas marked [exact] ---
-one shared integrand per row (T3), integrand updates (T3), remembered
+schedule of T8 would take weeks even with the shared integrand; T7 in
+its dense form is out of the question; T1 and T2 grow only through
+$|\mathcal{R}|$, $G$ and $L_{\max}$ and remain manageable.  With the
+remaining ideas marked [exact] --- integrand updates (T3), remembered
 peaks (T2), the sparse normalization (T7), refresh on growth (T8),
 counting on disk or via a suffix array (T4), and distribution over
 nodes --- each task returns to the scale of node-hours.  The ideas
 marked [approx] (level truncation, limiting formulas for large
 counts, coarser grids) are held in reserve, each with an error that
 can be checked against the exact computation on samples.
-
-Suggested order of discussion: T3(1), T7, T8(1), T2(1), T4(2); the
-approximations only if something is still too slow after these.
 
 \end{document}

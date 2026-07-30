@@ -388,6 +388,39 @@ def log_phi_column(r: float, L: int, u_grid) -> np.ndarray:
     return out
 
 
+def series_column(r: float, L: int, u) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized small-t series with per-point certificates.
+
+    Same mathematics as the scalar _log_phi_series: alternating
+    asymptotic series summed over its decreasing prefix, certificate =
+    smallest computed term relative to the total (an upper bound on
+    the truncation error).
+    """
+
+    us = np.asarray(u, dtype=np.float64)
+    lead = L * float(loggamma(r + 1.0))
+    total = np.ones_like(us)
+    smallest = np.full_like(us, np.inf)
+    sign = 1.0
+    prev = None
+    for j in range(1, 60):
+        term_log = (
+            j * us
+            - float(loggamma(j + 1.0))
+            + L * float(loggamma(r + j + 1.0) - loggamma(r + 1.0))
+        )
+        if prev is not None:
+            term_log = np.where(term_log >= prev, -np.inf, term_log)
+        sign = -sign
+        total = total + sign * np.exp(term_log)
+        keep = np.isfinite(term_log)
+        smallest = np.where(keep, term_log, smallest)
+        prev = np.where(keep, term_log,
+                        prev if prev is not None else term_log)
+    cert = np.exp(smallest) / np.maximum(total, 1e-300)
+    return lead + np.log(np.maximum(total, 1e-300)), cert
+
+
 def exact_log_phi_column(
     r: float,
     L: int,
@@ -419,30 +452,10 @@ def exact_log_phi_column(
     tau_log = u + L * float(loggamma(r + 2.0) - loggamma(r + 1.0))
     ser = tau_log < math.log(0.05)
     if ser.any():
-        us = u[ser]
-        lead = L * float(loggamma(r + 1.0))
-        total = np.ones_like(us)
-        smallest = np.full_like(us, -np.inf)
-        sign = 1.0
-        prev = None
-        for j in range(1, 60):
-            term_log = (
-                j * us
-                - float(loggamma(j + 1.0))
-                + L * float(loggamma(r + j + 1.0) - loggamma(r + 1.0))
-            )
-            if prev is not None:
-                term_log = np.where(term_log >= prev, -np.inf, term_log)
-            sign = -sign
-            total = total + sign * np.exp(term_log)
-            keep = np.isfinite(term_log)
-            smallest = np.where(keep, term_log, smallest)
-            prev = np.where(keep, term_log, prev if prev is not None
-                            else term_log)
-        cert = np.exp(smallest) / np.maximum(total, 1e-300)
+        vals, cert = series_column(r, L, u[ser])
         good = cert < 1e-10
         idx = np.flatnonzero(ser)
-        out[idx[good]] = lead + np.log(total[good])
+        out[idx[good]] = vals[good]
         done[idx[good]] = True
 
     # ---- certified right-pole series (large t)

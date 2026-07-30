@@ -192,23 +192,40 @@ class _LayeredPredictiveBuilder:
         self.progress = progress
         self.memo: dict[tuple, FloatArray] = {}
 
-    def _ensure(self, profiles: set[tuple]) -> None:
+    def _ensure_families(self, fams: dict[tuple, tuple]) -> None:
+        """Evaluate whatever is missing, grouped as base + augmented
+        families so each family shares its grid integrand (complexity
+        notes, T3)."""
+
         from product_model_with_memory.codelength import (
-            depth_averaged_codelength_profiles,
+            depth_averaged_codelength_families,
         )
 
-        missing = {p for p in profiles if p and p not in self.memo}
-        if missing:
-            results = depth_averaged_codelength_profiles(
-                {p: p for p in missing},
-                d=self.V,
-                l_max=self.l_max,
-                cache_dir=self.cache_dir,
-                jobs=self.jobs,
-                progress=self.progress,
-            )
-            for p, res in results.items():
-                self.memo[p] = np.asarray(res.log2_q_by_depth)
+        todo: dict[tuple, tuple] = {}
+        for base, cs in fams.items():
+            missing_cs = tuple(sorted(
+                c for c in set(cs)
+                if _augmented_profile(base, c) not in self.memo
+            ))
+            base_missing = bool(base) and base not in self.memo
+            if missing_cs or base_missing:
+                todo[base] = missing_cs
+        if not todo:
+            return
+        results = depth_averaged_codelength_families(
+            {base: (base, cs) for base, cs in todo.items()},
+            d=self.V,
+            l_max=self.l_max,
+            cache_dir=self.cache_dir,
+            jobs=self.jobs,
+            progress=self.progress,
+        )
+        for base, (b_res, a_res) in results.items():
+            if b_res is not None:
+                self.memo[base] = np.asarray(b_res.log2_q_by_depth)
+            for c, res in a_res.items():
+                self.memo[_augmented_profile(base, c)] = np.asarray(
+                    res.log2_q_by_depth)
 
     def _log2_ratio(self, base: tuple, aug: tuple) -> float:
         # q_avg(empty profile) = 1 (no observations)
@@ -226,10 +243,8 @@ class _LayeredPredictiveBuilder:
         distinct = sorted(set(base))
         saturated = len(base) >= V  # no unseen symbol exists
         cs = distinct if saturated else distinct + [0]
-        wanted = {base} if base else set()
         aug_of = {c: _augmented_profile(base, c) for c in cs}
-        wanted.update(aug_of.values())
-        self._ensure(wanted)
+        self._ensure_families({base: tuple(cs)})
         log_unseen = (
             -np.inf if saturated else self._log2_ratio(base, aug_of[0])
         )
@@ -254,18 +269,16 @@ def _layered_log_tables(
     evaluations happen in ONE batched (parallel) call per refresh.
     """
 
-    wanted: set[tuple] = set()
+    fams: dict[tuple, set] = {}
     all_rows = [uni_counts[None, :]] + lag_counts
     for block in all_rows:
         for r in range(block.shape[0]):
             nz = np.flatnonzero(block[r])
             base = tuple(sorted(int(block[r][i]) for i in nz))
-            if base:
-                wanted.add(base)
             cs = set(base) if len(base) >= block.shape[1] else set(base) | {0}
-            for c in cs:
-                wanted.add(_augmented_profile(base, c))
-    builder._ensure(wanted)
+            fams.setdefault(base, set()).update(cs)
+    builder._ensure_families(
+        {b: tuple(sorted(cs)) for b, cs in fams.items()})
 
     log_q0 = builder.row_log_table(uni_counts)
     tables = [
@@ -330,10 +343,15 @@ def pooled_lag_codelengths(
         return k, float((logits[steps_idx, tgt] - z).sum())
 
     if expert_model == "layered":
-        if cache_dir is None:
-            raise ValueError("expert_model='layered' requires a cache_dir")
-        from product_model_with_memory.codelength import default_l_max
+        from product_model_with_memory.codelength import (
+            _resolve_tables_source,
+            default_l_max,
+        )
 
+        if cache_dir is None and _resolve_tables_source(None) == "cache":
+            raise ValueError(
+                "expert_model='layered' requires a cache_dir when the "
+                "legacy cache table source is selected")
         if l_max is None:
             l_max = default_l_max(V)
         builder = _LayeredPredictiveBuilder(V, l_max, cache_dir, jobs, progress)

@@ -1441,3 +1441,19 @@ is the float64 representation floor at values of magnitude ~1e9 nats, not a
 method error). v1 was: median 1.2e-6, max 1.3e-2.
 Old v1 table dirs are incompatible; default path is now tables/universal_v2
 (a v2 store builds itself on first use).
+
+## 2026-07-30 (overnight): speedups, integration, verification prep
+All experiments now read the permanent certified store by default
+(tables_source="universal"; legacy cache via PMM_TABLES_SOURCE=cache).
+New: shared-integrand family evaluator (complexity T3(1); verified to
+reproduce member-by-member results exactly) wired into all prediction
+tables; parallel universal builds (build_columns, jobs); strided column
+builds with 8th-difference roughness control + spot-check fallback
+(2-4x per core); pairs.py and single-profile codelength converted too.
+complexity.tex rewritten (T1 = certified store; status section;
+language discussion); VERIFY.md = runbook for the paper verification
+reruns with timing readout. Whole test suite passes. Store-wide
+certification: median 4.5e-13, max 1.0e-6 nats (one filled column in a
+zero-weight region; builder tightened after). Legacy-table finding:
+destructive errors from r~360 (not 600), ~5e-3 bits per heavy profile
+at depth even at count ~300 -> reruns will quantify effect on paper.

@@ -119,19 +119,17 @@ def depth_averaged_predictive(
     classes = sorted(class_sizes)  # positive counts
     s = len(partition)
 
-    cache = build_tables_fast(
-        max_L=l_max,
-        r_values=needed_r_values(partition),
-        cache_dir=cache_dir,
-        jobs=jobs,
-        materialize=False,
-        progress=(
-            None
-            if progress is None
-            else lambda k, t: progress(("tables", k, t), None)
-        ),
+    from product_model_with_memory.codelength import (
+        _family_level_tables,
+        _provision_tables,
+        _resolve_tables_source,
     )
-    assert isinstance(cache, TableCache)
+
+    rs = sorted(needed_r_values(partition))
+    prov = _provision_tables(
+        _resolve_tables_source(None), l_max, set(rs), cache_dir, None,
+        jobs, 96, progress,
+    )
 
     log_q_by_depth: list[float] = []
     # per depth: predictive probability per class (0 and each positive count)
@@ -149,7 +147,7 @@ def depth_averaged_predictive(
                 {c: (c + 1.0) / (n + d) for c in [0, *classes]}
             )
         else:
-            tables = cache.level_tables(L, cache.r_values)
+            tables = _family_level_tables(prov, L, rs)
             result = log_q_lambda_scan(
                 d=d, L=L, partition=partition, tables=tables
             )

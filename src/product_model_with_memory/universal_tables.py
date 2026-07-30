@@ -48,10 +48,10 @@ import numpy as np
 from scipy.special import loggamma
 
 from product_model_with_memory.mellin import (
-    _log_phi_series,
     exact_log_phi_column,
     log_phi_contour,
     log_phi_right_series,
+    series_column,
 )
 
 VERSION = "v2"
@@ -242,8 +242,44 @@ class UniversalTables:
             self._append_column(L, r, self._build_column(L, r))
 
     def _build_column(self, L: int, r: int) -> np.ndarray:
-        i0 = column_start_index(L, r)
-        return exact_log_phi_column(r, L, _grid_points(i0))
+        return _build_column_values(L, r)
+
+    def build_columns(self, pairs, *, jobs: int = 1, progress=None) -> int:
+        """Build (persist) every missing column among the (L, r) pairs,
+        optionally in parallel; returns how many were built.
+
+        Workers compute columns (pure math, no store access); the
+        parent alone appends to the level files, so the store stays
+        consistent regardless of jobs."""
+
+        missing = []
+        seen = set()
+        for L, r in pairs:
+            L, r = int(L), int(r)
+            if L < 2 or (L, r) in seen:
+                continue
+            seen.add((L, r))
+            if r not in self._load_level(L)["index"]:
+                missing.append((L, r))
+        if not missing:
+            return 0
+        if jobs <= 1 or len(missing) < 4:
+            for i, (L, r) in enumerate(missing):
+                self._append_column(L, r, self._build_column(L, r))
+                if progress is not None:
+                    progress(("tables", i + 1, len(missing)), None)
+        else:
+            import multiprocessing as mp
+
+            with mp.Pool(processes=min(jobs, len(missing))) as pool:
+                done = 0
+                for L, r, values in pool.imap_unordered(
+                        _column_worker, missing, chunksize=1):
+                    self._append_column(L, r, values)
+                    done += 1
+                    if progress is not None:
+                        progress(("tables", done, len(missing)), None)
+        return len(missing)
 
     # ------------------------------------------------------ evaluation
 
@@ -259,13 +295,15 @@ class UniversalTables:
         inside = (u >= grid[0]) & (u <= grid[-1])
         if inside.any():
             out[inside] = _interp_column(grid, vals, u[inside])
-        for j in np.flatnonzero(u < grid[0]):
-            v, cert = _log_phi_series(r, L, float(u[j]))
-            if cert > 1e-10:
+        left = u < grid[0]
+        if left.any():
+            v, cert = series_column(r, L, u[left])
+            if np.any(cert > 1e-10):
+                bad = u[left][cert > 1e-10]
                 raise RuntimeError(
                     f"series not certified left of column (L={L}, r={r}, "
-                    f"u={u[j]}); store margin violated")
-            out[j] = v
+                    f"u={bad[:3]}); store margin violated")
+            out[left] = v
         for j in np.flatnonzero(u > grid[-1]):
             v, cert = log_phi_right_series(r, L, float(u[j]))
             if cert < 1e-10:
@@ -273,6 +311,31 @@ class UniversalTables:
             else:  # rare (large L): fall back to the exact contour
                 out[j] = log_phi_contour(r, L, float(u[j]))
         return out
+
+    def level_tables(self, L: int, r_values, u_grid):
+        """Scan-compatible ProductMomentTables for one level, served
+        from the store on an arbitrary u grid (the production scan's
+        adaptive grid, typically).
+
+        Values are exactly what log_phi serves: certified series left
+        of the stored column, degree-7 interpolation inside it,
+        certified large-t evaluation right of the grid edge.  This is
+        the adapter that lets log_q_lambda_scan run unchanged on
+        universal-table values.
+        """
+
+        from product_model_with_memory.layered import ProductMomentTables
+
+        rs = tuple(sorted(int(r) for r in set(r_values)))
+        u = np.asarray(u_grid, dtype=np.float64)
+        self.ensure_columns(L, rs)
+        return ProductMomentTables(
+            max_L=max(L, 1),
+            max_r=rs[-1],
+            r_values=rs,
+            u_grid=u,
+            log_phi={(L, r): self.log_phi(L, r, u) for r in rs},
+        )
 
     # --------------------------------------------------- certification
 
@@ -318,6 +381,104 @@ class UniversalTables:
         self.manifest["certifications"].append(result)
         self._save_manifest()
         return result
+
+
+def _build_column_values(L: int, r: int) -> np.ndarray:
+    """Column values on the master grid: exact evaluation on a strided
+    sub-lattice, degree-7 fill in between, SPOT-CHECKED against exact
+    values at random filled points (full exact rebuild on failure).
+
+    The strided build exists because exact evaluation of every H=0.02
+    point costs ~0.3-3 s per column and experiments need thousands of
+    columns; the fill reuses the same interpolation the store serves
+    with, and the spot check keeps the certification honest (measured
+    July 2026: fill agrees with exact at ~1e-9; threshold 2e-8).
+    """
+
+    i0 = column_start_index(L, r)
+    grid = _grid_points(i0)
+    n = len(grid)
+    stride = 4 if r < 1e5 else 2
+    if n < 8 * stride:
+        return exact_log_phi_column(r, L, grid)
+    lattice_idx = np.arange(0, n, stride)
+    lattice = grid[lattice_idx]
+    coarse = exact_log_phi_column(r, L, lattice)
+    m = len(coarse)
+    values = np.empty(n)
+    values[lattice_idx] = coarse
+    fill_idx = np.setdiff1d(np.arange(n), lattice_idx)
+    interior = fill_idx[fill_idx < lattice_idx[-1]]
+    tail = fill_idx[fill_idx >= lattice_idx[-1]]
+
+    # The degree-7 interpolation error is governed by the 8th
+    # derivative, whose finite-difference estimate on the lattice is
+    # the 8th difference of the coarse values.  Windows where it is
+    # large cannot be filled to ~1e-8 --- evaluate those points
+    # exactly instead of interpolating (random probes alone missed a
+    # localized 3e-6 miss; measured July 2026).
+    rough_lattice = np.zeros(m, dtype=bool)
+    if m > 8:
+        d8 = np.abs(np.diff(coarse, n=8))
+        for k in np.flatnonzero(d8 > 1e-7):
+            rough_lattice[k:k + 9] = True
+    if len(interior):
+        s = (grid[interior] - lattice[0]) / (stride * H)
+        starts = np.clip(np.floor(s).astype(np.int64) - (_STENCIL // 2 - 1),
+                         0, m - _STENCIL)
+        stencil_rough = np.array([
+            rough_lattice[i:i + _STENCIL].any() for i in starts
+        ]) if rough_lattice.any() else np.zeros(len(interior), dtype=bool)
+        smooth = interior[~stencil_rough]
+        rough = interior[stencil_rough]
+        if len(smooth):
+            values[smooth] = _lagrange_uniform(
+                lattice[0], stride * H, coarse, grid[smooth])
+        if len(rough):
+            values[rough] = exact_log_phi_column(r, L, grid[rough])
+    if len(tail):  # beyond the last lattice point: evaluate exactly
+        values[tail] = exact_log_phi_column(r, L, grid[tail])
+
+    # final certificate: random probes among the interpolated points
+    smooth_check = (interior[~stencil_rough]
+                    if len(interior) and rough_lattice.any()
+                    else interior)
+    if len(smooth_check):
+        rng = np.random.default_rng(hash((L, r)) & 0xFFFFFFFF)
+        probe = rng.choice(smooth_check, size=min(16, len(smooth_check)),
+                           replace=False)
+        ref = exact_log_phi_column(r, L, grid[probe])
+        if np.max(np.abs(values[probe] - ref)) > 2e-8:
+            return exact_log_phi_column(r, L, grid)  # certified fallback
+    return values
+
+
+def _lagrange_uniform(x0: float, dx: float, vals: np.ndarray,
+                      xq: np.ndarray) -> np.ndarray:
+    """Degree-7 barycentric Lagrange interpolation on the uniform grid
+    x0 + k dx (same stencil as the store's serving interpolation)."""
+
+    s = (xq - x0) / dx
+    i = np.clip(np.floor(s).astype(np.int64) - (_STENCIL // 2 - 1),
+                0, len(vals) - _STENCIL)
+    x = s - i
+    d = x[:, None] - np.arange(_STENCIL)[None, :]
+    exact = np.abs(d) < 1e-12
+    d = np.where(exact, 1.0, d)
+    w = _BARY_W[None, :] / d
+    window = vals[i[:, None] + np.arange(_STENCIL)[None, :]]
+    out = (w * window).sum(axis=1) / w.sum(axis=1)
+    hit = exact.any(axis=1)
+    if hit.any():
+        out[hit] = window[np.arange(len(xq)), np.argmax(exact, axis=1)][hit]
+    return out
+
+
+def _column_worker(pair):
+    """Top-level (picklable) column builder for build_columns."""
+
+    L, r = pair
+    return L, r, _build_column_values(L, r)
 
 
 def ensure_universal_tables(path: str | Path | None = None) -> UniversalTables:
