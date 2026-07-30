@@ -655,25 +655,90 @@ times.
 (2)~[exact] Distribute rows over cluster nodes; rows are independent
 once the schedule is fixed.
 
-\section*{The choice of language}
+\section*{Implementation status (31 July 2026)}
 
-Everything is Python today.  The heavy inner loops already execute
-inside NumPy's compiled kernels (C), so a wholesale rewrite in C,
-Rust or Julia would mostly remove glue and gain little where the
-arrays are long: the T2/T3 grid work, the T6/T7 member loops, and
-the counting passes are of this kind (perhaps $1.5$--$3\times$ where
-arrays are short).
+Done, verified, measured: the permanent certified table store with
+its exact builders, degree-$7$ interpolation, strided construction
+and full-axis certification (T1); the shared-line quadrature and the
+vectorized large-$t$ series, which together took deep columns from
+$0.5$ s to $0.02$--$0.15$ s (T1); sorted-key counting, $200$ GB
+$\to 2.6$ GB at identical counts (T4); the shared-integrand family
+evaluator (T3); the batched evaluation arithmetic, $4.8\times$ at
+bitwise-identical output (T2/T3); the sparse product normalization,
+exact to $10^{-14}$ bits per token and independent of alphabet size
+(T7); profile memoization (T8); and parallel execution of table
+building, column provisioning and profile evaluation.
 
-Native code would pay in exactly two places.  First, the T1 column
-builder, whose cost is complex $\ln\Gamma$ over quadrature lattices:
-a tight compiled loop should give $5$--$10\times$ on the build.
-Second, the per-peak refinement of T2, which is scalar Python (root
-brackets, a few dozen calls per peak) and would compile well.  The
-pragmatic route is a small compiled extension (Cython/Rust) or
-just-in-time compilation (Numba) for these two or three kernels,
-keeping orchestration, storage and certification in Python.  The
-measurements do not justify more: parallelism and the algorithmic
-ideas above dominate every observed bottleneck.
+Pending, in the order I would take them: remembered peak locations
+across refreshes (T2(1)); integrand updates between refreshes
+(T3(2)); a compiled kernel for the column builder (T1); and the
+refresh-on-growth schedule (T8(1)), which changes the coded numbers
+and is therefore an experiment-design decision rather than an
+optimization.
+
+Two operational lessons, recorded because each cost a debugging
+cycle.  A moment-table store copied between machines must be
+verified before use: an interrupted transfer leaves some levels
+whole and others absent or truncated, and a damaged column does not
+announce itself --- it silently flattens the integrand, so the
+failure surfaces much later as a convergence error in an unrelated
+profile.  The store now checks its index against the data file size
+when a level is opened, refuses short or non-finite columns, and
+exposes a one-line verification; worker processes open it read-only,
+since a worker that built a missing column would append to a file
+the parent is also writing.  And performance work must be profiled
+per workload: two of this week's optimizations targeted the wrong
+stage --- a windowed grid sweep that missed a far-left peak, and a
+contour saving that helped columns other than the ones actually
+being built --- and in both cases the profiler, not the reasoning,
+located the real cost.
+
+\section*{Language and hardware}
+
+Everything is Python, and the measurements of 31 July changed what a
+rewrite would buy.  The heavy inner loops already execute inside
+NumPy's compiled kernels, and the two rounds of restructuring
+described under T2 and T3 (vectorized derivative, curvature and peak
+values; contiguous per-level matrices addressed by index gathers)
+removed most of the remaining interpreter overhead --- a factor
+$4.8$ on the evaluation phase at unchanged output.  What is left in
+Python is control flow (which peak, which bracket), not arithmetic.
+
+\emph{Native code.}  A compiled extension (Cython, Rust, or
+just-in-time compilation) would still pay in two places: the T1
+column builder, whose inner loop is complex $\ln\Gamma$ over
+quadrature lattices, and the per-peak bracketed solves of T2, which
+remain scalar.  Realistic expectation after the savings already
+taken: $2$--$4\times$ on the builder, a few $\times$ on
+refinement-heavy workloads.  Two or three kernels would capture
+nearly all of it; a wholesale rewrite is not justified.
+
+\emph{Graphics processors.}  The workload divides sharply.  What
+maps well: the per-level evaluation, whose core is a weighted sum of
+table columns for thousands of profiles --- a batched
+gather-and-accumulate over $\sim\!10^4$-point grids, bandwidth-bound
+and therefore suited to a device with roughly ten times the memory
+bandwidth of a server socket; the peak search, once the bracketed
+solves are replaced by fixed-iteration bisection over all peaks at
+once (the substitution already used inside the table builder); and
+the T6/T7 passes over positions, which are plain matrix products.
+What does not map: counting, the tree recursions, and the
+per-checkpoint bookkeeping.  Estimated $5$--$20\times$ over a
+$64$-core node for the evaluation phase, with the usual caveat that
+irregular per-profile work erodes such figures.
+
+Two hard constraints.  Precision: the accuracy claims of T1 rest on
+$64$-bit arithmetic, and consumer cards run double precision at a
+sixty-fourth of their single-precision rate --- on those this
+workload would be \emph{slower} than the CPU.  Data-centre cards
+(A100/H100-class, double precision at half rate) are required;
+Apple's integrated GPUs support no double precision at all and are
+excluded.  Effort: most of the gain comes from batching the work
+into contiguous array operations, which is exactly the restructuring
+already carried out for the CPU --- so a port is now incremental
+rather than a rewrite, and the CPU version keeps the benefit if no
+device is available.  The natural place to spend that effort is
+enwik9, not text8.
 
 \section*{A plan for enwik9}
 
@@ -717,9 +782,12 @@ bring it under one node-day.
 \end{enumerate}
 
 Order of work, then: (1)~counting --- done; (2)~sparse
-normalization --- done; (3)~the native kernel for the table builder
-and (4)~remembered peaks --- comfort.  Both prerequisites are in
-place; nothing on this list requires more than the one node
-described above.
+normalization --- done; (3)~remembered peaks and integrand updates
+--- comfort; (4)~a GPU port of the evaluation phase, whose batched
+form now exists --- worthwhile only at this scale, and only on
+double-precision hardware.  Both prerequisites are in place; nothing
+on this list requires more than the one node described above, and a
+device would shorten the sequential runs from node-days towards
+node-hours.
 
 \end{document}

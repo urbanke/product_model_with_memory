@@ -235,8 +235,7 @@ def _provision_level_rows(prov, L, rs) -> np.ndarray:
     provider's u grid."""
 
     if prov["source"] == "universal":
-        return np.stack([prov["ut"].log_phi(L, r, prov["u_grid"])
-                         for r in rs])
+        return prov["ut"].log_phi_matrix(L, rs, prov["u_grid"])
     from product_model_with_memory.fast_tables import _cache_file
 
     G = len(prov["u_grid"])
@@ -685,8 +684,8 @@ def _fill_level_chunk(shm_name, shape, L: int, i0: int, i1: int):
     try:
         M = np.ndarray(shape, dtype=np.float64, buffer=shm.buf)
         ut = _eval_store()
-        for i in range(i0, i1):
-            M[i] = ut.log_phi(L, _EVAL_RS[i], _EVAL_UGRID)
+        if i1 > i0:
+            M[i0:i1] = ut.log_phi_matrix(L, _EVAL_RS[i0:i1], _EVAL_UGRID)
         return i1 - i0
     finally:
         shm.close()

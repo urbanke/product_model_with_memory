@@ -513,6 +513,14 @@ def series_column(r: float, L: int, u) -> tuple[np.ndarray, np.ndarray]:
         smallest = np.where(keep, term_log, smallest)
         prev = np.where(keep, term_log,
                         prev if prev is not None else term_log)
+        # Early exit: for an alternating series with decreasing terms
+        # the truncation error is bounded by the first omitted term, so
+        # once EVERY point's next term is below e^-45 (relative to a
+        # total of order one) nothing further can matter.  Far to the
+        # left one or two terms suffice, and running the full 60 was
+        # the dominant cost of level provisioning (measured 31 July).
+        if np.max(term_log) < -45.0:
+            break
     cert = np.exp(smallest) / np.maximum(total, 1e-300)
     return lead + np.log(np.maximum(total, 1e-300)), cert
 

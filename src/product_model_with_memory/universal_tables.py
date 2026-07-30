@@ -374,6 +374,79 @@ class UniversalTables:
                 out[j] = log_phi_contour(r, L, float(u[j]))
         return out
 
+    def log_phi_matrix(self, L: int, r_values, u) -> np.ndarray:
+        """Many columns of one level served onto the SAME query grid,
+        as a contiguous (len(r_values), len(u)) matrix.
+
+        All stored columns live on the one master grid and differ only
+        by an integer start offset, so the degree-7 stencil weights
+        are identical for every column: computed once here instead of
+        per column.  (Measured 31 July: per-column weight construction
+        was ~90% of level provisioning, which itself dominated a
+        refresh --- 7.9 s per level against 0.6 s of evaluation.)
+        """
+
+        rs = [int(r) for r in r_values]
+        u = np.asarray(u, dtype=np.float64)
+        n = len(u)
+        out = np.empty((len(rs), n))
+
+        # position of each query point in ANY column's local indexing:
+        # s = i0 - t with t = (U_MAX - u) / H, so the fractional part
+        # (hence the weights) is column-independent.
+        t = (U_MAX - u) / H
+        k0 = np.floor(-t).astype(np.int64) - (_STENCIL // 2 - 1)
+        x = (-t) - k0                       # offset within the window
+        dx = x[:, None] - np.arange(_STENCIL)[None, :]
+        exact = np.abs(dx) < 1e-12
+        w = _BARY_W[None, :] / np.where(exact, 1.0, dx)
+        w_sum = w.sum(axis=1)
+        hit = exact.any(axis=1)
+        hit_col = np.argmax(exact, axis=1)
+        offs = np.arange(_STENCIL)[None, :]
+
+        for m, r in enumerate(rs):
+            i0, vals = self.column(L, r)
+            grid0 = U_MAX - H * i0
+            inside = (u >= grid0) & (u <= U_MAX)
+            row = np.empty(n)
+            if inside.any():
+                start_raw = i0 + k0[inside]
+                lim = len(vals) - _STENCIL
+                plain = (start_raw >= 0) & (start_raw <= lim)
+                idx_in = np.flatnonzero(inside)
+                if plain.any():
+                    st = start_raw[plain]
+                    window = vals[st[:, None] + offs]
+                    ww = w[inside][plain]
+                    v = (ww * window).sum(axis=1) / w_sum[inside][plain]
+                    h = hit[inside][plain]
+                    if h.any():
+                        v[h] = window[np.arange(len(window)),
+                                      hit_col[inside][plain]][h]
+                    row[idx_in[plain]] = v
+                if (~plain).any():
+                    # the few edge points where the stencil is clamped:
+                    # weights differ there, so use the per-point path
+                    edge = idx_in[~plain]
+                    row[edge] = _interp_column(
+                        _grid_points(i0), vals, u[edge])
+            left = u < grid0
+            if left.any():
+                sv, cert = series_column(r, L, u[left])
+                if np.any(cert > 1e-10):
+                    raise RuntimeError(
+                        f"series not certified left of column (L={L}, "
+                        f"r={r}); store margin violated")
+                row[left] = sv
+            right = u > U_MAX
+            for j in np.flatnonzero(right):
+                v, cert = log_phi_right_series(r, L, float(u[j]))
+                row[j] = v if cert < 1e-10 else log_phi_contour(
+                    r, L, float(u[j]))
+            out[m] = row
+        return out
+
     def level_tables(self, L: int, r_values, u_grid):
         """Scan-compatible ProductMomentTables for one level, served
         from the store on an arbitrary u grid (the production scan's
@@ -391,9 +464,7 @@ class UniversalTables:
         rs = tuple(sorted(int(r) for r in set(r_values)))
         u = np.asarray(u_grid, dtype=np.float64)
         self.ensure_columns(L, rs)
-        M = np.empty((len(rs), len(u)))
-        for i, r in enumerate(rs):
-            M[i] = self.log_phi(L, r, u)
+        M = self.log_phi_matrix(L, rs, u)
         return ProductMomentTables.from_matrix(
             max_L=max(L, 1), L=L, r_values=rs, u_grid=u, matrix=M)
 

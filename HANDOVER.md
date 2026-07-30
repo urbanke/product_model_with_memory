@@ -1560,3 +1560,17 @@ BITWISE identical to the independent plain scan (0.00e+00). Full
 battery passes. The contiguous layout is the prerequisite for the
 A100/H100 port (fp64 needed; Apple GPUs are fp32-only, so the Mac
 GPU cannot be used).
+
+## 2026-07-31 (cont): profiled the REAL refresh -- provisioning won
+Measured per level (40 busy V=256 rows, 609 columns, run grid 20k):
+  column reads 0.05s | interpolation 2.1s | far-left SERIES ~3.8s
+  => provisioning 7.9s vs family evaluation 0.63s (ratio 12:1).
+So after the morning batching, the dominant cost was preparing each
+level, not evaluating rows. Two exact fixes: (1) series_column now
+exits once every point s next term is below e^-45 (far left needs 1-2
+terms, it was always running 60); (2) new log_phi_matrix serves many
+columns onto one grid sharing the degree-7 stencil weights (all
+columns lie on the same master grid, differing by an integer offset)
+with a per-point fallback at clamped edges. Net: 5.97s -> 1.73s
+(3.4x) for the same 609 columns; agreement 2.2e-11 nats (fp
+reassociation, ~1e-16 relative). Full battery passes.
