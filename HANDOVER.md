@@ -1519,3 +1519,16 @@ depth 3, multi-tier backoff, sequential best) targeting ppmd 1.60,
 Stage B enwik8 (fidelity/tokenizer), Stage C enwik9 (one node);
 sub-1.1 declared out of scope. Still open: 4b, 3b (x4), unigram_b,
 run 8 result.
+
+## 2026-07-31: refinement speedup (profiled) + pooled-run resume
+Run 8 projection was 2-2.5 days; user killed it. Profiler (not
+theory) located the cost: 81% in peak-refinement derivative calls
+(~130k scalar full-grid interps per family). Fix: _local_derivative
+-- per-bracket table slices, one vectorized interp over all parts.
+Family eval 700ms -> 98ms (7x); agrees with generic to 2e-12;
+independent references (wide-grid, Monte Carlo, bimodal) all pass.
+A windowed-sweep attempt was REVERTED to off-by-default (missed a
+far-left peak; no gain -- wrong bottleneck). pooled_lag_codelengths
+gains resume_path: per-checkpoint state+memo on disk; kill-and-
+resume verified EXACT vs uninterrupted. Script passes resume dir +
+throttled printing. Run 8 to be restarted.

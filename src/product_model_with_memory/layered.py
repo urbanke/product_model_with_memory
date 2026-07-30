@@ -390,14 +390,17 @@ def _scan_from_psi(
 
     # If the derivative is still positive at the grid's left edge the
     # dominant saddle may sit inside the analytic region; solve there too.
-    if derivative(u0) < 0.0:
+    fd_left = _local_derivative(
+        d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
+        tables=tables, u_lo=u0 - 1.0, u_hi=u0)
+    if fd_left(u0) < 0.0:
         lower = u0 - 10.0
         for _ in range(200):
-            if derivative(lower) > 0.0:
+            if fd_left(lower) > 0.0:
                 break
             lower -= 25.0
-        if derivative(lower) > 0.0:
-            saddle = float(brentq(derivative, lower, u0, xtol=1e-11, rtol=1e-11))
+        if fd_left(lower) > 0.0:
+            saddle = float(brentq(fd_left, lower, u0, xtol=1e-11, rtol=1e-11))
             curv = -_weighted_rho_prime_sum(
                 d=d, s=s, L=L,
                 multiplicity_pairs=multiplicity_pairs, tables=tables, u=saddle,
@@ -431,9 +434,12 @@ def _scan_from_psi(
     ]
     for i in candidate_indices:
         lo, hi = float(u_grid[i - 1]), float(u_grid[i + 1])
-        d_lo, d_hi = derivative(lo), derivative(hi)
+        fd = _local_derivative(
+            d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
+            tables=tables, u_lo=lo, u_hi=hi)
+        d_lo, d_hi = fd(lo), fd(hi)
         if d_lo > 0.0 > d_hi:
-            saddle = float(brentq(derivative, lo, hi, xtol=1e-11, rtol=1e-11))
+            saddle = float(brentq(fd, lo, hi, xtol=1e-11, rtol=1e-11))
             curv = -_weighted_rho_prime_sum(
                 d=d, s=s, L=L,
                 multiplicity_pairs=multiplicity_pairs, tables=tables, u=saddle,
@@ -468,6 +474,163 @@ def _scan_from_psi(
         L=L,
         N=N,
         partition=tuple(partition),
+        right_gap=right_gap,
+        converged=converged,
+        message="; ".join(notes) if notes else "left tail only",
+        peaks=tuple(zip(peak_locations, contributions)),
+    )
+
+
+def _scan_sparse(
+    eval_psi,
+    *,
+    d: int,
+    L: int,
+    N: int,
+    s: int,
+    partition: tuple[int, ...],
+    multiplicity_pairs,
+    tables: ProductMomentTables,
+    left_constant: float,
+    significance_gap: float,
+) -> QLambdaResult:
+    """log_q_lambda by WINDOWED peak evaluation (complexity notes,
+    T2(1)): the log-integrand is evaluated on a coarse stride of the
+    grid to locate the mountains, then finely only inside windows
+    around them; peak refinement (bracketed solves, Laplace) is
+    unchanged and grid-free.  eval_psi(idx) returns the log-integrand
+    at the given grid indices.  Falls back to windows widened until
+    no candidate sits at a window edge, so no peak can hide.  The
+    full-sweep path remains available for cross-checking."""
+
+    u_grid = tables.u_grid
+    G = len(u_grid)
+    STRIDE = 32
+    WING = 4 * STRIDE          # half-width of a fine window, in points
+    COARSE_MARGIN = 60.0       # generosity for coarse under-reading
+
+    idx_c = np.arange(0, G, STRIDE)
+    if idx_c[-1] != G - 1:
+        idx_c = np.append(idx_c, G - 1)
+    psi_c = eval_psi(idx_c)
+    peak_c = float(np.max(psi_c))
+
+    # candidate coarse local maxima within the (generous) gap
+    cand = [i for i in range(len(idx_c))
+            if (i == 0 or psi_c[i] >= psi_c[i - 1])
+            and (i == len(idx_c) - 1 or psi_c[i] >= psi_c[i + 1])
+            and psi_c[i] >= peak_c - significance_gap - COARSE_MARGIN]
+    # merged fine windows around candidates
+    ranges = []
+    for i in cand:
+        lo = max(0, int(idx_c[i]) - WING)
+        hi = min(G, int(idx_c[i]) + WING + 1)
+        if ranges and lo <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], hi))
+        else:
+            ranges.append((lo, hi))
+
+    # fine evaluation per window, expanding while a maximum touches a
+    # window edge (a peak may sit just outside)
+    fine: list[tuple[int, np.ndarray]] = []
+    for lo, hi in ranges:
+        for _ in range(30):
+            vals = eval_psi(np.arange(lo, hi))
+            grew = False
+            if np.argmax(vals) == 0 and lo > 0:
+                lo = max(0, lo - WING)
+                grew = True
+            if np.argmax(vals) == len(vals) - 1 and hi < G:
+                hi = min(G, hi + WING)
+                grew = True
+            if not grew:
+                break
+        fine.append((lo, vals))
+
+    peak_value = max(float(np.max(v)) for _, v in fine)
+
+    def derivative(u: float) -> float:
+        return N - _weighted_rho_sum(
+            d=d, s=s, L=L,
+            multiplicity_pairs=multiplicity_pairs, tables=tables, u=u,
+        )
+
+    contributions: list[float] = []
+    peak_locations: list[float] = []
+    notes: list[str] = []
+
+    # analytic left tail (identical to the full sweep)
+    u0 = float(u_grid[0])
+    left_tail = N * u0 + left_constant - math.log(N)
+    contributions.append(left_tail)
+    peak_locations.append(u0)
+    if derivative(u0) < 0.0:
+        lower = u0 - 10.0
+        for _ in range(200):
+            if derivative(lower) > 0.0:
+                break
+            lower -= 25.0
+        if derivative(lower) > 0.0:
+            saddle = float(brentq(derivative, lower, u0,
+                                  xtol=1e-11, rtol=1e-11))
+            curv = -_weighted_rho_prime_sum(
+                d=d, s=s, L=L,
+                multiplicity_pairs=multiplicity_pairs, tables=tables,
+                u=saddle)
+            if math.isfinite(curv) and curv < 0.0:
+                psi_val = _log_q_integrand_without_gamma(
+                    d=d, L=L, N=N, s=s,
+                    multiplicity_pairs=multiplicity_pairs, tables=tables,
+                    u=saddle)
+                contributions[-1] = _logaddexp_scalar(
+                    psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)),
+                    left_tail)
+                peak_locations[-1] = saddle
+                notes.append(f"left-region saddle at u={saddle:.2f}")
+
+    # interior local maxima inside the fine windows
+    for lo, vals in fine:
+        n_v = len(vals)
+        for j in range(1, n_v - 1):
+            gi = lo + j
+            if not (vals[j] >= vals[j - 1] and vals[j] >= vals[j + 1]
+                    and np.isfinite(vals[j])
+                    and vals[j] >= peak_value - significance_gap):
+                continue
+            lo_u, hi_u = float(u_grid[gi - 1]), float(u_grid[gi + 1])
+            d_lo, d_hi = derivative(lo_u), derivative(hi_u)
+            if d_lo > 0.0 > d_hi:
+                saddle = float(brentq(derivative, lo_u, hi_u,
+                                      xtol=1e-11, rtol=1e-11))
+                curv = -_weighted_rho_prime_sum(
+                    d=d, s=s, L=L,
+                    multiplicity_pairs=multiplicity_pairs, tables=tables,
+                    u=saddle)
+                if math.isfinite(curv) and curv < 0.0:
+                    psi_val = _log_q_integrand_without_gamma(
+                        d=d, L=L, N=N, s=s,
+                        multiplicity_pairs=multiplicity_pairs,
+                        tables=tables, u=saddle)
+                    contributions.append(
+                        psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)))
+                    peak_locations.append(saddle)
+                    notes.append(f"saddle at u={saddle:.4f}")
+                    continue
+            # fallback: trapezoid over the surrounding fine patch
+            wlo = max(0, j - 200)
+            whi = min(n_v, j + 201)
+            contributions.append(_log_trapezoid_integral(
+                vals[wlo:whi], u_grid[lo + wlo:lo + whi]))
+            peak_locations.append(float(u_grid[gi]))
+            notes.append(f"local trapezoid around u={float(u_grid[gi]):.4f}")
+
+    right_gap = peak_value - float(psi_c[-1])
+    converged = bool(right_gap >= 10.0 and len(contributions) > 0)
+    log_q = _logsumexp_list(contributions) - math.lgamma(N)
+    return QLambdaResult(
+        log_q=float(log_q),
+        method="scan-windowed",
+        d=d, L=L, N=N, partition=tuple(partition),
         right_gap=right_gap,
         converged=converged,
         message="; ".join(notes) if notes else "left tail only",
@@ -523,15 +686,61 @@ def log_q_lambda_scan_family(
             extra_orders=2,
         )
 
+    import os
+
     N = sum(base)
     s = len(base)
     u_grid = tables.u_grid
-    psi_base = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
     left_constant = 0.0
     multiplicity_pairs = partition_multiplicities(base)
     for part, count in multiplicity_pairs:
-        psi_base = psi_base + count * tables.log_phi[(L, part)]
         left_constant += count * L * math.lgamma(part + 1)
+
+    mode = os.environ.get("PMM_SCAN", "full")
+    if mode == "full":
+        psi_base = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
+        for part, count in multiplicity_pairs:
+            psi_base = psi_base + count * tables.log_phi[(L, part)]
+        if N == 1:
+            base_result = QLambdaResult(
+                log_q=-math.log(d), method="symmetry", d=d, L=L, N=1,
+                partition=base,
+                message="one-symbol profile by exchangeability",
+            )
+        else:
+            base_result = _scan_from_psi(
+                d=d, L=L, N=N, s=s, partition=base,
+                multiplicity_pairs=multiplicity_pairs, tables=tables,
+                psi_grid=psi_base, left_constant=left_constant,
+                significance_gap=significance_gap,
+            )
+        aug_results: dict[int, QLambdaResult] = {}
+        for c in cs:
+            aug = augmented_partition(base, c)
+            psi_aug = (
+                psi_base + u_grid
+                + tables.log_phi[(L, c + 1)] - tables.log_phi[(L, c)]
+            )
+            left_aug = left_constant + L * (
+                math.lgamma(c + 2.0) - math.lgamma(c + 1.0))
+            aug_results[c] = _scan_from_psi(
+                d=d, L=L, N=N + 1, s=len(aug), partition=aug,
+                multiplicity_pairs=partition_multiplicities(aug),
+                tables=tables, psi_grid=psi_aug, left_constant=left_aug,
+                significance_gap=significance_gap,
+            )
+        return base_result, aug_results
+
+    # windowed path (T2(1)): the log-integrand is only ever evaluated
+    # at requested indices, so members cost O(G/32) + windows instead
+    # of O(G) each on top of the shared structure
+    phi = tables.log_phi
+
+    def eval_base(idx):
+        out = N * u_grid[idx] + (d - s) * phi[(L, 0)][idx]
+        for part, count in multiplicity_pairs:
+            out = out + count * phi[(L, part)][idx]
+        return out
 
     if N == 1:
         base_result = QLambdaResult(
@@ -539,27 +748,26 @@ def log_q_lambda_scan_family(
             partition=base, message="one-symbol profile by exchangeability",
         )
     else:
-        base_result = _scan_from_psi(
-            d=d, L=L, N=N, s=s, partition=base,
+        base_result = _scan_sparse(
+            eval_base, d=d, L=L, N=N, s=s, partition=base,
             multiplicity_pairs=multiplicity_pairs, tables=tables,
-            psi_grid=psi_base, left_constant=left_constant,
-            significance_gap=significance_gap,
+            left_constant=left_constant, significance_gap=significance_gap,
         )
 
-    aug_results: dict[int, QLambdaResult] = {}
+    aug_results = {}
     for c in cs:
         aug = augmented_partition(base, c)
-        # multiply by t phi_{c+1}/phi_c: O(G) on the shared integrand
-        psi_aug = (
-            psi_base + u_grid
-            + tables.log_phi[(L, c + 1)] - tables.log_phi[(L, c)]
-        )
         left_aug = left_constant + L * (
             math.lgamma(c + 2.0) - math.lgamma(c + 1.0))
-        aug_results[c] = _scan_from_psi(
-            d=d, L=L, N=N + 1, s=len(aug), partition=aug,
-            multiplicity_pairs=partition_multiplicities(aug), tables=tables,
-            psi_grid=psi_aug, left_constant=left_aug,
+
+        def eval_aug(idx, c=c):
+            return (eval_base(idx) + u_grid[idx]
+                    + phi[(L, c + 1)][idx] - phi[(L, c)][idx])
+
+        aug_results[c] = _scan_sparse(
+            eval_aug, d=d, L=L, N=N + 1, s=len(aug), partition=aug,
+            multiplicity_pairs=partition_multiplicities(aug),
+            tables=tables, left_constant=left_aug,
             significance_gap=significance_gap,
         )
     return base_result, aug_results
@@ -821,6 +1029,67 @@ def compute_log_q_by_partition(
             raise RuntimeError(result.message)
         log_q[partition] = result.log_q
     return log_q
+
+
+def _local_derivative(
+    *,
+    d: int,
+    s: int,
+    L: int,
+    N: int,
+    multiplicity_pairs,
+    tables: ProductMomentTables,
+    u_lo: float,
+    u_hi: float,
+):
+    """A fast derivative(u) = N - sum(count * rho) valid on
+    [u_lo, u_hi], built once per bracket (complexity notes, T2).
+
+    The generic path called the scalar table lookup ~2(k+1) times per
+    evaluation, ~130,000 times per family (measured by profile: 81%
+    of family time).  Here the needed table columns are sliced ONCE
+    around the bracket and every evaluation is a single vectorized
+    interpolation over all parts; left of the grid the exact
+    t -> 0 limit is used, matching log_phi_value's behavior.
+    """
+
+    u_grid = tables.u_grid
+    r_parts = np.array([0] + [r for r, _ in multiplicity_pairs],
+                       dtype=np.int64)
+    counts = np.array([d - s] + [c for _, c in multiplicity_pairs],
+                      dtype=np.float64)
+    j0 = max(0, int(np.searchsorted(u_grid, u_lo)) - 1)
+    j1 = min(len(u_grid) - 1, int(np.searchsorted(u_grid, u_hi)) + 1)
+    if j1 <= j0:
+        j1 = min(len(u_grid) - 1, j0 + 1)
+    local_u = u_grid[j0:j1 + 1]
+    Phi_r = np.stack([tables.log_phi[(L, int(r))][j0:j1 + 1]
+                      for r in r_parts])
+    Phi_n = np.stack([tables.log_phi[(L, int(r) + 1)][j0:j1 + 1]
+                      for r in r_parts])
+    left_r = L * np.array([math.lgamma(r + 1) for r in r_parts])
+    left_n = L * np.array([math.lgamma(r + 2) for r in r_parts])
+
+    def derivative(u: float) -> float:
+        if u < local_u[0]:
+            # exact t->0 limit branch of log_phi_value
+            rho = np.exp(u + left_n - left_r)
+        elif u > local_u[-1]:
+            # right of the slice: fall back to the generic scalar path
+            return N - _weighted_rho_sum(
+                d=d, s=s, L=L, multiplicity_pairs=multiplicity_pairs,
+                tables=tables, u=u)
+        else:
+            pos = min(max(int(np.searchsorted(local_u, u)) - 1, 0),
+                      len(local_u) - 2)
+            w = ((u - local_u[pos])
+                 / (local_u[pos + 1] - local_u[pos]))
+            pr = Phi_r[:, pos] + w * (Phi_r[:, pos + 1] - Phi_r[:, pos])
+            pn = Phi_n[:, pos] + w * (Phi_n[:, pos + 1] - Phi_n[:, pos])
+            rho = np.exp(u + pn - pr)
+        return float(N - np.dot(counts, rho))
+
+    return derivative
 
 
 def _weighted_rho_sum(

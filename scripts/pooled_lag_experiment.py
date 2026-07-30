@@ -100,6 +100,7 @@ def main() -> None:
     cache_dir = args.cache_dir or (out_dir / "cache")
     result = pooled_lag_codelengths(
         ids,
+        resume_path=out_dir / "resume",
         vocabulary_size=V,
         lags=lags,
         checkpoints=args.checkpoints,

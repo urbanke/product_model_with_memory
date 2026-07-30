@@ -462,6 +462,7 @@ def pooled_lag_codelengths(
     jobs: int = 1,
     progress=None,
     eval_mode: str = "auto",
+    resume_path=None,
 ) -> PooledLagResult:
     """Evaluate mixture and tempered-product pooling over the corpus.
 
@@ -474,7 +475,13 @@ def pooled_lag_codelengths(
     layered expert: "dense" (materialize V x V tables; the original
     path), "sparse" (T7: per-row supports plus one shared unseen
     value; identical numbers, cost independent of the alphabet size),
-    or "auto" (sparse for V > 4096)."""
+    or "auto" (sparse for V > 4096).
+
+    resume_path (layered expert only): a directory where the run
+    saves its state after every checkpoint --- accumulated bits and
+    the profile memo --- so a killed run RESUMES at the next
+    checkpoint instead of starting over.  The saved state is bound to
+    a fingerprint of the inputs; a mismatch starts fresh."""
 
     ids = np.asarray(ids, dtype=np.int64)
     V = int(vocabulary_size)
@@ -523,6 +530,52 @@ def pooled_lag_codelengths(
     elif expert_model != "counts":
         raise ValueError(f"unknown expert_model: {expert_model!r}")
 
+    ck_done = -1
+    resume_dir = None
+    if resume_path is not None and expert_model == "layered":
+        import json as _json
+        import pickle
+        from pathlib import Path as _Path
+
+        resume_dir = _Path(resume_path)
+        resume_dir.mkdir(parents=True, exist_ok=True)
+        fingerprint = [V, list(lags), checkpoints, n,
+                       int(ids[:1000].sum()), int(ids[-1000:].sum()),
+                       len(mix_names), len(prod_names)]
+        state_f = resume_dir / "state.json"
+        if state_f.exists():
+            state = _json.loads(state_f.read_text())
+            if state.get("fingerprint") == fingerprint:
+                ck_done = int(state["ck_done"])
+                mix_bits[:] = np.array(state["mix_bits"])
+                prod_bits[:] = np.array(state["prod_bits"])
+                for f in sorted(resume_dir.glob("memo_*.pkl")):
+                    with open(f, "rb") as fh:
+                        builder.memo.update(pickle.load(fh))
+                if progress is not None:
+                    progress(("resume", ck_done + 1, checkpoints), None)
+            else:
+                for f in sorted(resume_dir.glob("memo_*.pkl")):
+                    f.unlink()
+
+    def _save_resume(ck: int, known_before: set) -> None:
+        if resume_dir is None:
+            return
+        import json as _json
+        import pickle
+
+        new_entries = {k: v for k, v in builder.memo.items()
+                       if k not in known_before}
+        if new_entries:
+            with open(resume_dir / f"memo_{ck:03d}.pkl", "wb") as fh:
+                pickle.dump(new_entries, fh, protocol=4)
+        tmp = resume_dir / "state.json.tmp"
+        tmp.write_text(_json.dumps({
+            "fingerprint": fingerprint, "ck_done": ck,
+            "mix_bits": list(mix_bits), "prod_bits": list(prod_bits),
+        }))
+        tmp.replace(resume_dir / "state.json")
+
     if eval_mode not in ("auto", "dense", "sparse"):
         raise ValueError(f"unknown eval_mode {eval_mode!r}")
     sparse = (eval_mode == "sparse"
@@ -533,6 +586,11 @@ def pooled_lag_codelengths(
     bounds = np.linspace(start, n, checkpoints + 1).astype(int)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         for ck in range(checkpoints):
+            if ck <= ck_done:
+                continue
+            known_before = set()
+            if resume_dir is not None:
+                known_before = set(builder.memo)
             lo, hi = int(bounds[ck]), int(bounds[ck + 1])
             if hi <= lo:
                 continue
@@ -577,6 +635,7 @@ def pooled_lag_codelengths(
                         mix_w, sd, tgt)
                     mix_bits -= mix_vals
                     prod_bits -= prod_vals
+                _save_resume(ck, known_before)
                 if progress is not None:
                     progress(("checkpoint", ck + 1, checkpoints), None)
                 continue
@@ -613,6 +672,7 @@ def pooled_lag_codelengths(
                     ):
                         prod_bits[k] -= val
                     del G
+            _save_resume(ck, known_before)
             if progress is not None:
                 progress(("checkpoint", ck + 1, checkpoints), None)
 
