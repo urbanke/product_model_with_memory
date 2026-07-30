@@ -148,7 +148,8 @@ def _interp_column(grid: np.ndarray, vals: np.ndarray,
 class UniversalTables:
     """Grow-on-demand universal store of ln phi columns."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, read_only: bool = False):
+        self.read_only = read_only
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.path / "manifest.json"
@@ -198,6 +199,16 @@ class UniversalTables:
         else:
             index = {}
         size = data_f.stat().st_size // 8 if data_f.exists() else 0
+        if index:
+            need = max(off + n for off, n in index.values())
+            if size < need:
+                raise RuntimeError(
+                    f"universal table level {L} is INCOMPLETE: "
+                    f"{data_f.name} holds {size} values but the index "
+                    f"claims {need} (a partial copy or an interrupted "
+                    f"build).  Re-transfer or delete level_{L:02d}.* and "
+                    "let it rebuild."
+                )
         level = {"index": index, "size": size, "dirty": False}
         self._levels[L] = level
         return level
@@ -208,7 +219,18 @@ class UniversalTables:
         data_f, _ = self._level_files(L)
         with open(data_f, "rb") as f:
             f.seek(off * 8)
-            return np.frombuffer(f.read(n * 8), dtype=np.float64).copy()
+            raw = f.read(n * 8)
+        if len(raw) != n * 8:
+            raise RuntimeError(
+                f"universal table: column (L={L}, r={r}) is short "
+                f"({len(raw) // 8} of {n} values) --- {data_f.name} is "
+                "truncated (partial copy or interrupted build)")
+        vals = np.frombuffer(raw, dtype=np.float64).copy()
+        if not np.all(np.isfinite(vals)):
+            raise RuntimeError(
+                f"universal table: column (L={L}, r={r}) contains "
+                "non-finite values --- the store is damaged")
+        return vals
 
     def _append_column(self, L: int, r: int, values: np.ndarray,
                        flush_index: bool = True) -> None:
@@ -251,6 +273,12 @@ class UniversalTables:
         level = self._load_level(L)
         if r in level["index"]:
             return column_start_index(L, r), self._read_column(L, r)
+        if self.read_only:
+            raise RuntimeError(
+                f"universal table opened read-only is missing column "
+                f"(L={L}, r={r}); the parent process must build all "
+                "required columns before workers read them (concurrent "
+                "appends would corrupt the level file)")
         values = self._build_column(L, r)
         self._append_column(L, r, values)
         return column_start_index(L, r), values
@@ -415,6 +443,23 @@ class UniversalTables:
         self.manifest["certifications"].append(result)
         self._save_manifest()
         return result
+
+
+def verify_store(path=None) -> dict:
+    """Check every level file for index/data consistency.  Returns a
+    summary; raises on the first inconsistent level.  Run this after
+    copying a store between machines."""
+
+    ut = ensure_universal_tables(path)
+    levels, columns, values = 0, 0, 0
+    for p in sorted(ut.path.glob("level_*.index.json")):
+        L = int(p.name.split("_")[1].split(".")[0])
+        lv = ut._load_level(L)          # raises if inconsistent
+        levels += 1
+        columns += len(lv["index"])
+        values += lv["size"]
+    return {"path": str(ut.path), "levels": levels, "columns": columns,
+            "values": values, "gigabytes": round(values * 8 / 1e9, 2)}
 
 
 def _build_column_values(L: int, r: int) -> np.ndarray:

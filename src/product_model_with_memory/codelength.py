@@ -676,7 +676,7 @@ def _eval_store():
     if _EVAL_STORE is None:
         from product_model_with_memory.universal_tables import UniversalTables
 
-        _EVAL_STORE = UniversalTables(_EVAL_STORE_PATH)
+        _EVAL_STORE = UniversalTables(_EVAL_STORE_PATH, read_only=True)
     return _EVAL_STORE
 
 

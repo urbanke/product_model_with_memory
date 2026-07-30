@@ -1532,3 +1532,16 @@ far-left peak; no gain -- wrong bottleneck). pooled_lag_codelengths
 gains resume_path: per-checkpoint state+memo on disk; kill-and-
 resume verified EXACT vs uninterrupted. Script passes resume dir +
 throttled printing. Run 8 to be restarted.
+
+## 2026-07-31: cluster job 2177 failed - store integrity
+Symptom: RuntimeError "left tail only" (converged=False) from a
+worker at L=6. Reproduced the exact profile in the cloud with a
+healthy store: base AND all 59 family members converge (saddle at
+u=3.24). Laptop with locally-built store passed the same profiles
+(now at checkpoint 7/32). Conclusion: the cluster store (rsync-ed,
+likely while the job started) served truncated/garbage columns ->
+monotone integrand -> no interior peak. Hardening added: index-vs-
+data size check at level load, short/non-finite column read raises,
+workers open the store READ-ONLY (a missing column now raises
+instead of concurrent-appending and corrupting the file), and
+verify_store() for checking a transferred store in one line.

@@ -16,3 +16,4 @@ slurm-*.out
 ._*
 paper/*.pdf
 tables/
+output/
