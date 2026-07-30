@@ -322,6 +322,102 @@ def log_phi_right_series(
     return lam0 + math.log(total), certificate
 
 
+def right_series_column(
+    r: float, L: int, u, *, max_j: int = 400
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized large-t expansion: log_phi_right_series for a whole
+    array of u at once, with per-point certificates.
+
+    The u dependence enters only through the linear Taylor coefficient
+    (c_1 contains -u) and the power t^{-(r+1+j)}, so the coefficient
+    recursion runs on arrays over u; everything else is shared.  (The
+    scalar point-by-point loop was measured July 30 to consume 76-99%
+    of deep-column build time; this replaces it.)
+    """
+
+    u = np.atleast_1d(np.asarray(u, dtype=np.float64))
+    m_pts = len(u)
+    n = L - 1
+    ks = np.arange(2, n + 1)
+    zeta_k = zeta(ks, 1.0) if n >= 2 else np.empty(0)
+    fact = np.cumprod(np.concatenate([[1.0, 1.0],
+                                      np.arange(2.0, n + 1.0)])) \
+        if n >= 2 else None
+
+    harm = 0.0
+    harm_k = np.zeros(len(ks))
+    total = np.zeros(m_pts)
+    total_abs = np.zeros(m_pts)
+    lam0 = np.full(m_pts, np.nan)
+    cert_coeff = np.zeros(m_pts)
+    prev_abs = np.full(m_pts, np.nan)
+    ratio = np.ones(m_pts)
+    dead = np.zeros(m_pts, dtype=bool)   # hopeless cancellation
+    done = np.zeros(m_pts, dtype=bool)
+    for j in range(max_j):
+        a = r + 1.0 + j
+        if j > 0:
+            harm += 1.0 / j
+            if n >= 2:
+                harm_k += (1.0 / j) ** ks
+        c_hi = (np.array([float(polygamma(k - 1, a)) for k in ks]) / fact[ks]
+                + L * (zeta_k + (-1.0) ** ks * harm_k) / ks) if n >= 2 \
+            else np.empty(0)
+        c1 = float(polygamma(0, a)) + L * (_EULER_GAMMA - harm) - u  # (m,)
+        # vectorized exp-series recursion: P[q] over u, q = 0..n
+        P = np.zeros((n + 1, m_pts))
+        Pa = np.zeros((n + 1, m_pts))
+        P[0] = Pa[0] = 1.0
+        abs_c1 = np.abs(c1)
+        for q in range(1, n + 1):
+            acc = c1 * P[q - 1]
+            acc_a = abs_c1 * Pa[q - 1]
+            if q >= 2:
+                kk = np.arange(2, q + 1)
+                w = kk * c_hi[:q - 1]
+                acc = acc + w @ P[q - 2::-1][:len(w)]
+                acc_a = acc_a + np.abs(w) @ Pa[q - 2::-1][:len(w)]
+            P[q] = acc / q
+            Pa[q] = acc_a / q
+        coeff = P[n]
+        nz = coeff != 0.0
+        cert_coeff = np.maximum(
+            cert_coeff,
+            np.where(nz, 2.2e-16 * Pa[n] / np.maximum(np.abs(coeff), 1e-300),
+                     np.inf))
+        c0 = float(loggamma(a)) - L * float(loggamma(j + 1.0))
+        with np.errstate(divide="ignore"):
+            lam = -a * u + c0 + np.log(np.maximum(np.abs(coeff), 0.0))
+        sign = -((-1.0) ** ((j + 1) * L)) * np.sign(coeff)
+        if j == 0:
+            lam0 = lam.copy()
+        scaled = np.where(np.isfinite(lam), np.exp(lam - lam0), 0.0)
+        act = ~done & ~dead
+        total = np.where(act, total + sign * scaled, total)
+        total_abs = np.where(act, total_abs + scaled, total_abs)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = np.where(np.isfinite(prev_abs) & (prev_abs > 0.0),
+                             scaled / prev_abs, ratio)
+        prev_abs = scaled
+        done |= act & (scaled < 1e-18 * np.abs(total)) & (ratio < 0.5)
+        if j >= 3:
+            dead |= act & (ratio > 1.0) & (total_abs
+                                           > 1e6 * (np.abs(total) + 1.0))
+        if (done | dead).all():
+            break
+    ratio_eff = np.where(done, np.minimum(ratio, 0.5), np.maximum(ratio, 0.99))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tail = np.where(ratio_eff < 1.0,
+                        prev_abs * ratio_eff / (1.0 - ratio_eff), np.inf)
+        cert = (tail / np.maximum(total, 1e-300)
+                + 2.2e-16 * total_abs / np.maximum(total, 1e-300)
+                + cert_coeff)
+        vals = np.where(total > 0.0, lam0 + np.log(np.maximum(total, 1e-300)),
+                        np.nan)
+    cert = np.where(dead | (total <= 0.0), np.inf, cert)
+    return vals, cert
+
+
 def log_phi_column(r: float, L: int, u_grid) -> np.ndarray:
     """ln phi_r^(L) on a whole u grid, by the certified methods.
 
@@ -458,12 +554,13 @@ def exact_log_phi_column(
         out[idx[good]] = vals[good]
         done[idx[good]] = True
 
-    # ---- certified right-pole series (large t)
-    for i in np.flatnonzero(~done & (u > math.log(1.2 * (r + 1.0)))):
-        v, cert = log_phi_right_series(r, L, float(u[i]))
-        if cert < 1e-10:
-            out[i] = v
-            done[i] = True
+    # ---- certified right-pole series (large t), vectorized
+    right = np.flatnonzero(~done & (u > math.log(1.2 * (r + 1.0))))
+    if len(right):
+        vals, cert = right_series_column(r, L, u[right])
+        good = cert < 1e-10
+        out[right[good]] = vals[good]
+        done[right[good]] = True
 
     # ---- pole-aware contour for the rest
     rest = np.flatnonzero(~done)
@@ -504,34 +601,58 @@ def exact_log_phi_column(
         if not need.any():
             break
         W = np.where(need, 1.4 * W, W)
-    M = np.ceil(2.0 * W / h).astype(np.int64) + 1
-    order = np.argsort(M)
-    trapezoid = getattr(np, "trapezoid", None) or np.trapz
+    # ---- blocked quadrature with a SHARED line per block.
+    # The expensive factors ln Gamma(z) and ln Gamma(r+1-z) do not
+    # depend on u; only the cheap factor e^{-z u} does.  Consecutive u
+    # points whose saddles lie within a few Gaussian widths of each
+    # other can therefore share one vertical line and ONE set of
+    # Gamma evaluations (the integral is line-independent inside the
+    # strip; keeping the line within ~3 sigma of each point's own
+    # saddle bounds the extra cancellation by e^{4.5}, harmless at
+    # double precision).  This amortizes the dominant cost over whole
+    # blocks --- largest exactly for small r, where most columns live.
+    n_rest = len(rest)
     pos = 0
-    while pos < len(order):
-        # grow the block while (points so far) x (largest node count in
-        # the block, which is the LAST one --- sorted ascending) fits
+    while pos < n_rest:
         end = pos + 1
-        while (end < len(order)
-               and (end + 1 - pos) * int(M[order[end]]) <= 4_000_000):
+        smin = float(sigma[pos])
+        while end < n_rest:
+            smin_new = min(smin, float(sigma[end]))
+            if abs(float(z0[end] - z0[pos])) > 3.0 * smin_new:
+                break
+            m_est = int(
+                2.0 * (W[pos:end + 1].max()
+                       + np.abs(z0[pos:end + 1]
+                                - 0.5 * (z0[pos] + z0[end])).max())
+                / h[pos:end + 1].min()) + 1
+            if (end + 1 - pos) * m_est > 4_000_000:
+                break
+            smin = smin_new
             end += 1
-        sel = order[pos:end]
-        m_max = int(M[sel].max())
+        blk = slice(pos, end)
         pos = end
-        frac = np.linspace(-1.0, 1.0, m_max)          # (m,)
-        y = W[sel, None] * frac[None, :]              # (b, m)
-        z = z0[sel, None] + 1j * y
-        F = (loggamma(z) - z * ur[sel, None]
-             + L * loggamma(r + 1.0 - z))
-        vals = np.exp(np.clip(np.real(F - F0[sel, None]), -745.0, 50.0)
-                      + 1j * np.imag(F))
-        integral = np.real(trapezoid(vals, y, axis=1))
+        c = 0.5 * (float(z0[blk][0]) + float(z0[blk][-1]))
+        shift = np.abs(z0[blk] - c)
+        W_blk = float((W[blk] + shift).max())
+        h_blk = float(h[blk].min())
+        m = int(2.0 * W_blk / h_blk) + 2
+        y = np.linspace(-W_blk, W_blk, m)
+        zline = c + 1j * y
+        A = loggamma(zline) + L * loggamma(r + 1.0 - zline)  # u-free, ONCE
+        reA, imA = np.real(A), np.imag(A)
+        uu = ur[blk]
+        mag = reA[None, :] - c * uu[:, None] - F0[blk, None]
+        phase = imA[None, :] - y[None, :] * uu[:, None]
+        vals = np.exp(np.clip(mag, -745.0, 50.0)) * np.cos(phase)
+        hstep = y[1] - y[0]
+        integral = hstep * (vals.sum(axis=1)
+                            - 0.5 * (vals[:, 0] + vals[:, -1]))
         if np.any(integral <= 0.0):
-            bad = sel[integral <= 0.0]
+            bad = np.flatnonzero(integral <= 0.0)
             raise RuntimeError(
-                f"contour integral not positive at u={u[rest[bad]]}"
-                f" (r={r}, L={L})")
-        out[rest[sel]] = F0[sel] + np.log(integral / (2.0 * math.pi))
+                f"contour integral not positive at "
+                f"u={ur[blk][bad]} (r={r}, L={L})")
+        out[rest[blk]] = F0[blk] + np.log(integral / (2.0 * math.pi))
     return out
 
 

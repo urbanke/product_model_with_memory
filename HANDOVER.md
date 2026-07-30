@@ -1457,3 +1457,65 @@ certification: median 4.5e-13, max 1.0e-6 nats (one filled column in a
 zero-weight region; builder tightened after). Legacy-table finding:
 destructive errors from r~360 (not 600), ~5e-3 bits per heavy profile
 at depth even at count ~300 -> reruns will quantify effect on paper.
+
+## 2026-07-30 (day): T4 counting rewritten (sorted packed keys)
+New module counting.py: (context, next-symbol) windows packed into
+fixed-width integers, sorted; every context row is a contiguous run.
+context_tree.py rewired onto it (array-based beta recursion).
+Verified: equals the old hash counting exactly (synthetic + 1M-token
+text8 slice, every depth); full text8 at FULL vocabulary depth 2:
+4,400,703 contexts, 70,090 profiles (identical to the cluster run),
+25 s, 2.6 GB peak (old: ~200 GB). Memory blocker for the parked runs
+is gone; their remaining cost is table-column building (next: native
+kernel / T7). New tests in tests/test_counting.py.
+
+## 2026-07-30 (later): T7 sparse normalization implemented
+pooled_lags: sparse per-row predictive tables (observed symbols +
+one shared unseen value), sparse product-rule normalizer via power
+sums T_gamma, sparse mixture gathers; eval_mode="auto" selects it
+for V > 4096. Verified equal to the dense path to 1e-14 bits/token
+on every grid member (incl. saturated rows via finite reference
+value). New permanent test in test_pooled_lags_layered. Also earlier
+today: shared-line quadrature in mellin.py (2-3x per column, exact),
+measured on his laptop as ~1.25x on the DEEP-column tail (mixed-size
+comparison). complexity.tex updated throughout (T1/T4/T7 status +
+enwik9 plan: both prerequisites now done).
+
+## 2026-07-30 (evening): right-series vectorized -- the real T1 fix
+Profiling on deep columns (the tail of the V=256 build) showed the
+point-by-point large-t series loop at 76-99% of build time; the
+earlier contour saving had targeted the wrong part for that mix.
+right_series_column vectorizes it; deep columns 0.5s -> 0.02-0.14s;
+measured on the laptop: throughput ~20 -> ~250 columns/s (12 jobs).
+Vector==scalar to 7e-10 with identical accept/reject; full battery
+passes; fresh-store certify median 4e-13, max 1.5e-8. complexity.tex
+updated (T1 numbers + enwik9 table step now under 2 node-hours; the
+native kernel is no longer needed for T1). Laptop is 15 physical
+cores / 24 GB; runbook set to --jobs 12.
+
+## 2026-07-30 (night): parallel level fill in evaluation phase
+Bug found by Ruediger watching cores: during evaluation the PARENT
+serially read+interpolated every column per level while workers sat
+idle (introduced with the universal integration; the old cache fill
+was a cheap memcpy). Workers now fill their stripes of the shared
+matrix (_fill_level_chunk; store opened read-only per worker).
+Parallel==serial test passes. Runs 1+2 verified vs paper: state256
+table identical to all printed digits (3.7198/3.7198/4.4234) and the
+spelling constant 0.2018 confirmed (0.201849).
+
+## 2026-07-30 (late): verification campaign + roadmap rewrite
+Verified against the paper, ALL printed digits: state family V=256 &
+V=4096, spelling block (0.202 constant), unigram full vocab (10.895
+-> 1.8870 chain start), context trees V=16384 & full vocab (incl.
+4,400,703/70,090 and MAP splits=49). Runbook errors found+fixed along
+the way: runs 3/4 were mislabeled (ablation is at V=1024/4096; the
+interior-M table is FULL vocab) -> runs 3b and 4b added. Parallel
+fixes during campaign: worker-side level fill (twice: many-profile
+and few-profile paths); pooled script print throttling. Run 8
+(pooled v1024, the killed cluster run) started overnight - no
+published target, produces the missing Phase-2 number. Roadmap in
+main.tex rewritten: phases 0-2 status, Stage A (pooled-context trees
+depth 3, multi-tier backoff, sequential best) targeting ppmd 1.60,
+Stage B enwik8 (fidelity/tokenizer), Stage C enwik9 (one node);
+sub-1.1 declared out of scope. Still open: 4b, 3b (x4), unigram_b,
+run 8 result.

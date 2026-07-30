@@ -124,3 +124,21 @@ def test_layered_beats_counts_experts_on_markov_source():
         mix_grid=grid, prod_grid=empty_prod,
     ).member_bits[0]
     assert layered < counts
+
+
+def test_sparse_product_eval_equals_dense():
+    # T7: the sparse normalization must reproduce the dense evaluation
+    # exactly (both rules, every member), including saturated rows and
+    # unseen-target steps
+    rng = np.random.default_rng(4)
+    V, n = 10, 3000
+    T = rng.dirichlet(np.full(V, 0.3), size=V)
+    ids = np.zeros(n, dtype=np.int64)
+    for t in range(1, n):
+        ids[t] = rng.choice(V, p=T[ids[t - 1]])
+    kw = dict(vocabulary_size=V, lags=(1, 2), checkpoints=4,
+              expert_model="layered", cache_dir=None)
+    dense = pooled_lag_codelengths(ids, eval_mode="dense", **kw)
+    sparse = pooled_lag_codelengths(ids, eval_mode="sparse", **kw)
+    diff = np.abs(np.array(dense.member_bits) - np.array(sparse.member_bits))
+    assert diff.max() < 1e-9

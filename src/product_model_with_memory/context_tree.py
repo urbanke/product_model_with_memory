@@ -32,6 +32,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
+from product_model_with_memory.counting import context_profile_tables
+
 from product_model_with_memory.codelength import (
     default_l_max,
     depth_averaged_codelength_profiles,
@@ -99,83 +103,98 @@ def context_tree_codelengths(
         l_max = default_l_max(vocabulary_size)
     n_coded = len(reduced) - max_depth
 
-    nodes = build_context_nodes(reduced, max_depth)
-    profiles = {ctx: profile_of(counts) for ctx, counts in nodes.items()}
-    unique = set(profiles.values())
+    # ---- counting by sorted packed keys (complexity notes, T4):
+    # memory is a few flat arrays of size n, NOT proportional to the
+    # number of distinct contexts (the old hash-table counting needed
+    # ~200 GB at full vocabulary, depth 2)
+    vocab_ids: dict[str, int] = {}
+    ids = np.empty(len(reduced), dtype=np.int64)
+    for i, tok in enumerate(reduced):
+        idx = vocab_ids.get(tok)
+        if idx is None:
+            idx = len(vocab_ids)
+            vocab_ids[tok] = idx
+        ids[i] = idx
+    if len(vocab_ids) > vocabulary_size:
+        raise ValueError(
+            f"{len(vocab_ids)} distinct tokens exceed vocabulary_size="
+            f"{vocabulary_size}")
+    tables = context_profile_tables(ids, vocabulary_size, max_depth)
+    unique = tables.profiles
+    contexts_observed = sum(tables.n_contexts)
     if progress is not None:
-        progress(("profiles", len(unique), len(nodes)), None)
+        progress(("profiles", len(unique), contexts_observed), None)
 
     if leaf_model == "kt":
-        per_profile = {p: kt_log2_q(p, vocabulary_size) for p in unique}
-        log2_q = {ctx: per_profile[p] for ctx, p in profiles.items()}
+        per_profile = [kt_log2_q(p, vocabulary_size) for p in unique]
     elif leaf_model == "layered":
         results = depth_averaged_codelength_profiles(
-            {p: p for p in unique},
+            {i: p for i, p in enumerate(unique)},
             d=vocabulary_size,
             l_max=l_max,
             cache_dir=cache_dir,
             jobs=jobs,
             progress=progress,
         )
-        log2_q = {ctx: results[p].log2_q_avg for ctx, p in profiles.items()}
+        per_profile = [results[i].log2_q_avg for i in range(len(unique))]
     else:
         raise ValueError(f"unknown leaf_model: {leaf_model!r}")
+    per_profile_arr = np.asarray(per_profile)
+    q = [per_profile_arr[tables.profile_id[d]]
+         for d in range(max_depth + 1)]  # log2 q_avg per context, per depth
 
-    # children of each context (only observed ones carry data)
-    children: dict[tuple[str, ...], list[tuple[str, ...]]] = defaultdict(list)
-    for ctx in profiles:
-        if len(ctx) > 0:
-            children[ctx[:-1]].append(ctx)
+    # ---- bottom-up beta recursion (log2 domain), vectorized per depth
+    log_beta = [None] * (max_depth + 1)
+    log_gamma = [None] * (max_depth + 1)
+    map_split = [None] * (max_depth + 1)
+    log_beta[max_depth] = q[max_depth].copy()
+    log_gamma[max_depth] = q[max_depth].copy()
+    map_split[max_depth] = np.zeros(tables.n_contexts[max_depth], dtype=bool)
+    for d in range(max_depth - 1, -1, -1):
+        child_beta = np.zeros(tables.n_contexts[d])
+        child_gamma = np.zeros(tables.n_contexts[d])
+        np.add.at(child_beta, tables.parent[d + 1], log_beta[d + 1])
+        np.add.at(child_gamma, tables.parent[d + 1], log_gamma[d + 1])
+        leaf_term = -1.0 + q[d]
+        split_term = -1.0 + child_beta
+        m = np.maximum(leaf_term, split_term)
+        log_beta[d] = m + np.log2(
+            np.exp2(leaf_term - m) + np.exp2(split_term - m))
+        take_split = (-1.0 + child_gamma) > leaf_term
+        log_gamma[d] = np.where(take_split, -1.0 + child_gamma, leaf_term)
+        map_split[d] = take_split
 
-    # bottom-up beta recursion (log2 domain) + MAP variant with choices
-    log_beta: dict[tuple[str, ...], float] = {}
-    log_gamma: dict[tuple[str, ...], float] = {}
-    map_split: dict[tuple[str, ...], bool] = {}
-    for depth in range(max_depth, -1, -1):
-        for ctx in (c for c in profiles if len(c) == depth):
-            if depth == max_depth:
-                log_beta[ctx] = log2_q[ctx]
-                log_gamma[ctx] = log2_q[ctx]
-                map_split[ctx] = False
-                continue
-            child_beta = sum(log_beta[c] for c in children.get(ctx, []))
-            child_gamma = sum(log_gamma[c] for c in children.get(ctx, []))
-            leaf_term = -1.0 + log2_q[ctx]
-            split_term = -1.0 + child_beta
-            log_beta[ctx] = _log2addexp(leaf_term, split_term)
-            if -1.0 + child_gamma > leaf_term:
-                log_gamma[ctx] = -1.0 + child_gamma
-                map_split[ctx] = True
-            else:
-                log_gamma[ctx] = leaf_term
-                map_split[ctx] = False
-
-    root = ()
-    family_bits = -log_beta[root] / n_coded
+    family_bits = -float(log_beta[0][0]) / n_coded
 
     # fixed-depth baselines: complete tree at depth d
-    fixed_depth_bits = {}
-    for d in range(0, max_depth + 1):
-        total = sum(log2_q[c] for c in profiles if len(c) == d)
-        fixed_depth_bits[d] = -total / n_coded
+    fixed_depth_bits = {
+        d: -float(q[d].sum()) / n_coded for d in range(0, max_depth + 1)
+    }
 
     # MAP pruning diagnostic: walk the chosen tree, count leaves per depth
+    children_of: list[dict[int, list[int]] | None] = [None] * (max_depth + 1)
+    for d in range(1, max_depth + 1):
+        ch: dict[int, list[int]] = defaultdict(list)
+        for child_idx, par in enumerate(tables.parent[d]):
+            ch[int(par)].append(child_idx)
+        children_of[d] = ch
     map_leaves_by_depth: Counter = Counter()
-    stack = [root]
+    stack = [(0, 0)]
     while stack:
-        ctx = stack.pop()
-        if map_split.get(ctx, False) and children.get(ctx):
-            stack.extend(children[ctx])
+        d, i = stack.pop()
+        if (d < max_depth and map_split[d][i]
+                and children_of[d + 1].get(i)):
+            stack.extend((d + 1, c) for c in children_of[d + 1][i])
         else:
-            map_leaves_by_depth[len(ctx)] += 1
-    map_bits = -log_gamma[root] / n_coded  # includes its prior cost
+            map_leaves_by_depth[d] += 1
+    map_bits = -float(log_gamma[0][0]) / n_coded  # includes its prior cost
 
     return {
         "n_coded": n_coded,
         "l_max": l_max,
         "leaf_model": leaf_model,
         "max_depth": max_depth,
-        "contexts_observed": len(nodes),
+        "contexts_observed": contexts_observed,
         "unique_profiles": len(unique),
         "family_bits_per_token": family_bits,
         "fixed_depth_bits_per_token": fixed_depth_bits,

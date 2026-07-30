@@ -1384,35 +1384,63 @@ training cost excluded); neither is within reach of the constructions
 in this paper as they stand.
 
 \paragraph{Roadmap.}
-The work is organized in four phases.  \emph{Phase 0} (done, this
-section): the full-fidelity accounting --- escape mechanism, spelling
-model, index correction --- giving the conversion above and the
-$1.8870$ bpc memoryless figure.  \emph{Phase 1} (largely done): the
-vocabulary sweep of the state-family and context-tree experiments up
-to the full vocabulary, run on the laboratory cluster, and the
-KT-leaf ablation.  Outcome: the interior optimum
+The work is organized in phases; the first two are complete and,
+as of this revision, \emph{verified}: every number in this paper has
+been recomputed on a certified table store (moment values accurate to
+$\sim 10^{-7}$ nats, checked against independent methods), and all
+reruns --- including the full-vocabulary runs that previously
+required a 200-GB cluster node --- now execute on a laptop, in
+minutes to tens of minutes each.  \emph{Phase 0} (done): the
+full-fidelity accounting --- escape mechanism, spelling model, index
+correction --- giving the conversion above and the $1.8870$ bpc
+memoryless figure.  \emph{Phase 1} (done): the vocabulary sweep of
+the state-family and context-tree experiments up to the full
+vocabulary, and the KT-leaf ablation; outcome: the interior optimum
 (Table~\ref{tab:interior-m}), the $1.6979$ bpc figure, and the
 finding that further gains at full vocabulary lie in pooled context
-alphabets --- pooled-context trees and multi-tier backoff are the
-remaining Phase-1 runs; depth $3$ awaits a disk-backed statistics
-builder.  \emph{Phase 2} (code, then compute): the sequential
-pooled evaluator --- per-step predictive distributions of the
-\emph{layered} per-state mixtures, refreshed at checkpoints and held
-fixed in between (a valid sequential code; the staleness cost is
-measurable by varying the checkpoint count) --- pooled under both
-rules, weighted sums and tempered products, with weight and exponent
-grids averaged at sequence level.  Test suite: exact enumeration on a
-small alphabet; the telescoping identity (a per-step-refreshed
-memoryless expert must reproduce the layered codelength of the
-unigram profile exactly); one-hot weights under either rule agreeing
-with each other.  Its scientific output is the marginal gain per
-added lag compared with $I(\delta)$, i.e.\ how much of the tail
-survives the overlap between lags, and the data's choice between the
-additive and multiplicative combination.  \emph{Phase 3}: one sequential
-code containing all parts --- spelling, full-vocabulary adaptive
-tree, gated lag pool --- reported both as whole-file bits/character
-(comparable to Mahoney's table) and as bits on the last $5\%$ given
-the first $95\%$ (comparable to the neural results).
+alphabets.  \emph{Phase 2} (built and verified; first full run in
+progress): the sequential pooled-lag evaluator --- per-step
+predictive distributions of the layered per-state mixtures,
+refreshed at checkpoints, pooled under both combination rules with
+grids averaged at sequence level; its output is the marginal value
+of the long-range tail.
+
+\emph{Stage A (text8): close the $0.575$ bits/token to
+\texttt{ppmd}.}  Four measured increments: (i)~the Phase-2 result;
+(ii)~the pooled-context tree --- the pooling map $b_{M^\star}$
+applied to the \emph{history}, with tree depth grown on top of the
+resulting affordable context alphabet, now directly at depth $3$
+(the counting rewrite removed the depth barrier); (iii)~multi-tier
+backoff --- nested frequency tiers in place of the single backoff
+row, the natural refinement of the interior optimum; (iv)~the best
+resulting structure run as a sequential code, the number comparable
+to Mahoney's table.  These attack exactly the two regimes of
+Figure~\ref{fig:lag-profile}; \texttt{ppmd} ($1.60$) is a realistic
+target for this stage, \texttt{paq8h} ($1.40$) a possibility if the
+increments stack.
+
+\emph{Stage B (enwik8): fidelity, not modeling.}  \texttt{enwik8} is
+raw wiki text --- markup, capitalization, punctuation --- so the
+tokenizer and the spelling/escape model must be rebuilt on a larger
+character alphabet under the same measure-every-bit discipline as
+Phase 0, while the token-level machinery transfers unchanged.
+Deliverable: whole-file bits/character on Mahoney's rules (the
+program reproduces the file exactly; everything is paid for).
+
+\emph{Stage C (enwik9): scale, not novelty.}  The audited per-task
+plan is in the companion complexity notes: counting and the sparse
+normalization are implemented; the table store builds in under two
+node-hours at that scale; static models are node-hours and
+sequential runs node-days on one 64-core, 256-GB node.  Reported
+both as whole-file bits/character and as bits on the last $5\%$
+given the first $95\%$ (comparable to neural results, whose
+training-excluded numbers are otherwise not comparable).
+
+Out of scope, deliberately: the sub-$1.1$ region of Mahoney's list.
+Those programs combine hundreds of hand-designed context models
+through mixing networks tuned by online gradient steps; reaching
+them would abandon this paper's design principle --- posteriors over
+generated families --- and is a different project.
 
 \section{Outlook: generating state maps, not designing them}
 \label{sec:outlook}

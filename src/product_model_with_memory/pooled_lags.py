@@ -233,6 +233,41 @@ class _LayeredPredictiveBuilder:
         bot = _log2sumexp_arr(self.memo[base]) if base else math.log2(self.l_max)
         return top - bot
 
+    def row_log_sparse(
+        self, counts_row: FloatArray
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Sparse form of the row's predictive: (observed symbol ids,
+        their log2 probabilities, the shared log2 probability of every
+        unobserved symbol).  Renormalized identically to the dense
+        form; the two agree exactly (complexity notes, T7)."""
+
+        V = self.V
+        nz = np.flatnonzero(counts_row)
+        base = tuple(sorted(int(counts_row[i]) for i in nz))
+        distinct = sorted(set(base))
+        saturated = len(base) >= V
+        cs = distinct if saturated else distinct + [0]
+        aug_of = {c: _augmented_profile(base, c) for c in cs}
+        self._ensure_families({base: tuple(cs)})
+        log_unseen = (
+            -np.inf if saturated else self._log2_ratio(base, aug_of[0])
+        )
+        if len(nz):
+            distinct_arr = np.array(distinct)
+            lut = np.array([self._log2_ratio(base, aug_of[c])
+                            for c in distinct])
+            vals = counts_row[nz].astype(np.int64)
+            logp = lut[np.searchsorted(distinct_arr, vals)]
+        else:
+            logp = np.empty(0)
+        # renormalize exactly as the dense path does: total mass =
+        # observed entries + (V - k) copies of the unseen value
+        parts = [logp]
+        if not saturated:
+            parts.append(np.array([log_unseen + math.log2(V - len(nz))]))
+        total = _log2sumexp_arr(np.concatenate(parts))
+        return nz, logp - total, float(log_unseen - total)
+
     def row_log_table(self, counts_row: FloatArray) -> FloatArray:
         """log2 predictive over the alphabet for one count row
         (renormalized; deviation from 1 is numerical only)."""
@@ -288,6 +323,129 @@ def _layered_log_tables(
     return log_q0, tables
 
 
+class _SparseLagTables:
+    """Per-lag sparse predictive tables (complexity notes, T7): for
+    each state, the observed symbols with their log2 probabilities,
+    plus the one shared log2 probability of every unobserved symbol.
+    CSR layout across states."""
+
+    def __init__(self, builder, lag_counts):
+        self.lags = []
+        for cnt in lag_counts:
+            V = cnt.shape[0]
+            ptr = np.zeros(V + 1, dtype=np.int64)
+            idx_parts, val_parts = [], []
+            unseen = np.empty(V)
+            for s in range(V):
+                nz, logp, log_unseen = builder.row_log_sparse(cnt[s])
+                ptr[s + 1] = ptr[s] + len(nz)
+                idx_parts.append(nz)
+                val_parts.append(logp)
+                unseen[s] = log_unseen
+            self.lags.append({
+                "ptr": ptr,
+                "idx": np.concatenate(idx_parts) if idx_parts else
+                np.empty(0, dtype=np.int64),
+                "val": np.concatenate(val_parts) if val_parts else
+                np.empty(0),
+                "unseen": unseen,
+                # reference value for the support corrections: the true
+                # unseen value where one exists; for SATURATED rows
+                # (every symbol observed) no unseen symbol exists and
+                # any finite reference is algebraically equivalent
+                "rho": np.where(np.isfinite(unseen), unseen, 0.0),
+            })
+
+
+def _gather_entries(table, states):
+    """All support entries of the given per-step states, flattened:
+    (step index, symbol, value, unseen value of that step's row)."""
+
+    ptr, idx, val = table["ptr"], table["idx"], table["val"]
+    starts = ptr[states]
+    lens = ptr[states + 1] - starts
+    total = int(lens.sum())
+    if total == 0:
+        z = np.empty(0, dtype=np.int64)
+        return z, z, np.empty(0), np.empty(0)
+    t_e = np.repeat(np.arange(len(states)), lens)
+    base = np.repeat(starts - np.concatenate([[0], np.cumsum(lens)[:-1]]),
+                     lens)
+    pos = np.arange(total) + base
+    rho_e = table["rho"][states][t_e]
+    return t_e, idx[pos], val[pos], rho_e
+
+
+def _eval_chunk_sparse(sparse_tabs, log_q0, prod_b, gammas, L_gamma,
+                       mix_w, sd, tgt):
+    """One chunk of positions, BOTH rules, from sparse tables.
+
+    Product-rule normalizer per position (T7): with gamma = 1 - sum
+    beta and delta(x) the support corrections,
+      Z = 2^B [ T_gamma + sum_{x in S} q0(x)^gamma (2^delta - 1) ],
+    and the common factor 2^B cancels against the numerator, so only
+    T_gamma (precomputed per refresh) and the sparse union S enter.
+    """
+
+    D, m = sd.shape
+    V = len(log_q0)
+    # ---- entry list over all lags: (step, symbol, lag, logp - unseen)
+    t_parts, x_parts, v_parts, d_parts = [], [], [], []
+    lp = np.empty((m, D + 1))          # per-expert log2 p(target), mixture
+    lp[:, 0] = log_q0[tgt]
+    for j in range(D):
+        t_e, x_e, val_e, unseen_e = _gather_entries(sparse_tabs.lags[j],
+                                                    sd[j])
+        v_e = val_e - unseen_e
+        t_parts.append(t_e)
+        x_parts.append(x_e)
+        v_parts.append(v_e)
+        d_parts.append(np.full(len(t_e), j, dtype=np.int64))
+        # mixture gather: unseen by default, corrected where target is
+        # in the row's support
+        lp[:, j + 1] = sparse_tabs.lags[j]["unseen"][sd[j]]
+        hit = x_e == tgt[t_e]
+        lp[t_e[hit], j + 1] = val_e[hit]
+    t_all = np.concatenate(t_parts)
+    x_all = np.concatenate(x_parts)
+    v_all = np.concatenate(v_parts)
+    d_all = np.concatenate(d_parts)
+
+    # ---- group equal (step, symbol) pairs
+    key = t_all * V + x_all
+    order = np.argsort(key, kind="stable")
+    key_s = key[order]
+    new = np.concatenate([[True], key_s[1:] != key_s[:-1]])
+    g_of_entry = np.empty(len(order), dtype=np.int64)
+    g_of_entry[order] = np.cumsum(new) - 1
+    n_g = int(new.sum())
+    first = order[np.flatnonzero(new)]
+    t_g, x_g = t_all[first], x_all[first]
+    tgt_hit = x_g == tgt[t_g]          # groups that ARE the coded symbol
+
+    prod_bits = np.zeros(len(prod_b))
+    lq0_tgt = log_q0[tgt]
+    for k in range(len(prod_b)):
+        beta = prod_b[k]
+        gamma = gammas[k]
+        delta_g = np.bincount(g_of_entry, weights=beta[d_all] * v_all,
+                              minlength=n_g)
+        contrib = np.exp2(gamma * log_q0[x_g]) * (np.exp2(delta_g) - 1.0)
+        Z_lin = np.full(m, L_gamma[k])
+        np.add.at(Z_lin, t_g, contrib)
+        delta_tgt = np.zeros(m)
+        delta_tgt[t_g[tgt_hit]] = delta_g[tgt_hit]
+        prod_bits[k] = float(
+            (gamma * lq0_tgt + delta_tgt
+             - np.log2(np.maximum(Z_lin, 1e-300))).sum())
+
+    # ---- mixture rule from lp, as in the dense path
+    mx = lp.max(axis=1, keepdims=True)
+    p = np.exp2(lp - mx)
+    mix_vals = np.log2(np.clip(p @ mix_w.T, 1e-300, None)) + mx
+    return mix_vals.sum(axis=0), prod_bits
+
+
 def pooled_lag_codelengths(
     ids,
     *,
@@ -303,13 +461,20 @@ def pooled_lag_codelengths(
     step_chunk: int = 65_536,
     jobs: int = 1,
     progress=None,
+    eval_mode: str = "auto",
 ) -> PooledLagResult:
     """Evaluate mixture and tempered-product pooling over the corpus.
 
     expert_model selects the per-lag predictor refreshed at each
     checkpoint: "layered" (the per-state layered mixture predictive,
-    the estimator of this paper; requires cache_dir) or "counts"
-    (count tables smoothed toward the unigram; the cheap pilot)."""
+    the estimator of this paper) or "counts" (count tables smoothed
+    toward the unigram; the cheap pilot).
+
+    eval_mode selects the evaluation of the two pooling rules for the
+    layered expert: "dense" (materialize V x V tables; the original
+    path), "sparse" (T7: per-row supports plus one shared unseen
+    value; identical numbers, cost independent of the alphabet size),
+    or "auto" (sparse for V > 4096)."""
 
     ids = np.asarray(ids, dtype=np.int64)
     V = int(vocabulary_size)
@@ -358,6 +523,13 @@ def pooled_lag_codelengths(
     elif expert_model != "counts":
         raise ValueError(f"unknown expert_model: {expert_model!r}")
 
+    if eval_mode not in ("auto", "dense", "sparse"):
+        raise ValueError(f"unknown eval_mode {eval_mode!r}")
+    sparse = (eval_mode == "sparse"
+              or (eval_mode == "auto" and V > 4096))
+    if sparse and expert_model != "layered":
+        raise ValueError("sparse evaluation requires the layered expert")
+
     bounds = np.linspace(start, n, checkpoints + 1).astype(int)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         for ck in range(checkpoints):
@@ -372,9 +544,42 @@ def pooled_lag_codelengths(
                     if lo > d:
                         np.add.at(cnt, (ids[: lo - d], ids[d:lo]), 1.0)
                     lag_counts.append(cnt)
-                log_q0, log_tabs = _layered_log_tables(builder, uni, lag_counts)
+                if sparse:
+                    # dense q0 row + sparse per-lag tables (T7)
+                    fams: dict[tuple, set] = {}
+                    for block in [uni[None, :]] + lag_counts:
+                        for rr in range(block.shape[0]):
+                            nzr = np.flatnonzero(block[rr])
+                            b = tuple(sorted(int(block[rr][i]) for i in nzr))
+                            cset = (set(b) if len(b) >= block.shape[1]
+                                    else set(b) | {0})
+                            fams.setdefault(b, set()).update(cset)
+                    builder._ensure_families(
+                        {b: tuple(sorted(cc)) for b, cc in fams.items()})
+                    log_q0 = builder.row_log_table(uni)
+                    sparse_tabs = _SparseLagTables(builder, lag_counts)
+                    gammas = 1.0 - prod_b.sum(axis=1)
+                    L_gamma = np.array([
+                        float(np.exp2(g * log_q0).sum()) for g in gammas
+                    ])
+                else:
+                    log_q0, log_tabs = _layered_log_tables(
+                        builder, uni, lag_counts)
             else:
                 log_q0, log_tabs = _smoothed_log_tables(ids, V, lags, lo, alpha)
+            if sparse:
+                for c0 in range(lo, hi, step_chunk):
+                    c1 = min(c0 + step_chunk, hi)
+                    tgt = ids[c0:c1]
+                    sd = np.stack([ids[c0 - d:c1 - d] for d in lags])
+                    mix_vals, prod_vals = _eval_chunk_sparse(
+                        sparse_tabs, log_q0, prod_b, gammas, L_gamma,
+                        mix_w, sd, tgt)
+                    mix_bits -= mix_vals
+                    prod_bits -= prod_vals
+                if progress is not None:
+                    progress(("checkpoint", ck + 1, checkpoints), None)
+                continue
             for c0 in range(lo, hi, step_chunk):
                 c1 = min(c0 + step_chunk, hi)
                 tgt = ids[c0:c1]

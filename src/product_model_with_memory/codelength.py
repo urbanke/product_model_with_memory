@@ -276,7 +276,13 @@ def depth_averaged_codelength_profiles(
     if l_max is None:
         l_max = default_l_max(d)
     all_r: set[int] = set()
-    for partition in profiles.values():
+    for key, partition in profiles.items():
+        if len(partition) > d:
+            raise ValueError(
+                f"profile {key!r} has {len(partition)} distinct symbols "
+                f"but the alphabet size is d={d}; the model is undefined "
+                "for d smaller than the number of observed symbols"
+            )
         all_r.update(needed_r_values(partition))
     source = _resolve_tables_source(tables_source)
 
@@ -294,7 +300,12 @@ def depth_averaged_codelength_profiles(
         return cache.level_tables(L, all_r)
 
     log2_q: dict[int, list[float]] = {n: [] for n in profiles}
-    if jobs <= 1 or len(profiles) < 2 * jobs:
+    # The parallel path pays off whenever the universal store is the
+    # source, EVEN for few profiles: preparing each level's rows
+    # (thousands of column reads + interpolations) dominates and is
+    # split over the pool regardless of the profile count.
+    if jobs <= 1 or (len(profiles) < 2 * jobs
+                     and prov["source"] != "universal"):
         from product_model_with_memory.layered import log_q_lambda_scan
 
         for L in range(1, l_max + 1):
@@ -336,9 +347,11 @@ def depth_averaged_codelength_profiles(
         # spawn on macOS, where the experiment scripts' __main__ guards
         # make re-import safe)
         with mp.Pool(
-            processes=len(chunks),
+            processes=max(jobs, len(chunks)),
             initializer=_init_eval_worker,
-            initargs=(u_grid, rs, l_max),
+            initargs=(u_grid, rs, l_max,
+                      str(prov["ut"].path) if prov and prov.get("ut")
+                      else None),
         ) as pool:
             for L in range(1, l_max + 1):
                 shm = None
@@ -353,7 +366,16 @@ def depth_averaged_codelength_profiles(
                         M = np.ndarray(
                             (len(rs), G), dtype=np.float64, buffer=shm.buf
                         )
-                        M[:] = _provision_level_rows(prov, L, rs)
+                        if prov["source"] == "universal":
+                            bnds = np.linspace(0, len(rs),
+                                               jobs + 1).astype(int)
+                            pool.starmap(_fill_level_chunk, [
+                                (shm.name, (len(rs), G), L,
+                                 int(bnds[w]), int(bnds[w + 1]))
+                                for w in range(jobs)
+                            ], chunksize=1)
+                        else:
+                            M[:] = _provision_level_rows(prov, L, rs)
                         args = [
                             (d, L, shm.name, (len(rs), G), chunk)
                             for chunk in chunks
@@ -422,9 +444,18 @@ def depth_averaged_codelength_families(
     for key, (base, cs) in families.items():
         base = tuple(base)
         cs = tuple(sorted(set(int(c) for c in cs)))
+        if len(base) > d:
+            raise ValueError(
+                f"family {key!r}: base profile has {len(base)} distinct "
+                f"symbols but the alphabet size is d={d}"
+            )
         for c in cs:
             if c != 0 and c not in base:
                 raise ValueError(f"family {key!r}: count {c} not in base")
+            if c == 0 and len(base) >= d:
+                raise ValueError(
+                    f"family {key!r}: no unseen symbol exists (saturated "
+                    f"row, {len(base)} of d={d} symbols observed)")
         clean[key] = (base, cs)
         if base:
             all_r.update(needed_r_values(base))
@@ -464,7 +495,8 @@ def depth_averaged_codelength_families(
                 _check_eval(a_res[c], L, key)
                 aug_logs[key][c].append(a_res[c].log2_q)
 
-    if jobs <= 1 or len(clean) < 2 * jobs:
+    if jobs <= 1 or (len(clean) < 2 * jobs
+                     and (prov is None or prov["source"] != "universal")):
         for L in range(1, l_max + 1):
             tables = (
                 None if (L == 1 or prov is None)
@@ -488,9 +520,11 @@ def depth_averaged_codelength_families(
         u_grid = (np.asarray(prov["u_grid"], dtype=np.float64)
                   if prov is not None else np.zeros(1))
         with mp.Pool(
-            processes=len(chunks),
+            processes=max(jobs, len(chunks)),
             initializer=_init_eval_worker,
-            initargs=(u_grid, rs, l_max),
+            initargs=(u_grid, rs, l_max,
+                      str(prov["ut"].path) if prov and prov.get("ut")
+                      else None),
         ) as pool:
             for L in range(1, l_max + 1):
                 shm = None
@@ -503,7 +537,16 @@ def depth_averaged_codelength_families(
                             create=True, size=len(rs) * G * 8)
                         M = np.ndarray((len(rs), G), dtype=np.float64,
                                        buffer=shm.buf)
-                        M[:] = _provision_level_rows(prov, L, rs)
+                        if prov["source"] == "universal":
+                            bnds = np.linspace(0, len(rs),
+                                               jobs + 1).astype(int)
+                            pool.starmap(_fill_level_chunk, [
+                                (shm.name, (len(rs), G), L,
+                                 int(bnds[w]), int(bnds[w + 1]))
+                                for w in range(jobs)
+                            ], chunksize=1)
+                        else:
+                            M[:] = _provision_level_rows(prov, L, rs)
                         args = [(d, L, shm.name, (len(rs), G), chunk)
                                 for chunk in chunks]
                     for part in pool.starmap(
@@ -611,15 +654,48 @@ def _check_eval(result, L: int, n) -> None:
 _EVAL_UGRID = None
 _EVAL_RS = None
 _EVAL_LMAX = None
+_EVAL_STORE_PATH = None
+_EVAL_STORE = None
 
 
-def _init_eval_worker(u_grid, rs, l_max: int):
+def _init_eval_worker(u_grid, rs, l_max: int, store_path=None):
     """Store the (small) shared evaluation context in the worker process."""
 
-    global _EVAL_UGRID, _EVAL_RS, _EVAL_LMAX
+    global _EVAL_UGRID, _EVAL_RS, _EVAL_LMAX, _EVAL_STORE_PATH, _EVAL_STORE
     _EVAL_UGRID = u_grid
     _EVAL_RS = rs
     _EVAL_LMAX = l_max
+    _EVAL_STORE_PATH = store_path
+    _EVAL_STORE = None
+
+
+def _eval_store():
+    """Lazily opened read-only view of the universal store in a worker."""
+
+    global _EVAL_STORE
+    if _EVAL_STORE is None:
+        from product_model_with_memory.universal_tables import UniversalTables
+
+        _EVAL_STORE = UniversalTables(_EVAL_STORE_PATH)
+    return _EVAL_STORE
+
+
+def _fill_level_chunk(shm_name, shape, L: int, i0: int, i1: int):
+    """Worker: fill rows i0..i1 of the level's shared-memory matrix
+    from the universal store (read-only; concurrent-safe).  Added
+    July 30: the parent used to do ALL of this serially, leaving the
+    workers idle for most of each level --- the single-busy-thread
+    symptom during evaluation."""
+
+    shm = _attach_shm_untracked(shm_name)
+    try:
+        M = np.ndarray(shape, dtype=np.float64, buffer=shm.buf)
+        ut = _eval_store()
+        for i in range(i0, i1):
+            M[i] = ut.log_phi(L, _EVAL_RS[i], _EVAL_UGRID)
+        return i1 - i0
+    finally:
+        shm.close()
 
 
 def _attach_shm_untracked(name):

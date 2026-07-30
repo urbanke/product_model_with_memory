@@ -86,8 +86,15 @@ def main() -> None:
     if "prod" not in rules:
         prod_grid = ([], np.zeros((0, len(lags))))
 
+    last = {}
+
     def progress(evt, _):
         kind, done, total = evt
+        # throttle: table/depth events print at most every 200 items or
+        # at completion; checkpoint events always print
+        if kind != "checkpoint" and done != total and done - last.get(kind, 0) < 200:
+            return
+        last[kind] = done
         print(f"  {kind}: {done}/{total} ({time.time() - t0:.0f}s)", flush=True)
 
     cache_dir = args.cache_dir or (out_dir / "cache")

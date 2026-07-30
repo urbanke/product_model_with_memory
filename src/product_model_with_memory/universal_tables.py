@@ -183,28 +183,54 @@ class UniversalTables:
                 self.path / f"level_{L:02d}.index.json")
 
     def _load_level(self, L: int) -> dict:
+        """Level bookkeeping ONLY (index + file size); column data
+        stays on disk and is read per column.  (The first version kept
+        every level's data in one in-memory array and re-concatenated
+        it per append --- quadratic, and it strangled parallel builds
+        once the store reached gigabytes; found July 2026.)"""
+
         if L in self._levels:
             return self._levels[L]
         data_f, idx_f = self._level_files(L)
         if idx_f.exists():
             index = {int(k): tuple(v)
                      for k, v in json.loads(idx_f.read_text()).items()}
-            data = np.fromfile(data_f, dtype=np.float64)
         else:
-            index, data = {}, np.empty(0)
-        level = {"index": index, "data": data}
+            index = {}
+        size = data_f.stat().st_size // 8 if data_f.exists() else 0
+        level = {"index": index, "size": size, "dirty": False}
         self._levels[L] = level
         return level
 
-    def _append_column(self, L: int, r: int, values: np.ndarray) -> None:
+    def _read_column(self, L: int, r: int) -> np.ndarray:
+        level = self._load_level(L)
+        off, n = level["index"][r]
+        data_f, _ = self._level_files(L)
+        with open(data_f, "rb") as f:
+            f.seek(off * 8)
+            return np.frombuffer(f.read(n * 8), dtype=np.float64).copy()
+
+    def _append_column(self, L: int, r: int, values: np.ndarray,
+                       flush_index: bool = True) -> None:
         level = self._load_level(L)
         data_f, idx_f = self._level_files(L)
+        values = np.ascontiguousarray(values, dtype=np.float64)
         with open(data_f, "ab") as f:
-            values.astype(np.float64).tofile(f)
-        level["index"][r] = (len(level["data"]), len(values))
-        level["data"] = np.concatenate([level["data"], values])
+            values.tofile(f)
+        level["index"][r] = (level["size"], len(values))
+        level["size"] += len(values)
+        level["dirty"] = True
+        if flush_index:
+            self._flush_index(L)
+
+    def _flush_index(self, L: int) -> None:
+        level = self._levels.get(L)
+        if not level or not level["dirty"]:
+            return
+        _, idx_f = self._level_files(L)
         idx_f.write_text(json.dumps(
             {str(k): list(v) for k, v in level["index"].items()}))
+        level["dirty"] = False
 
     def _save_manifest(self) -> None:
         self.manifest_path.write_text(json.dumps(self.manifest, indent=2))
@@ -224,8 +250,7 @@ class UniversalTables:
             return i0, vals
         level = self._load_level(L)
         if r in level["index"]:
-            off, n = level["index"][r]
-            return column_start_index(L, r), level["data"][off:off + n]
+            return column_start_index(L, r), self._read_column(L, r)
         values = self._build_column(L, r)
         self._append_column(L, r, values)
         return column_start_index(L, r), values
@@ -263,22 +288,31 @@ class UniversalTables:
                 missing.append((L, r))
         if not missing:
             return 0
-        if jobs <= 1 or len(missing) < 4:
-            for i, (L, r) in enumerate(missing):
-                self._append_column(L, r, self._build_column(L, r))
-                if progress is not None:
-                    progress(("tables", i + 1, len(missing)), None)
-        else:
-            import multiprocessing as mp
-
-            with mp.Pool(processes=min(jobs, len(missing))) as pool:
-                done = 0
-                for L, r, values in pool.imap_unordered(
-                        _column_worker, missing, chunksize=1):
-                    self._append_column(L, r, values)
-                    done += 1
+        try:
+            if jobs <= 1 or len(missing) < 4:
+                for i, (L, r) in enumerate(missing):
+                    self._append_column(L, r, self._build_column(L, r),
+                                        flush_index=False)
+                    if (i + 1) % 50 == 0:
+                        self._flush_index(L)
                     if progress is not None:
-                        progress(("tables", done, len(missing)), None)
+                        progress(("tables", i + 1, len(missing)), None)
+            else:
+                import multiprocessing as mp
+
+                with mp.Pool(processes=min(jobs, len(missing))) as pool:
+                    done = 0
+                    for L, r, values in pool.imap_unordered(
+                            _column_worker, missing, chunksize=1):
+                        self._append_column(L, r, values, flush_index=False)
+                        done += 1
+                        if done % 50 == 0:
+                            self._flush_index(L)
+                        if progress is not None:
+                            progress(("tables", done, len(missing)), None)
+        finally:
+            for L in {p[0] for p in missing}:
+                self._flush_index(L)
         return len(missing)
 
     # ------------------------------------------------------ evaluation

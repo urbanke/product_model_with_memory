@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.5.21)  29 JUL 2026 12:30
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.5.21)  30 JUL 2026 09:29
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -377,7 +377,7 @@ LaTeX Font Info:    Trying to load font information for U+msb on input line 18.
 (/usr/local/texlive/2026/texmf-dist/tex/latex/amsfonts/umsb.fd
 File: umsb.fd 2013/01/14 v3.01 AMS symbols B
 )
-Overfull \hbox (0.30469pt too wide) in paragraph at lines 43--55
+Overfull \hbox (0.30469pt too wide) in paragraph at lines 46--58
 \OT1/cmr/m/n/10.95 ery suf-fi-ciently long se-quence of sym-bols. Three rules a
 re used in this project: (a) $\OML/cmm/m/it/10.95 ^^[\OT1/cmr/m/n/10.95 (\OML/c
 mm/m/it/10.95 x[]; [] ; x[]\OT1/cmr/m/n/10.95 ) =
@@ -387,7 +387,7 @@ mm/m/it/10.95 x[]; [] ; x[]\OT1/cmr/m/n/10.95 ) =
 
 {/usr/local/texlive/2026/texmf-var/fonts/map/pdftex/updmap/pdftex.map}]
 [2]
-Overfull \hbox (20.27878pt too wide) detected at line 187
+Overfull \hbox (20.27878pt too wide) detected at line 190
 [][][]\OML/cmm/m/it/10.95 q[]\OT1/cmr/m/n/10.95 (\OT1/cmr/bx/n/10.95 m\OT1/cmr/
 m/n/10.95 )  =  \U/msb/m/n/10.95 E[][] \OML/cmm/m/it/10.95 p[] [] p[][] \OT1/cm
 r/m/n/10.95 (\OML/cmm/m/it/10.95 y[]; [] ; y[][]\OT1/cmr/m/n/10.95 )\OML/cmm/m/
@@ -396,52 +396,61 @@ it/10.95 ;  q[]\OT1/cmr/m/n/10.95 (\OT1/cmr/bx/n/10.95 m\OT1/cmr/m/n/10.95 )  =
 r/m/n/10.95 )\OML/cmm/m/it/10.95 :
  []
 
-[3] [4] [5] [6] [7]
-Overfull \hbox (1.35016pt too wide) in paragraph at lines 557--561
- []\OT1/cmr/bx/n/10.95 Input/Output/Algorithm/Cost.[] \OT1/cmr/m/n/10.95 In-put
-s are the per-profile atoms (T2) and the con-text struc-
+[3] [4] [5] [6]
+Overfull \hbox (87.32762pt too wide) in paragraph at lines 503--514
+\OT1/cmr/m/n/10.95 over a fam-ily of mod-els, the pos-te-rior over the fam-ily.
+ The length of one model is $[][] \OMS/cmsy/m/n/10.95 ^^@ [][] \OML/cmm/m/it/10
+.95 q[]\OT1/cmr/m/n/10.95 ([])$.
  []
 
-[8] [9] [10] (./complexity.aux)
+[7] [8] [9] [10] (./complexity.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-04-28>
  ***********
+
+
+LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.
+
 Package rerunfilecheck Info: File `complexity.out' has not changed.
 (rerunfilecheck)             Checksum: FD6BF356FE4262C751737A50CDE89671;2066.
  ) 
 Here is how much of TeX's memory you used:
- 10074 strings out of 467341
- 152233 string characters out of 5415369
- 581971 words of memory out of 5000000
- 38979 multiletter control sequences out of 15000+600000
+ 10070 strings out of 467341
+ 152209 string characters out of 5415369
+ 583971 words of memory out of 5000000
+ 38981 multiletter control sequences out of 15000+600000
  639588 words of font info for 85 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,9n,79p,361b,460s stack positions out of 10000i,1000n,20000p,200000b,200000s
-</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb
-></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb>
-</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx8.pfb></
-usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></u
-sr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></us
-r/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi6.pfb></usr/
-local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr/lo
-cal/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/loca
-l/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/local/
-texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/local/te
-xlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/local/texli
-ve/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/
-2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/local/texlive/202
-6/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2026
-/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy6.pfb></usr/local/texlive/2026/t
+ 75i,9n,79p,361b,571s stack positions out of 10000i,1000n,20000p,200000b,200000s
+
+pdfTeX warning (dest): name{equation.8} has been referenced but does not exist,
+ replaced by a fixed one
+
+</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb><
+/usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></
+usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx8.pfb></us
+r/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr
+/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/
+local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi6.pfb></usr/lo
+cal/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr/loca
+l/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/local/
+texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/local/te
+xlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/local/texl
+ive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/local/texlive
+/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/20
+26/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/local/texlive/2026/
+texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2026/t
 exmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/texlive/2026/tex
 mf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/local/texlive/2026/texmf
 -dist/fonts/type1/public/amsfonts/cm/cmti10.pfb></usr/local/texlive/2026/texmf-
 dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb></usr/local/texlive/2026/texmf-d
-ist/fonts/type1/public/amsfonts/symbols/msbm10.pfb>
-Output written on complexity.pdf (10 pages, 281521 bytes).
+ist/fonts/type1/public/amsfonts/symbols/msam10.pfb></usr/local/texlive/2026/tex
+mf-dist/fonts/type1/public/amsfonts/symbols/msbm10.pfb>
+Output written on complexity.pdf (10 pages, 286242 bytes).
 PDF statistics:
- 290 PDF objects out of 1000 (max. 8388607)
- 235 compressed objects within 3 object streams
- 83 named destinations out of 1000 (max. 500000)
+ 277 PDF objects out of 1000 (max. 8388607)
+ 222 compressed objects within 3 object streams
+ 77 named destinations out of 1000 (max. 500000)
  73 words of extra memory for PDF output out of 10000 (max. 10000000)
 

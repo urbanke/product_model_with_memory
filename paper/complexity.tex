@@ -20,10 +20,13 @@ and where it could be much faster}
 Every experiment in this project is assembled from eight
 computational tasks.  This note describes each task in a fixed
 format: what the task is, the formula it evaluates, its inputs and
-outputs, the algorithm we currently use, the cost of that algorithm
-and how the cost grows, and ideas for computing the same thing
-faster.  Ideas that give identical results are marked [exact]; ideas
-that introduce a controlled error are marked [approx].
+outputs --- and then, clearly separated, two parts: \emph{What is
+implemented} (the algorithm that runs today, with measured costs)
+and \emph{What could be done} (ideas that are not implemented yet,
+each with its expected gain).  An idea that would give identical
+results is marked [exact]; one that introduces a controlled error is
+marked [approx].  The note ends with a discussion of the programming
+language and a concrete plan for running the corpus enwik9.
 Section~\ref{sec:defs} defines all concepts and symbols; nothing is
 used before it is defined there.
 
@@ -286,124 +289,87 @@ $K$ & number of weight vectors in a combination grid & $\sim 10^2$ \\
 Compute the moment functions $\varphi^{(L)}_r$ of
 Eq.~\eqref{eq:phidef} numerically, for every level
 $L \le L_{\max}$ and every count value $r$ that occurs in the data,
-and store their logarithms on the $u$ grid.  This is done once per
-alphabet size; the stored tables are then read by tasks T2 and T3.
+and store their logarithms on the $u$ grid.  The stored tables are
+read by tasks T2 and T3.
 
 \field{Formula}
-Write $Y = Y' \cdot E_L$, where $Y'$ is the product of the first
-$L - 1$ exponentials.  Taking the expectation over $E_L$ first gives
-a recursion that connects level $\ell$ to level $\ell - 1$:
-\begin{equation}
-  \varphi^{(\ell)}_r(t)
-  \;=\; \int_0^\infty e^{-v}\, v^{\,r}\,
-  \varphi^{(\ell-1)}_r(t v)\, dv,
-  \qquad
-  \varphi^{(1)}_r(t) = \frac{\Gamma(r+1)}{(1+t)^{r+1}} .
-  \label{eq:recursion}
-\end{equation}
-
-\field{Input}
-The set $\mathcal{R}$ of count values that occur anywhere in the
-data; the number of levels $L_{\max}$; the grid $u_1, \dots, u_G$.
-
-\field{Output}
-The numbers $\ln \varphi^{(L)}_r(e^{u_g})$ for all
-$r \in \mathcal{R}$, $L \le L_{\max}$, $g \le G$ --- an array of
-$|\mathcal{R}| \times L_{\max} \times G$ values, stored on disk.
-
-\field{Algorithm}
-\emph{(Replaced July 2026; the old per-run recursion builder and its
-accuracy problems are described at the end of this section.)}
-The values now live in one \emph{permanent store} (``the universal
-table''), shared by all experiments and grown on demand: the first
-computation that needs a value computes and files it; every later
-computation reads it.  One file per level; a uniform master grid with
-spacing $0.02$ in $u$; a manifest that records the design constants
-and every accuracy check ever run.
-
-Each stored value is produced by one of three independent methods,
-each used only where it can \emph{certify its own error}:
-(i)~for small $t$, the alternating series
-$\varphi = \sum_j (-t)^j\, \Gamma(r{+}j{+}1)^L / j!$, truncated where
-its terms turn; the first omitted term bounds the error, and a column
-only starts where this bound is below $10^{-13}$;
-(ii)~in the middle, direct numerical integration of the exact contour
-representation
+Three exact representations are used, each in the region where it is
+reliable: for small $t$ the alternating series
+$\varphi = \sum_j (-t)^j\, \Gamma(r{+}j{+}1)^L / j!$; in the middle
+the contour integral
 $\varphi = \frac{1}{2\pi i}\int \Gamma(z)\, t^{-z}\,
-\Gamma(r{+}1{-}z)^L\, dz$
-along a vertical line through the saddle, with the sampling density
-tied to the distance from the line to the nearest pole and the
-integration width extended until the measured integrand has dropped
-$34$ nats below its peak;
-(iii)~for large $t$, the residue series at the poles
-$z = r{+}1, r{+}2, \dots$ (a sum of powers of $1/t$ times polynomials
-in $\ln t$), which converges exactly where the contour degenerates,
-and whose implementation reports a bound covering truncation and
-round-off.  The three regimes overlap, and on the overlaps the methods
-agree to about $10^{-8}$ or better; where nothing else was available
-(deep levels, very large $t$) the contour values were checked against
-direct Monte Carlo simulation.
+\Gamma(r{+}1{-}z)^L\, dz$; for large $t$ the residue series at the
+poles $z = r{+}1, r{+}2, \dots$ (powers of $1/t$ times polynomials
+in $\ln t$).
 
-Between grid points, queries are answered by degree-$7$ polynomial
-interpolation.  This matters: the curvature of
-$u \mapsto \ln\varphi_r^{(L)}(e^u)$ grows like the saddle position
-(up to $\sim r$), so on the $0.02$ grid \emph{linear} interpolation
-would cost whole nats at $r = 10^6$ even on exactly stored values,
-and cubic still $\sim 10^{-5}$.
+\field{Input and output}
+In: the set $\mathcal{R}$ of count values in the data, the number of
+levels $L_{\max}$.  Out: the numbers
+$\ln \varphi^{(L)}_r(e^{u})$ on a fixed grid of $u$ values with
+spacing $0.02$, stored on disk, one file per level.
 
-Building a column exactly at every grid point costs $0.1$ to a few
-seconds, so columns are built on a $4\times$ coarser sub-lattice and
-filled by the same degree-$7$ rule, \emph{except} where the eighth
-difference of the coarse values says interpolation cannot reach
-$10^{-8}$ (there the points are computed exactly), and the filled
-column is spot-checked against exact values, falling back to a full
-exact build on failure.  Columns are independent, so the build runs
-on all cores.
+\field{What is implemented}
+One \emph{permanent store}, shared by all experiments and grown on
+demand: the first computation that needs a value computes and files
+it; every later computation reads it.  Each stored value comes from
+one of the three exact formulas above, used only where it can
+certify its own error; the three regions overlap and the methods
+agree there to $10^{-8}$ or better, checked also against Monte Carlo
+simulation in the one corner where nothing else reaches.  Queries
+between grid points are answered by degree-$7$ interpolation (linear
+interpolation would cost whole nats at large counts, cubic
+$\sim 10^{-5}$; both measured).  Columns are built on all processor
+cores; to save time, a column is computed exactly only at every
+fourth grid point and filled in between by the same degree-$7$ rule
+--- \emph{except} where an eighth-difference test says the fill
+cannot reach $10^{-8}$ (those points are computed exactly), and
+random spot checks against exact values guard the whole column, with
+a full exact rebuild on failure.
 
-\field{Measured accuracy}
-End-to-end (what a query actually receives, interpolation included),
-$900$ random off-grid points against the independent contour
-reference: median error $7 \cdot 10^{-14}$ nats, maximum
-$2.4 \cdot 10^{-7}$ nats --- and the maximum occurs only at points
-where the value itself is $\sim 10^9$ nats, i.e.\ at the resolution
-limit of $64$-bit floating point, not a method error.
+Two more implemented savings, both pure Python.  First, nearby grid
+points share one vertical contour and ONE set of $\ln\Gamma$
+evaluations --- the expensive factors do not depend on the grid point
+$u$, only the cheap exponential does.  Second, the large-$t$ residue
+series is evaluated for a whole column at once instead of point by
+point; profiling on deep columns showed the point-by-point loop
+consuming $76$--$99\%$ of their build time (a lesson in measuring
+the right workload: the contour saving alone showed no end-to-end
+gain there).  Measured on deep columns: $0.5$ s $\to$
+$0.02$--$0.14$ s each; in the running V$=256$ build, throughput rose
+from $\sim 20$ to $\sim 250$ columns/s on $12$ cores.
 
-\field{The old builder, and why it was replaced}
-The previous builder ran the level recursion
-Eq.~\eqref{eq:recursion} per run with fixed-node Gauss--Laguerre
-quadrature.  Checked against the certified methods it fails in two
-regions: at the far right of the grid (harmless: the values there are
-astronomically negative and never carry weight), and --- destructively
---- at the far left for $r \gtrsim 360$, with errors of tens to
-hundreds of nats, growing with $L$ (at $L{=}26$, $r{=}450$:
-$290$ nats).  The far-left region is exactly where the second
-integrand peak of deep levels sits, so these errors reach real
-codelengths: profile-level deviations of $5 \cdot 10^{-3}$ bits were
-measured already at maximum count $301$, growing with depth.  The
-planned rerun of the paper's experiments on the new store will
-quantify the aggregate effect on published numbers.
+Measured accuracy, end to end (what a query actually receives): over
+$900$ random off-grid checks against the independent reference,
+median error $7\cdot 10^{-14}$ nats, maximum $2.4\cdot 10^{-7}$ ---
+and the maximum occurs only where the value itself is $\sim 10^9$,
+i.e.\ at the resolution limit of $64$-bit numbers.  Measured cost
+(after all savings): $0.01$--$0.15$ s per column on one core, size
+dependent; a first V$=256$ paper run needs $\sim 1.6\cdot 10^5$
+columns, all reused by every later run.  Storage: $\sim 60$ kB per
+column.
 
-\field{Cost and scaling}
-Storage: about $60$\,kB per column ($8$ bytes per grid point); the
-column for $(L, r)$ spans from the series boundary (roughly
-$u = -L \ln r$) to $u = 35$.  An experiment needing $3{,}000$
-column builds was measured at $\sim 0.4$\,s per column per core ---
-currently the \emph{dominant cost of first runs}, and the store makes
-it a one-time cost per column ever, across all experiments.  Growth:
-$|\mathcal{R}|$ grows slowly with corpus size, $L_{\max}$ like
-$\ln d$, and column length like $L \ln r$.
+The previous builder (a level recursion with fixed-node quadrature,
+rebuilt per run) was replaced because certification showed it wrong
+in two regions: harmlessly at the far right of the grid, and
+destructively at the far left for counts $\gtrsim 360$ --- tens to
+hundreds of nats per value, growing with depth, reaching real
+codelengths at the $5\cdot 10^{-3}$ bits-per-profile scale already
+at count $301$.  The verification reruns will quantify the effect on
+the published numbers.
 
-\field{Ideas for further speedup}
-(1)~[exact] A native-code kernel for the contour quadrature (the
-inner loop is complex $\ln\Gamma$ over large arrays); see the
-language section below.
-(2)~[exact] Coarser strides where the eighth difference permits ---
-the machinery already measures exactly this.
-(3)~[exact] A repaired level recursion (stable quadrature with
-per-point peak tracking) as a fast bulk builder for small $r$,
-admitted only where it agrees with the certified methods; the
-previous attempt is shelved because its quadrature window misses the
-integrand peak at deep levels.
+\field{What could be done}
+(1)~[exact] A native-code kernel for the contour quadrature; part
+of the once-projected $5$--$10\times$ is already captured by the
+shared-line saving above, so the realistic remaining native gain is
+$2$--$4\times$ (see the language section).
+(2)~[exact] Coarser build strides where the eighth-difference test
+permits them --- the machinery already measures exactly this.
+(3)~[exact] Store in single precision: half the disk, error
+$\sim 10^{-7}$ relative, still below everything that matters.
+(4)~[exact] A repaired level recursion as a fast bulk builder for
+small counts, admitted only where it agrees with the certified
+methods (a first attempt is shelved: its quadrature window misses
+the integrand peak at deep levels).
 
 \section{T2 --- Evaluating the probability of one profile}
 
@@ -418,54 +384,36 @@ every table refresh (T8).
 Eqs.~\eqref{eq:qdef}--\eqref{eq:psi}:
 $\log q_L(\prof) = \log \int e^{\psi_L(u)}\,du \;-\; \ln \Gamma(N)$.
 
-\field{Input}
-The profile, given as its distinct values $c$ with multiplicities
-$\mu_c$; the tables of T1.
+\field{Input and output}
+In: the profile (distinct values $c$ with multiplicities $\mu_c$)
+and the tables of T1.  Out: the vector
+$\bigl(\log_2 q_L(\prof)\bigr)_{L = 1..L_{\max}}$ and the average.
 
-\field{Output}
-The vector $\bigl(\log_2 q_L(\prof)\bigr)_{L = 1..L_{\max}}$ and the
-average $\log_2 q_{\mathrm{avg}}(\prof)$.
+\field{What is implemented}
+Per level: (i)~assemble the log-integrand $\psi_L$ on the grid from
+$\tilde k + 1$ table rows, $O(G \tilde k)$ additions; (ii)~find all
+local maxima within a fixed window below the global one (the
+integrand can have two peaks); (iii)~refine each maximum by a
+bracketed solve and add the peak contributions by Laplace's method;
+(iv)~add the closed-form left tail.  Profiles with $N \le 1$ and the
+level $L = 1$ come from closed forms.  Batches of profiles run in
+parallel: profiles are split over worker processes, and each level's
+table rows reach the workers through shared memory (important on
+network file systems).  Step (i) dominates: $O(L_{\max} G \tilde k)$
+per profile.  Measured: $7\cdot 10^4$ distinct profiles at
+$L_{\max} = 59$ in $17$ minutes on $64$ cores.
 
-\field{Algorithm}
-For each level: (i)~assemble the log-integrand $\psi_L$ on the grid
-by Eq.~\eqref{eq:psi}; this reads $\tilde k + 1$ rows of the table
-and costs $O(G \tilde k)$ additions.  (ii)~Find all local maxima of
-$\psi_L$ that lie within a fixed window below the global maximum.
-(The integrand can have two peaks: for deep levels and large counts a
-second peak appears far to the left.)  (iii)~Refine each maximum by
-solving $\psi_L'(u) = 0$ in a bracket around it, and add the peak
-contributions by Laplace's method (a Gaussian approximation around
-each peak, summed in the log domain).  (iv)~Add the closed-form left
-tail from Section~\ref{sec:defs}.  Profiles with $N \le 1$, and the level $L = 1$,
-are returned from closed forms without any of this.  Batches of
-profiles are processed in parallel: the profiles are split over
-worker processes, and each level's table rows are handed to the
-workers through shared memory.
-
-\field{Cost and scaling}
-Step (i) dominates: $O(L_{\max}\, G\, \tilde k)$ per profile ---
-between $4 \cdot 10^6$ operations for a poor profile ($\tilde k =
-2$) and $2 \cdot 10^8$ for a rich one ($\tilde k \approx 100$).
-Measured: $7 \cdot 10^4$ distinct profiles at $L_{\max} = 59$ in $17$
-minutes on $64$ cores.
-
-\field{Ideas for speedup}
-(1)~[exact] \emph{Remember where the peaks are.}  The full sweep
-over the grid exists only to locate the maxima reliably.  The
-locations move very little when a profile changes slightly --- in
-particular, between two refreshes of the same row.  Storing the peak
-locations and starting the bracketed solve from the stored value
-would let the algorithm evaluate $\psi_L$ only on a small window
-around each peak, replacing $G$ by a window size of order $10^2$; a
-full sweep remains as a fallback when the solve fails.  Potential
-factor: up to $300$ on step (i).
-(2)~[approx] \emph{Truncate the sum over levels.}  The sum in
-Eq.~\eqref{eq:qdef} is dominated by a few levels around its largest
-term, and the terms decay quickly away from it.  Evaluating the
-dominant levels exactly and bounding the rest would replace
-$L_{\max}$ by an effective count of $5$ to $10$.
-(3)~[approx] Use coarser grids for profiles with small $N$, whose
-integrands are wide and smooth; choose the grid per profile from a
+\field{What could be done}
+(1)~[exact] \emph{Remember where the peaks are.}  The full grid
+sweep exists only to locate the maxima.  They move very little when
+a profile changes slightly (in particular between refreshes of the
+same row); starting the solve from the stored location would replace
+the sweep by a small window, potentially $\sim 300\times$ on
+step~(i), with the full sweep as fallback.
+(2)~[approx] \emph{Truncate the sum over levels}: a few levels
+around the largest term carry the sum; evaluating those exactly and
+bounding the rest replaces $L_{\max}$ by an effective $5$--$10$.
+(3)~[approx] Coarser grids for small-$N$ profiles, chosen from a
 target accuracy.
 
 \section{T3 --- The prediction table of one row}
@@ -489,61 +437,39 @@ next symbol is that particular symbol is
   \label{eq:pred}
 \end{equation}
 The value depends on the symbol only through its count $c$, so the
-table has only $\tilde k + 1$ distinct entries (one per distinct
-count value, and one shared by all unobserved symbols).  The entries
-sum to one exactly; in practice they are renormalized to absorb the
-numerical error of T2, measured at about $5 \cdot 10^{-5}$ relative.
+table has only $\tilde k + 1$ distinct entries.
 
-\field{Input}
-The row's counts; the tables of T1.
+\field{Input and output}
+In: the row's counts; the tables of T1.  Out: the logarithms of the
+$\tilde k + 1$ distinct probabilities and the assignment of symbols
+to them.
 
-\field{Output}
-The logarithms of the $\tilde k + 1$ distinct probabilities, and the
-assignment of each symbol to its probability.
-
-\field{Algorithm}
-Today: one T2 evaluation for $\prof$ and one for each of the
-$\tilde k + 1$ profiles $\prof \oplus c$; results are cached by
-profile, so a profile that appears again (in another row, or at
-another refresh) is not recomputed.
-
-\field{Cost and scaling}
-$\tilde k + 2$ atom evaluations per row, i.e.\ $O(L_{\max} G \tilde
-k^2)$ --- note the square.  Measured: the pooled run at $d =
-1{,}024$ with $C = 32$ refreshes needed $5.9 \cdot 10^6$ atom
-evaluations, which is the dominant cost of that run; the cache helps
-little because an active row's profile is different at every
-refresh.
-
-\field{Ideas for speedup}
-(1)~[exact; IMPLEMENTED July 2026]
-\emph{Compute all the ratios from one integrand.}  The profiles
+\field{What is implemented}
+\emph{All ratios from one integrand.}  The profiles
 $\prof \oplus c$ differ from $\prof$ in a single factor of the
-integrand in Eq.~\eqref{eq:integral}.  Concretely,
+integrand in Eq.~\eqref{eq:integral}:
 \[
   q_L(\prof \oplus c) \;=\; \frac{1}{\Gamma(N+1)} \int
   e^{\psi_L(u)}\, \cdot\, e^{u}\,
-  \frac{\varphi^{(L)}_{c+1}(e^u)}{\varphi^{(L)}_{c}(e^u)}\; du ,
+  \frac{\varphi^{(L)}_{c+1}(e^u)}{\varphi^{(L)}_{c}(e^u)}\; du .
 \]
-with $\psi_L$ the log-integrand of the \emph{base} profile,
-Eq.~\eqref{eq:psi}.  So: assemble $\psi_L$ once, at cost
-$O(G\tilde k)$; then every one of the $\tilde k + 1$ entries is a
-single $O(G)$ update of the shared integrand.  The cost per row
-falls from $O(G \tilde k^{2})$ to $O(G \tilde k)$ --- a factor
-$\tilde k$, about $100$ for the rich rows that dominate.  The
-implementation (the ``family'' evaluator) was verified to reproduce
-the member-by-member results \emph{exactly}, and the sequential
-codes of T6--T8 now route every prediction table through it.
-(2)~[exact] \emph{Update the integrand instead of rebuilding it.}
-Between two refreshes only a few entries of a row change.  If the
-row's $\psi_L$ is kept in memory, it can be updated by adding
-$\ln \varphi^{(L)}_{c'} - \ln \varphi^{(L)}_{c}$ for each changed
-entry: cost proportional to the number of changes, not to $\tilde
-k$.  Keeping $\psi_L$ for one row costs $G \times L_{\max}$ single-
-precision numbers ($\approx 8$\,MB at the largest settings), which
-is affordable for the busy rows --- and the busy rows are exactly
-the expensive ones.  Not yet implemented.
-(3)~The ideas of T2 apply on top.
+The evaluator (the ``family'' evaluator) assembles $\psi_L$ once at
+cost $O(G\tilde k)$ and derives every member by one $O(G)$ update
+--- the cost per row fell from $O(G \tilde k^{2})$ to
+$O(G \tilde k)$, a factor $\tilde k \approx 100$ on the rich rows
+that dominate.  It was verified to reproduce the member-by-member
+results \emph{exactly}, and all prediction tables now route through
+it.  On top of this, results are memoized by profile: a profile seen
+before (another row, another refresh) is never recomputed.
+
+\field{What could be done}
+(1)~[exact] \emph{Update the integrand instead of rebuilding it.}
+Between two refreshes only a few entries of a row change; keeping
+the row's $\psi_L$ in memory and adjusting the changed factors makes
+the cost proportional to the number of changes, not to $\tilde k$.
+Memory: $\approx 8$ MB per kept row at the largest settings ---
+affordable exactly for the busy (expensive) rows.
+(2)~The ideas of T2 apply on top.
 
 \section{T4 --- Counting}
 
@@ -553,52 +479,44 @@ all rows, their profiles, and the assignment of each row to its
 profile.
 
 \field{Formula}
-$m_x(s)$ as in Section~\ref{sec:defs}, for every state $s$ that occurs; then
-profiles and deduplication.
+$m_x(s)$ as in Section~\ref{sec:defs}, for every state $s$ that
+occurs; then profiles and deduplication.
 
-\field{Input}
-The corpus as $n$ integers; the rule $\sigma$.
-
-\field{Output}
+\field{Input and output}
+In: the corpus as $n$ integers; the rule $\sigma$.  Out:
 $\mathcal{N}$ rows with $P$ nonzero entries in total; the list of
 $U$ distinct profiles; the map from rows to profiles.
 
-\field{Algorithm}
-One pass over the corpus with a hash table from (state, symbol)
-pairs to counters; then one pass over rows to sort each row's
-nonzero entries and to deduplicate profiles.
+\field{What is implemented}
+Counting by \emph{sorting packed keys} (implemented July 30): each
+position's (context, next symbol) window is packed into fixed-width
+integers, the packed keys are sorted, and every context's row is
+then one contiguous run --- the same information a suffix array
+exposes through suffix intervals, obtained with a few flat arrays of
+size $n$.  Memory no longer depends on how many distinct contexts
+exist.  Verified to agree \emph{exactly} with the previous
+hash-table counting (synthetic data, a $10^6$-token text8 slice at
+every depth), and on full text8 at full vocabulary, depth two, it
+reproduces the cluster run to the digit ($4{,}400{,}703$ contexts,
+$70{,}090$ distinct profiles).  Measured there: $25$ s and
+$2.6$ GB peak --- against $\sim 200$ GB for the hash counting it
+replaces.  Depths three and beyond work (keys spanning several
+$64$-bit words are supported and tested).
 
-\field{Cost and scaling}
-Time is linear in $n$ and negligible (minutes).  \emph{Memory} is
-the problem: the hash table costs $30$ to $60$ bytes per nonzero
-entry, measured at about $200$\,GB for $P \approx 1.5\cdot 10^7$
-(all contexts of depth up to two at full alphabet).  This is what
-currently forbids depth three.  After deduplication the downstream
-tasks see only $U \ll P$ profiles; measured examples: $4.4 \cdot
-10^6$ rows collapse to $7 \cdot 10^4$ profiles.
-
-\field{Ideas for speedup}
-(1)~[exact] Count on disk: sort the (state, symbol) pairs
-externally and merge equal pairs.  Standard technology; memory
-becomes constant, time $O(n \log n)$ with small constants.
-(2)~[exact] Build a suffix array of the corpus (a sorted index of
-all its positions, storable in a few bytes per position).  Every
-context of every depth corresponds to one contiguous interval of
-the suffix array, so the counts for \emph{all} depths at once can be
-read off from it.  This is the natural route to depth three and
-beyond.
-(3)~[exact] Replace hash tables of Python objects by fixed-width
-integer arrays; this alone reduces the memory constant by an order
-of magnitude.
+\field{What could be done}
+(1)~[exact] A full suffix array if unbounded depth is ever needed in
+one pass; the sorted-key counting handles each depth separately,
+which is enough for everything planned.
+(2)~[exact] The per-context Python loop that deduplicates profiles
+is the remaining (mild) cost at very large context counts; it can be
+vectorized if it ever shows up in measurements.
 
 \section{T5 --- Aggregation}
 
-\field{Task}
-Combine the atoms into the reported numbers: the compressed length
+\field{Task and formula}
+Assemble atoms into results: the total codelength
 of a model, the mixture over a family of models, the posterior over
 the family.
-
-\field{Formula}
 The length of one model is $\sum_{\text{rows}} -\log_2
 q_{\mathrm{avg}}(\text{profile of the row})$.  For the context-tree
 family the mixture over all prunings is computed by the recursion
@@ -606,15 +524,14 @@ $\beta(v) = \frac12 q_{\mathrm{avg}}(\prof_v) + \frac12 \prod_{w}
 \beta(w)$, where $v$ runs over observed contexts, $\prof_v$ is the
 row of $v$, and $w$ runs over the observed one-symbol extensions of
 $v$.  The mixture over any finite family of $K$ models is the
-log-sum-exp of their total log-probabilities minus $\log_2 K$, and
-the posterior over the family is the normalized exponential of the
-same totals.
+log-sum-exp of their total log-probabilities minus $\log_2 K$.
 
-\field{Input/Output/Algorithm/Cost}
-Inputs are the per-profile atoms (T2) and the context structure;
-outputs are bits-per-symbol figures and posteriors.  Single passes
-over rows and contexts; cost $O(\mathcal{N})$ or $O(P)$; measured in
-seconds.  No scaling concern.
+\field{What is implemented}
+Single passes over rows and contexts; cost $O(\mathcal{N})$ or
+$O(P)$; measured in seconds.
+
+\field{What could be done}
+Nothing needed; this task is never a bottleneck.
 
 \section{T6 --- Combining predictors by weighted sums}
 
@@ -624,31 +541,22 @@ corpus under \emph{every} candidate weight vector of a grid
 simultaneously, in one pass.
 
 \field{Formula}
-At position $t$, predictor $e$ supplies the probability
-$p_{e,t}$ that it assigned to the symbol that actually occurred at
-$t$ (read from its current prediction table, T3).  For each weight
-vector $\lambda = (\lambda_0, \dots, \lambda_D)$ of a grid of size
-$K$ (nonnegative entries summing to one):
+At position $t$, predictor $e$ supplies the probability $p_{e,t}$
+it assigned to the symbol that actually occurred (read from its
+current prediction table, T3).  For each weight vector $\lambda$ of
+a grid of size $K$:
 \[
   \mathrm{bits}(\lambda) \;=\; \sum_{t = t_0}^{n}\; -\log_2
-  \Bigl(\, \sum_{e=0}^{D} \lambda_e\; p_{e,t} \Bigr),
+  \Bigl(\, \sum_{e=0}^{D} \lambda_e\; p_{e,t} \Bigr).
 \]
-with $t_0 = 1 + \max_j \delta_j$ the first position at which all
-$D$ lag rules are defined.
 
-\field{Input}
-The $n \times (D+1)$ array of the numbers $p_{e,t}$; the grid of
-weight vectors.
-
-\field{Output}
-$K$ compressed lengths, one per weight vector; their mixture and
-posterior (T5).
-
-\field{Algorithm and cost}
+\field{What is implemented}
 One matrix product of the $p$ array with the weight matrix per block
 of positions, then logarithms: $O(n (D+1) K)$ multiplications,
-about $10^{10}$ at our settings --- minutes.  Linear in everything;
-never a bottleneck.
+$\sim 10^{10}$ at our settings --- minutes.
+
+\field{What could be done}
+Nothing needed; linear in everything.
 
 \section{T7 --- Combining predictors by tempered products}
 
@@ -660,53 +568,49 @@ every position}, and this normalization is the expensive part.
 \field{Formula}
 Let $q_0$ be the no-memory predictor's table and $p_j(x)$ the
 probability that lag predictor $j$ currently assigns to symbol $x$.
-For an exponent vector $\beta = (\beta_1, \dots, \beta_D)$ from a
-grid of size $K_{\mathrm{prod}}$:
+For an exponent vector $\beta$ from a grid of size
+$K_{\mathrm{prod}}$:
 \[
   p_\beta(x) \;=\; \frac{s_\beta(x)}{Z}, \qquad
   s_\beta(x) \;=\; q_0(x) \prod_{j=1}^{D}
   \biggl(\frac{p_j(x)}{q_0(x)}\biggr)^{\!\beta_j}, \qquad
   Z \;=\; \sum_{x=1}^{d} s_\beta(x),
 \]
-where $Z$ is recomputed at every position (the tables $p_j$ depend
-on the current states).
+with $Z$ recomputed at every position.
 
-\field{Input}
-The prediction tables (T3) of the $D$ lag predictors and of $q_0$;
-the exponent grid.
+\field{What is implemented}
+Both forms.  The dense computation (the original path): at every
+position, form the $d$ numbers $\ln s_\beta(x)$ and sum their
+exponentials; cost $O(n\, d\, D\, K_{\mathrm{prod}})$, measured
+$68$ minutes at $d = 4{,}096$ --- the only part of the project whose
+cost is proportional to the alphabet size at every position.
 
-\field{Output}
-$K_{\mathrm{prod}}$ compressed lengths.
-
-\field{Algorithm today, and cost}
-Dense: at every position, form the $d$ numbers $\ln s_\beta(x)$ and
-sum their exponentials.  Cost $O(n\, d\, D\, K_{\mathrm{prod}})$:
-measured $68$ minutes at $d = 4{,}096$; at $d = 10^6$ and $n =
-1.5\cdot 10^8$ it would be $\sim 10^{16}$ operations.  \textbf{This
-is the only part of the project whose cost is proportional to the
-alphabet size at every position.}
-
-\field{Idea for speedup}
-[exact; removes the factor $d$]  By Eq.~\eqref{eq:pred}, each
-prediction table consists of one shared value for all symbols not
-observed in the row, plus individual values for the observed ones.
-Let $S$ be the union, over the $D$ predictors, of the sets of
-symbols observed in their current rows; $|S|$ is a few hundred to a
-few thousand, far below $d$.  For every symbol outside $S$, each
-factor of $s_\beta(x)$ takes its shared value, so $s_\beta(x) =
-(\text{const}) \cdot q_0(x)^{\gamma}$ with $\gamma = 1 - \sum_j
-\beta_j$.  Therefore
+And, since July 30, the SPARSE normalization that removes the factor
+$d$: by Eq.~\eqref{eq:pred}, each prediction table has one shared
+value for all symbols unobserved in the row.  Let $S$ be the union
+of the observed-symbol sets of the $D$ current rows; outside $S$
+every factor takes its shared value, so
+$s_\beta(x) = (\text{const}) \cdot q_0(x)^{\gamma}$ with
+$\gamma = 1 - \sum_j \beta_j$, and
 \[
-  Z \;=\; (\text{const}) \cdot \Bigl( T_\gamma -
-  \sum_{x \in S} q_0(x)^{\gamma} \Bigr)
-  \;+\; \sum_{x \in S} s_\beta(x),
+  Z \;=\; (\text{const}) \cdot \Bigl( T_\gamma +
+  \sum_{x \in S} q_0(x)^{\gamma}\,
+  \bigl(2^{\delta(x)} - 1\bigr) \Bigr),
   \qquad
   T_\gamma \;=\; \sum_{x=1}^{d} q_0(x)^{\gamma},
 \]
-and the power sums $T_\gamma$ are computed once per refresh.  The
-normalization then costs $O(|S| D)$ per position instead of
-$O(d\,D)$ --- exact, and it makes the multiplicative rule feasible
-at any alphabet size.
+with $\delta(x)$ the support corrections and the power sums
+$T_\gamma$ computed once per refresh; the constant cancels against
+the numerator.  Cost per position $O(|S| D)$ instead of $O(d\,D)$.
+Verified to reproduce the dense evaluation to $10^{-14}$
+bits per token on every member of the grid, including saturated rows
+(handled by an arbitrary finite reference value, which the algebra
+permits).  Selected automatically for $d > 4{,}096$.
+
+\field{What could be done}
+Nothing further needed for the planned corpora; the per-chunk
+sorting that groups support entries could move to a compiled kernel
+if it ever dominates.
 
 \section{T8 --- Scheduling the refreshes of a sequential code}
 
@@ -717,94 +621,90 @@ at every position would be exact but hopeless; instead the tables
 are \emph{refreshed} at chosen moments and used unchanged in
 between.  Any refresh schedule that depends only on the past yields
 a valid code; using slightly outdated tables only lengthens the
-output a little.  The schedule determines how many times T3 runs,
-and is therefore the multiplier that separates static runs
-(minutes) from sequential runs (hours).
+output a little.  The schedule determines how many times T3 runs.
 
-\field{Current schedule and cost}
+\field{What is implemented}
 A global clock: all rows are refreshed at $C$ evenly spaced
-positions.  T3 work: $C$ times the number of active rows; measured
-$5.9\cdot 10^6$ atom evaluations at $d = 1{,}024$, $C = 32$.
+positions (measured: $5.9\cdot 10^6$ atom evaluations at
+$d = 1{,}024$, $C = 32$).  On top of it, the memoization of T3 means
+a refresh only pays for rows whose profile actually changed --- the
+evaluation cost is already driven by growth, not by the clock.
 
-\field{Ideas for speedup}
-(0)~[exact; already in effect] \emph{Memoize by profile.}  Every
-evaluated profile is cached, so a refresh only pays for rows whose
-profile actually changed since the last refresh --- the cost is
-already driven by growth, not by the clock.  What the clock still
-controls is the number of refresh \emph{moments} and the assembly of
-the dense tables.
-(1)~[valid code; staleness controlled; changes the coded numbers ---
-an experiment-design decision, not a drop-in] \emph{Refresh on
-growth.}  Rebuild a row's table when the row's total $N$ has grown by
-a fixed factor $1 + \epsilon$ since the last rebuild.  A row that
-ends with total $N$ is then rebuilt only $\log_{1+\epsilon} N$ times
---- logarithmic instead of $C$ --- and the table a position actually
-uses is never based on counts more than a factor $1 + \epsilon$
-behind, which is the kind of error that matters for prediction
-quality.  The trigger depends only on the past, so the code remains
-valid.
+\field{What could be done}
+(1)~[valid code; staleness controlled; \emph{changes the coded
+numbers}, so it is an experiment-design decision, not a drop-in]
+\emph{Refresh on growth}: rebuild a row's table when its total has
+grown by a factor $1+\epsilon$ since the last rebuild.  A row ending
+at total $N$ is rebuilt $\log_{1+\epsilon} N$ times instead of $C$
+times.
 (2)~[exact] Distribute rows over cluster nodes; rows are independent
 once the schedule is fixed.
 
-\section*{Implementation status (July 2026)}
-
-Done and verified: the permanent certified table store with its exact
-builders, interpolation, and full-axis certification (T1); the
-shared-integrand family evaluator for prediction tables (T3(1)),
-verified to reproduce the member-by-member results exactly; parallel
-table builds and parallel profile evaluation through shared memory
-(T1, T2); profile memoization (T8(0)).  Pending, in suggested order:
-the sparse product normalization (T7), remembered peaks (T2(1)),
-integrand updates (T3(2)), suffix-array counting (T4(2)), refresh on
-growth (T8(1), an experiment-design decision).  The current
-first-run bottleneck is building new table columns (T1); recurring
-runs are dominated by T2/T3 evaluation.
-
 \section*{The choice of language}
 
-Everything is Python today, and the question is what a faster
-language would buy.  The answer differs by task, because the heavy
-inner loops are already \emph{vectorized}: they execute inside
-NumPy's compiled kernels (C), not in the Python interpreter.
+Everything is Python today.  The heavy inner loops already execute
+inside NumPy's compiled kernels (C), so a wholesale rewrite in C,
+Rust or Julia would mostly remove glue and gain little where the
+arrays are long: the T2/T3 grid work, the T6/T7 member loops, and
+the counting passes are of this kind (perhaps $1.5$--$3\times$ where
+arrays are short).
 
-Where native code would help little: the T2/T3 grid work (adding and
-exponentiating long arrays), the T6/T7 member loops (matrix products
-over positions), and the counting passes.  These spend their time in
-compiled array kernels already; rewriting them in C, Rust or Julia
-mainly removes the glue between kernel calls --- worth perhaps
-$1.5$--$3\times$ where the arrays are short and the glue is
-proportionally large (many small profiles), and close to nothing
-where the arrays are long.
+Native code would pay in exactly two places.  First, the T1 column
+builder, whose cost is complex $\ln\Gamma$ over quadrature lattices:
+a tight compiled loop should give $5$--$10\times$ on the build.
+Second, the per-peak refinement of T2, which is scalar Python (root
+brackets, a few dozen calls per peak) and would compile well.  The
+pragmatic route is a small compiled extension (Cython/Rust) or
+just-in-time compilation (Numba) for these two or three kernels,
+keeping orchestration, storage and certification in Python.  The
+measurements do not justify more: parallelism and the algorithmic
+ideas above dominate every observed bottleneck.
 
-Where native code would help a lot: (i)~the T1 column builder, whose
-cost is complex $\ln\Gamma$ evaluations over quadrature lattices ---
-a tight native loop with a fast complex-$\ln\Gamma$ (or a
-precomputed-coefficient Lanczos evaluation) could plausibly give
-$5$--$10\times$ on the build, on top of the strided scheme;
-(ii)~the per-peak refinement logic of T2, which is scalar Python
-(root brackets, a few dozen function calls per peak) and would
-vectorize poorly but compile well --- a few $\times$ on
-refinement-heavy workloads.  The pragmatic route for both is a small
-compiled extension (Cython/Rust) or just-in-time compilation
-(Numba) for two or three kernels, keeping the orchestration,
-storage, and certification machinery in Python.  A wholesale rewrite
-is not justified by the measurements: parallelism and the
-algorithmic levers above dominate every observed bottleneck.
+\section*{A plan for enwik9}
 
-\section*{Scaling summary}
+Target: enwik9 ($10^9$ bytes; roughly $1.4\cdot 10^8$ words, ten
+times text8; a vocabulary of a few million distinct words; deepest
+level $L_{\max} \approx 75$--$80$).  Hardware assumed: one machine
+with $64$ cores, $256$ GB of memory, and $\sim 1$ TB of disk ---
+i.e.\ one good cluster node.  Two numbers below are extrapolations
+(marked *); both should be measured with a cheap counting pass
+before anything is committed.
 
-Consider a corpus ten times larger ($n \approx 1.4\cdot 10^8$,
-alphabet $\sim 10^6$).  With today's algorithms: T4 would need
-terabytes of memory (it already blocks depth three); T3 under the
-schedule of T8 would take weeks even with the shared integrand; T7 in
-its dense form is out of the question; T1 and T2 grow only through
-$|\mathcal{R}|$, $G$ and $L_{\max}$ and remain manageable.  With the
-remaining ideas marked [exact] --- integrand updates (T3), remembered
-peaks (T2), the sparse normalization (T7), refresh on growth (T8),
-counting on disk or via a suffix array (T4), and distribution over
-nodes --- each task returns to the scale of node-hours.  The ideas
-marked [approx] (level truncation, limiting formulas for large
-counts, coarser grids) are held in reserve, each with an error that
-can be checked against the exact computation on samples.
+\begin{enumerate}
+\item \emph{Counting (T4) --- DONE (July 30).}  The sorted-key
+counting needs a few flat arrays of size $n$: measured $2.6$ GB on
+full-vocabulary text8 at depth two; at enwik9 scale an estimated
+$20$--$40$ GB transient, within the node.  The former $200$ GB
+blocker is gone.
+
+\item \emph{Tables (T1).}  Expected* $3$--$6\cdot 10^4$ distinct
+count values, giving $2.5$--$5$ million columns over $\sim 80$
+levels.  At the measured $0.01$--$0.15$ s per column per core this is
+$10$--$100$ core-hours, i.e.\ under $2$ hours on the node; the
+native kernel is no longer needed for this step.  Disk:
+$0.2$--$0.5$ TB (half in single precision).  Built once, ever.
+
+\item \emph{Static models (T2, T5).}  Expected* a few hundred
+thousand distinct profiles per model.  The measured rate
+($7\cdot 10^4$ profiles at $59$ levels in $17$ minutes on $64$
+cores) extrapolates to a few hours per model; the remembered-peaks
+idea (T2) would cut this several-fold.  So the static part of an
+enwik9 paper --- memoryless, first-order, context trees --- is
+node-hours, not node-days.
+
+\item \emph{Sequential codes (T3, T6--T8).}  The sparse
+normalization of T7 is implemented (the dense form would cost a
+factor $d = 10^6$ per position).  With it, the family evaluator and
+memoization, and a refresh schedule of $C \approx 32$, the
+pooled-lag experiment extrapolates to a few node-days; the
+refresh-on-growth decision (T8) and integrand updates (T3) would
+bring it under one node-day.
+\end{enumerate}
+
+Order of work, then: (1)~counting --- done; (2)~sparse
+normalization --- done; (3)~the native kernel for the table builder
+and (4)~remembered peaks --- comfort.  Both prerequisites are in
+place; nothing on this list requires more than the one node
+described above.
 
 \end{document}
