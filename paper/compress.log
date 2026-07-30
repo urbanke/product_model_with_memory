@@ -2,8 +2,8 @@ This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded forma
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
-**complexity
-(./complexity.tex
+**compress
+(./compress.tex
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-04-28>
 (/usr/local/texlive/2026/texmf-dist/tex/latex/base/article.cls
@@ -278,27 +278,27 @@ Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
 File: l3backend-pdftex.def 2026-02-18 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count315
 )
-(./complexity.aux)
-\openout1 = `complexity.aux'.
+(./compress.aux)
+\openout1 = `compress.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 16.
-LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 15.
+LaTeX Font Info:    ... okay on input line 15.
 
 *geometry* driver: auto-detecting
 *geometry* detected driver: pdftex
@@ -359,90 +359,60 @@ File: pdftex.def 2025/09/29 v1.2d Graphics/color driver for pdftex
 \makeMPintoPDFobject=\count321
 \everyMPtoPDFconversion=\toks25
 )) (/usr/local/texlive/2026/texmf-dist/tex/latex/graphics/mathcolor.ltx))
-Package hyperref Info: Link coloring ON on input line 16.
+Package hyperref Info: Link coloring ON on input line 15.
 
-(./complexity.out) (./complexity.out)
+(./compress.out) (./compress.out)
 \@outlinefile=\write3
-\openout3 = `complexity.out'.
+\openout3 = `compress.out'.
 
-LaTeX Font Info:    Trying to load font information for U+msa on input line 18.
+LaTeX Font Info:    Trying to load font information for U+msa on input line 17.
 
 
 (/usr/local/texlive/2026/texmf-dist/tex/latex/amsfonts/umsa.fd
 File: umsa.fd 2013/01/14 v3.01 AMS symbols A
 )
-LaTeX Font Info:    Trying to load font information for U+msb on input line 18.
+LaTeX Font Info:    Trying to load font information for U+msb on input line 17.
 
 
 (/usr/local/texlive/2026/texmf-dist/tex/latex/amsfonts/umsb.fd
 File: umsb.fd 2013/01/14 v3.01 AMS symbols B
-)
-Overfull \hbox (0.30469pt too wide) in paragraph at lines 46--58
-\OT1/cmr/m/n/10.95 ery suf-fi-ciently long se-quence of sym-bols. Three rules a
-re used in this project: (a) $\OML/cmm/m/it/10.95 ^^[\OT1/cmr/m/n/10.95 (\OML/c
-mm/m/it/10.95 x[]; [] ; x[]\OT1/cmr/m/n/10.95 ) =
- []
-
-[1
+) [1
 
 {/usr/local/texlive/2026/texmf-var/fonts/map/pdftex/updmap/pdftex.map}]
-[2]
-Overfull \hbox (20.27878pt too wide) detected at line 190
-[][][]\OML/cmm/m/it/10.95 q[]\OT1/cmr/m/n/10.95 (\OT1/cmr/bx/n/10.95 m\OT1/cmr/
-m/n/10.95 )  =  \U/msb/m/n/10.95 E[][] \OML/cmm/m/it/10.95 p[] [] p[][] \OT1/cm
-r/m/n/10.95 (\OML/cmm/m/it/10.95 y[]; [] ; y[][]\OT1/cmr/m/n/10.95 )\OML/cmm/m/
-it/10.95 ;  q[]\OT1/cmr/m/n/10.95 (\OT1/cmr/bx/n/10.95 m\OT1/cmr/m/n/10.95 )  =
-  [] [] \OML/cmm/m/it/10.95 q[]\OT1/cmr/m/n/10.95 (\OT1/cmr/bx/n/10.95 m\OT1/cm
-r/m/n/10.95 )\OML/cmm/m/it/10.95 :
+Overfull \hbox (4.97224pt too wide) in paragraph at lines 113--113
+\OT1/cmr/m/it/10 character first-occurrence stream, in-dex cor-rec-tion 0.2496)
+ --- done and ver-i-fied. en-wik8/enwik9:
  []
 
-[3] [4] [5] [6]
-Overfull \hbox (87.32762pt too wide) in paragraph at lines 517--528
-\OT1/cmr/m/n/10.95 over a fam-ily of mod-els, the pos-te-rior over the fam-ily.
- The length of one model is $[][] \OMS/cmsy/m/n/10.95 ^^@ [][] \OML/cmm/m/it/10
-.95 q[]\OT1/cmr/m/n/10.95 ([])$.
- []
-
-[7] [8] [9] [10] (./complexity.aux)
+[2] [3] (./compress.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-04-28>
  ***********
-Package rerunfilecheck Info: File `complexity.out' has not changed.
-(rerunfilecheck)             Checksum: FD6BF356FE4262C751737A50CDE89671;2066.
+Package rerunfilecheck Info: File `compress.out' has not changed.
+(rerunfilecheck)             Checksum: ACF48EB6FB9D13C22BDC5B111C32B7DB;1624.
  ) 
 Here is how much of TeX's memory you used:
- 10068 strings out of 467341
- 152185 string characters out of 5415369
- 583940 words of memory out of 5000000
- 38980 multiletter control sequences out of 15000+600000
- 639588 words of font info for 85 fonts, out of 8000000 for 9000
+ 9977 strings out of 467341
+ 151151 string characters out of 5415369
+ 578639 words of memory out of 5000000
+ 38958 multiletter control sequences out of 15000+600000
+ 636863 words of font info for 76 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,9n,79p,361b,460s stack positions out of 10000i,1000n,20000p,200000b,200000s
-</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb
-></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb>
-</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx8.pfb></
-usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></u
-sr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></us
-r/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi6.pfb></usr/
-local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr/lo
-cal/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/loca
-l/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/local/
-texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/local/te
-xlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/local/texli
-ve/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/
-2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/local/texlive/202
-6/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2026
-/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/texlive/2026/t
-exmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/local/texlive/2026/tex
-mf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb></usr/local/texlive/2026/texm
-f-dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb></usr/local/texlive/2026/texmf
--dist/fonts/type1/public/amsfonts/symbols/msam10.pfb></usr/local/texlive/2026/t
-exmf-dist/fonts/type1/public/amsfonts/symbols/msbm10.pfb>
-Output written on complexity.pdf (10 pages, 287319 bytes).
+ 75i,5n,79p,320b,557s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb
+></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb>
+</usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></
+usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></us
+r/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/
+local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/loc
+al/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/loca
+l/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/
+texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb>
+Output written on compress.pdf (3 pages, 128743 bytes).
 PDF statistics:
- 276 PDF objects out of 1000 (max. 8388607)
- 221 compressed objects within 3 object streams
- 76 named destinations out of 1000 (max. 500000)
- 73 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 114 PDF objects out of 1000 (max. 8388607)
+ 90 compressed objects within 1 object stream
+ 15 named destinations out of 1000 (max. 500000)
+ 89 words of extra memory for PDF output out of 10000 (max. 10000000)
 
