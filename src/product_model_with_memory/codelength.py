@@ -585,11 +585,9 @@ def _family_level_tables(prov, L: int, rs):
     from product_model_with_memory.layered import ProductMomentTables
 
     M = _provision_level_rows(prov, L, rs)
-    return ProductMomentTables(
-        max_L=L, max_r=rs[-1], r_values=tuple(rs),
-        u_grid=np.asarray(prov["u_grid"], dtype=np.float64),
-        log_phi={(L, r): M[i] for i, r in enumerate(rs)},
-    )
+    return ProductMomentTables.from_matrix(
+        max_L=L, L=L, r_values=rs,
+        u_grid=np.asarray(prov["u_grid"], dtype=np.float64), matrix=M)
 
 
 def _eval_family_level_chunk(d: int, L: int, shm_name, shape, chunk):
@@ -607,13 +605,9 @@ def _eval_family_level_chunk(d: int, L: int, shm_name, shape, chunk):
         if L > 1 and shm_name is not None:
             shm = _attach_shm_untracked(shm_name)
             M = np.ndarray(shape, dtype=np.float64, buffer=shm.buf)
-            tables = ProductMomentTables(
-                max_L=_EVAL_LMAX,
-                max_r=_EVAL_RS[-1],
-                r_values=tuple(_EVAL_RS),
-                u_grid=_EVAL_UGRID,
-                log_phi={(L, r): M[i] for i, r in enumerate(_EVAL_RS)},
-            )
+            tables = ProductMomentTables.from_matrix(
+                max_L=_EVAL_LMAX, L=L, r_values=_EVAL_RS,
+                u_grid=_EVAL_UGRID, matrix=M)
         out = []
         for key, (base, cs) in chunk:
             if L == 1:
@@ -739,13 +733,9 @@ def _eval_level_chunk(d: int, L: int, shm_name, shape, chunk):
         if L > 1:
             shm = _attach_shm_untracked(shm_name)
             M = np.ndarray(shape, dtype=np.float64, buffer=shm.buf)
-            tables = ProductMomentTables(
-                max_L=_EVAL_LMAX,
-                max_r=_EVAL_RS[-1],
-                r_values=tuple(_EVAL_RS),
-                u_grid=_EVAL_UGRID,
-                log_phi={(L, r): M[i] for i, r in enumerate(_EVAL_RS)},
-            )
+            tables = ProductMomentTables.from_matrix(
+                max_L=_EVAL_LMAX, L=L, r_values=_EVAL_RS,
+                u_grid=_EVAL_UGRID, matrix=M)
         out = []
         for n, partition in chunk:
             if L == 1:

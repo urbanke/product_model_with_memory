@@ -391,13 +391,11 @@ class UniversalTables:
         rs = tuple(sorted(int(r) for r in set(r_values)))
         u = np.asarray(u_grid, dtype=np.float64)
         self.ensure_columns(L, rs)
-        return ProductMomentTables(
-            max_L=max(L, 1),
-            max_r=rs[-1],
-            r_values=rs,
-            u_grid=u,
-            log_phi={(L, r): self.log_phi(L, r, u) for r in rs},
-        )
+        M = np.empty((len(rs), len(u)))
+        for i, r in enumerate(rs):
+            M[i] = self.log_phi(L, r, u)
+        return ProductMomentTables.from_matrix(
+            max_L=max(L, 1), L=L, r_values=rs, u_grid=u, matrix=M)
 
     # --------------------------------------------------- certification
 

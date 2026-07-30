@@ -1545,3 +1545,18 @@ data size check at level load, short/non-finite column read raises,
 workers open the store READ-ONLY (a missing column now raises
 instead of concurrent-appending and corrupting the file), and
 verify_store() for checking a transferred store in one line.
+
+## 2026-07-31: batched evaluation (step 1 of the GPU-shaped rewrite)
+Profiled first: after the morning derivative fix, 41% of family time
+was in the CURVATURE evaluation (_rho_prime scalar lookups) which I
+had left on the old path, plus per-peak slice stacking and O(k)
+multiplicity recounts. Fixes, all exact: local evaluator now serves
+derivative+curvature+psi from one set of slices; ProductMomentTables
+carries an optional CONTIGUOUS (R x G) matrix + row_of map and the
+scan gathers from it; row indices/limits cached per profile;
+augmented multiplicities derived in O(1). Measured: 40 families /
+2100 members at L=21: 6.96s -> 2.47s -> 1.44s (4.8x), results
+BITWISE identical to the independent plain scan (0.00e+00). Full
+battery passes. The contiguous layout is the prerequisite for the
+A100/H100 port (fp64 needed; Apple GPUs are fp32-only, so the Mac
+GPU cannot be used).

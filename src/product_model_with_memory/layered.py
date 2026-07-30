@@ -48,6 +48,22 @@ class ProductMomentTables:
     r_values: tuple[int, ...]
     u_grid: FloatArray
     log_phi: dict[tuple[int, int], FloatArray]
+    # Optional CONTIGUOUS view of one level's columns: matrix[row_of[r]]
+    # is ln phi_r on u_grid.  When present, the scan gathers values
+    # straight out of it instead of stacking per-part slices --- the
+    # batched memory layout (also what a GPU port would need).
+    matrix: FloatArray | None = None
+    row_of: dict[int, int] | None = None
+
+    @staticmethod
+    def from_matrix(*, max_L: int, L: int, r_values, u_grid, matrix):
+        rs = tuple(int(r) for r in r_values)
+        return ProductMomentTables(
+            max_L=max_L, max_r=max(rs), r_values=rs,
+            u_grid=np.asarray(u_grid, dtype=np.float64),
+            log_phi={(L, r): matrix[i] for i, r in enumerate(rs)},
+            matrix=matrix, row_of={r: i for i, r in enumerate(rs)},
+        )
 
     def log_phi_value(self, *, L: int, r: int, u: float) -> float:
         if L < 1 or L > self.max_L:
@@ -346,6 +362,27 @@ def log_q_lambda_scan(
     )
 
 
+def _parts_cache(L: int, multiplicity_pairs, tables) -> tuple | None:
+    """Row indices into the contiguous level matrix, plus the exact
+    t -> 0 limits, for the parts of one profile.  Built once per
+    profile and reused by every peak solve."""
+
+    if tables.matrix is None or tables.row_of is None:
+        return None
+    r_parts = [0] + [int(r) for r, _ in multiplicity_pairs]
+    ro = tables.row_of
+    try:
+        rows_r = np.array([ro[r] for r in r_parts])
+        rows_n = np.array([ro[r + 1] for r in r_parts])
+        rows_s = np.array([ro[r + 2] for r in r_parts])
+    except KeyError:
+        return None
+    lg = np.array([math.lgamma(r + 1) for r in r_parts])
+    lg1 = np.array([math.lgamma(r + 2) for r in r_parts])
+    lg2 = np.array([math.lgamma(r + 3) for r in r_parts])
+    return rows_r, rows_n, rows_s, L * lg, L * lg1, L * lg2
+
+
 def _scan_from_psi(
     *,
     d: int,
@@ -358,6 +395,7 @@ def _scan_from_psi(
     psi_grid: FloatArray,
     left_constant: float,
     significance_gap: float,
+    cache=None,
 ) -> QLambdaResult:
     """The peak-finding / refinement half of log_q_lambda_scan, split
     out so that FAMILIES of profiles sharing a grid integrand (a base
@@ -390,9 +428,11 @@ def _scan_from_psi(
 
     # If the derivative is still positive at the grid's left edge the
     # dominant saddle may sit inside the analytic region; solve there too.
+    if cache is None:
+        cache = _parts_cache(L, multiplicity_pairs, tables)
     fd_left = _local_derivative(
         d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
-        tables=tables, u_lo=u0 - 1.0, u_hi=u0)
+        tables=tables, u_lo=u0 - 1.0, u_hi=u0, cache=cache)
     if fd_left(u0) < 0.0:
         lower = u0 - 10.0
         for _ in range(200):
@@ -401,16 +441,9 @@ def _scan_from_psi(
             lower -= 25.0
         if fd_left(lower) > 0.0:
             saddle = float(brentq(fd_left, lower, u0, xtol=1e-11, rtol=1e-11))
-            curv = -_weighted_rho_prime_sum(
-                d=d, s=s, L=L,
-                multiplicity_pairs=multiplicity_pairs, tables=tables, u=saddle,
-            )
+            curv = fd_left.curvature(saddle)
             if math.isfinite(curv) and curv < 0.0:
-                psi_val = _log_q_integrand_without_gamma(
-                    d=d, L=L, N=N, s=s,
-                    multiplicity_pairs=multiplicity_pairs, tables=tables,
-                    u=saddle,
-                )
+                psi_val = fd_left.psi(saddle)
                 # replace the flat left-tail estimate with the refined peak
                 contributions[-1] = _logaddexp_scalar(
                     psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)),
@@ -436,20 +469,13 @@ def _scan_from_psi(
         lo, hi = float(u_grid[i - 1]), float(u_grid[i + 1])
         fd = _local_derivative(
             d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
-            tables=tables, u_lo=lo, u_hi=hi)
+            tables=tables, u_lo=lo, u_hi=hi, cache=cache)
         d_lo, d_hi = fd(lo), fd(hi)
         if d_lo > 0.0 > d_hi:
             saddle = float(brentq(fd, lo, hi, xtol=1e-11, rtol=1e-11))
-            curv = -_weighted_rho_prime_sum(
-                d=d, s=s, L=L,
-                multiplicity_pairs=multiplicity_pairs, tables=tables, u=saddle,
-            )
+            curv = fd.curvature(saddle)
             if math.isfinite(curv) and curv < 0.0:
-                psi_val = _log_q_integrand_without_gamma(
-                    d=d, L=L, N=N, s=s,
-                    multiplicity_pairs=multiplicity_pairs, tables=tables,
-                    u=saddle,
-                )
+                psi_val = fd.psi(saddle)
                 contributions.append(
                     psi_val + 0.5 * math.log(2.0 * math.pi / (-curv))
                 )
@@ -701,6 +727,7 @@ def log_q_lambda_scan_family(
         psi_base = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
         for part, count in multiplicity_pairs:
             psi_base = psi_base + count * tables.log_phi[(L, part)]
+        base_cache = _parts_cache(L, multiplicity_pairs, tables)
         if N == 1:
             base_result = QLambdaResult(
                 log_q=-math.log(d), method="symmetry", d=d, L=L, N=1,
@@ -712,9 +739,10 @@ def log_q_lambda_scan_family(
                 d=d, L=L, N=N, s=s, partition=base,
                 multiplicity_pairs=multiplicity_pairs, tables=tables,
                 psi_grid=psi_base, left_constant=left_constant,
-                significance_gap=significance_gap,
+                significance_gap=significance_gap, cache=base_cache,
             )
         aug_results: dict[int, QLambdaResult] = {}
+        base_mult = dict(multiplicity_pairs)
         for c in cs:
             aug = augmented_partition(base, c)
             psi_aug = (
@@ -723,11 +751,22 @@ def log_q_lambda_scan_family(
             )
             left_aug = left_constant + L * (
                 math.lgamma(c + 2.0) - math.lgamma(c + 1.0))
+            # multiplicities of the augmented profile in O(1) from the
+            # base's (one part moves from c to c+1); the generic O(k)
+            # recount over ~10^3 parts per member dominated otherwise
+            m = dict(base_mult)
+            if c > 0:
+                m[c] = m[c] - 1
+                if m[c] == 0:
+                    del m[c]
+            m[c + 1] = m.get(c + 1, 0) + 1
+            aug_mult = tuple(sorted(m.items()))
             aug_results[c] = _scan_from_psi(
                 d=d, L=L, N=N + 1, s=len(aug), partition=aug,
-                multiplicity_pairs=partition_multiplicities(aug),
+                multiplicity_pairs=aug_mult,
                 tables=tables, psi_grid=psi_aug, left_constant=left_aug,
                 significance_gap=significance_gap,
+                cache=_parts_cache(L, aug_mult, tables),
             )
         return base_result, aug_results
 
@@ -1041,6 +1080,7 @@ def _local_derivative(
     tables: ProductMomentTables,
     u_lo: float,
     u_hi: float,
+    cache=None,
 ):
     """A fast derivative(u) = N - sum(count * rho) valid on
     [u_lo, u_hi], built once per bracket (complexity notes, T2).
@@ -1063,32 +1103,78 @@ def _local_derivative(
     if j1 <= j0:
         j1 = min(len(u_grid) - 1, j0 + 1)
     local_u = u_grid[j0:j1 + 1]
-    Phi_r = np.stack([tables.log_phi[(L, int(r))][j0:j1 + 1]
-                      for r in r_parts])
-    Phi_n = np.stack([tables.log_phi[(L, int(r) + 1)][j0:j1 + 1]
-                      for r in r_parts])
-    left_r = L * np.array([math.lgamma(r + 1) for r in r_parts])
-    left_n = L * np.array([math.lgamma(r + 2) for r in r_parts])
+    if tables.matrix is not None and cache is not None:
+        rows_r, rows_n, rows_s, left_r, left_n, left_s = cache
+        M = tables.matrix
+        Phi_r = M[rows_r, j0:j1 + 1]
+        Phi_n = M[rows_n, j0:j1 + 1]
+        Phi_s = M[rows_s, j0:j1 + 1]
+    else:
+        Phi_r = np.stack([tables.log_phi[(L, int(r))][j0:j1 + 1]
+                          for r in r_parts])
+        Phi_n = np.stack([tables.log_phi[(L, int(r) + 1)][j0:j1 + 1]
+                          for r in r_parts])
+        Phi_s = np.stack([tables.log_phi[(L, int(r) + 2)][j0:j1 + 1]
+                          for r in r_parts])
+        left_r = L * np.array([math.lgamma(r + 1) for r in r_parts])
+        left_n = L * np.array([math.lgamma(r + 2) for r in r_parts])
+        left_s = L * np.array([math.lgamma(r + 3) for r in r_parts])
+
+    def _phis(u: float):
+        """(ln phi_r, ln phi_{r+1}, ln phi_{r+2}) for every part at u,
+        by one vectorized interpolation on the sliced columns; None
+        when u lies right of the slice (caller falls back)."""
+
+        if u < local_u[0]:
+            return left_r, left_n, left_s          # exact t->0 limits
+        if u > local_u[-1]:
+            return None
+        pos = min(max(int(np.searchsorted(local_u, u)) - 1, 0),
+                  len(local_u) - 2)
+        w = (u - local_u[pos]) / (local_u[pos + 1] - local_u[pos])
+        return (Phi_r[:, pos] + w * (Phi_r[:, pos + 1] - Phi_r[:, pos]),
+                Phi_n[:, pos] + w * (Phi_n[:, pos + 1] - Phi_n[:, pos]),
+                Phi_s[:, pos] + w * (Phi_s[:, pos + 1] - Phi_s[:, pos]))
 
     def derivative(u: float) -> float:
-        if u < local_u[0]:
-            # exact t->0 limit branch of log_phi_value
-            rho = np.exp(u + left_n - left_r)
-        elif u > local_u[-1]:
-            # right of the slice: fall back to the generic scalar path
+        got = _phis(u)
+        if got is None:
             return N - _weighted_rho_sum(
                 d=d, s=s, L=L, multiplicity_pairs=multiplicity_pairs,
                 tables=tables, u=u)
-        else:
-            pos = min(max(int(np.searchsorted(local_u, u)) - 1, 0),
-                      len(local_u) - 2)
-            w = ((u - local_u[pos])
-                 / (local_u[pos + 1] - local_u[pos]))
-            pr = Phi_r[:, pos] + w * (Phi_r[:, pos + 1] - Phi_r[:, pos])
-            pn = Phi_n[:, pos] + w * (Phi_n[:, pos + 1] - Phi_n[:, pos])
-            rho = np.exp(u + pn - pr)
-        return float(N - np.dot(counts, rho))
+        pr, pn, _ = got
+        return float(N - np.dot(counts, np.exp(u + pn - pr)))
 
+    def curvature(u: float) -> float:
+        """-(sum count * rho'), the Laplace curvature; identical
+        arithmetic to _weighted_rho_prime_sum, vectorized."""
+
+        got = _phis(u)
+        if got is None:
+            return -_weighted_rho_prime_sum(
+                d=d, s=s, L=L, multiplicity_pairs=multiplicity_pairs,
+                tables=tables, u=u)
+        pr, pn, ps = got
+        rho = np.exp(u + pn - pr)
+        raw_second = np.exp(2.0 * u + ps - pr)
+        vals = rho + rho * rho - raw_second
+        tiny = (vals < 0.0) & (vals > -1e-10 * np.maximum(1.0, np.abs(rho)))
+        vals = np.where(tiny, 0.0, vals)
+        return float(-np.dot(counts, vals))
+
+    def psi(u: float) -> float:
+        """The log-integrand without the -lgamma(N) prefactor."""
+
+        got = _phis(u)
+        if got is None:
+            return _log_q_integrand_without_gamma(
+                d=d, L=L, N=N, s=s,
+                multiplicity_pairs=multiplicity_pairs, tables=tables, u=u)
+        pr, _, _ = got
+        return float(N * u + np.dot(counts, pr))
+
+    derivative.curvature = curvature
+    derivative.psi = psi
     return derivative
 
 

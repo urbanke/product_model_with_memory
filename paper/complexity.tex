@@ -403,6 +403,21 @@ network file systems).  Step (i) dominates: $O(L_{\max} G \tilde k)$
 per profile.  Measured: $7\cdot 10^4$ distinct profiles at
 $L_{\max} = 59$ in $17$ minutes on $64$ cores.
 
+\field{Also implemented (July 31)}
+The peak-refinement arithmetic was the measured bottleneck once the
+integrand assembly was cheap: each bracketed solve, curvature and
+peak-value evaluation called a scalar table lookup per part, tens of
+thousands of times per row.  These now read from a CONTIGUOUS
+per-level matrix of columns through index gathers, vectorized over
+all parts at once, with the row indices and $t\to0$ limits computed
+once per profile; the multiplicities of an augmented profile are
+derived from the base's in constant time instead of recounted.
+Measured on a realistic batch (40 rows, 2100 members, $L=21$):
+$6.96$ s $\to 1.44$ s, a factor $4.8$, with results \emph{bitwise
+identical} to the previous path.  The contiguous layout is also the
+prerequisite for a GPU port, where the same gathers become device
+kernels (double precision required, so data-centre cards only).
+
 \field{What could be done}
 (1)~[exact] \emph{Remember where the peaks are.}  The full grid
 sweep exists only to locate the maxima.  They move very little when
