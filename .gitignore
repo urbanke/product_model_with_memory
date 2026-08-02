@@ -17,3 +17,5 @@ slurm-*.out
 paper/*.pdf
 tables/
 output/
+# compiled kernel binaries: built on demand per machine by kernel.py
+src/product_model_with_memory/*.so
