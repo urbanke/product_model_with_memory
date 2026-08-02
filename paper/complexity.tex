@@ -338,6 +338,27 @@ gain there).  Measured on deep columns: $0.5$ s $\to$
 $0.02$--$0.14$ s each; in the running V$=256$ build, throughput rose
 from $\sim 20$ to $\sim 250$ columns/s on $12$ cores.
 
+\field{Serving stored values}
+An experiment does not read columns one at a time: each level of each
+refresh needs a few hundred to a few thousand columns on one working
+grid.  Measured on 31 July, this \emph{provisioning} was the largest
+single cost of a refresh --- $7.9$ s per level against $0.63$ s to
+evaluate forty rows against the result, a ratio of $12{:}1$ --- and it
+is paid again at every checkpoint.  Its two components were the
+interpolation ($2.1$ s) and, unexpectedly, the far-left series
+($3.8$ s), which ran its full sixty terms at every point although one
+or two determine the value to twenty digits once $t$ is small.  Both
+are now fixed, exactly: the series stops as soon as every point's next
+term falls below $e^{-45}$, and columns are served \emph{together} ---
+since they all lie on the one master grid and differ only by an
+integer offset, the degree-$7$ stencil weights are identical for every
+column and are computed once instead of per column (with a per-point
+fallback where the stencil is clamped at a column's edge).  Net:
+$5.97$ s $\to 1.73$ s for the same $609$ columns, agreeing with the
+per-column path to $2\cdot 10^{-11}$ nats (floating-point
+reassociation, $\sim\!10^{-16}$ relative).  Reading the columns from
+disk was never the issue ($0.05$ s).
+
 Measured accuracy, end to end (what a query actually receives): over
 $900$ random off-grid checks against the independent reference,
 median error $7\cdot 10^{-14}$ nats, maximum $2.4\cdot 10^{-7}$ ---
@@ -418,17 +439,130 @@ identical} to the previous path.  The contiguous layout is also the
 prerequisite for a GPU port, where the same gathers become device
 kernels (double precision required, so data-centre cards only).
 
+\field{Measured, 31 July --- and it reverses the priority}
+Both ideas below were speculative until instrumented.
+\texttt{scripts/peak\_atlas.py} times the atom on real
+\texttt{text8} profiles through the production path, separating
+provisioning, integrand assembly, peak location and refinement, and
+at the same time records every peak of every profile at every level.
+On the full corpus at $V = 1{,}024$ ($L_{\max} = 33$, seven profiles,
+$224$ profile-levels, $73{,}120$ family members):
+
+\begin{itemize}
+\item Grid-dependent work --- assembling $\psi$, the $O(G)$
+  local-maximum scan, and the $O(G)$ update per family member --- is
+  only $14.3\%$ of the per-profile cost.  \textbf{Removing the grid
+  entirely would give $1.17\times$}, not the $\sim\!300\times$ that
+  the old item~(1) hoped for.  Repeated at $V = 64$ and $V = 256$ the
+  share stays in the $14$--$23\%$ band.  The reason is the
+  shared-integrand evaluator already in place: the $O(G\tilde k)$
+  assembly is paid once per profile-level and each family member
+  costs one $O(G)$ update, so refinement --- Python-level bracketed
+  solves --- now dominates, $50.6$ s against $7.7$.
+\item The old item~(2) is the opposite story.  Counting the levels
+  whose terms carry the depth average to a relative $10^{-12}$: the
+  memoryless profile and the heaviest row need \textbf{one of $32$},
+  mid rows two or three, the lightest row eight.  Every one of these
+  sets is \emph{contiguous}, so an outward walk from the mode finds
+  them, and the mode itself moves predictably with the row's weight
+  ($L^\star = 2$ at $N = 1.7\cdot10^{7}$, $L^\star = 7$ at
+  $N = 2.8\cdot10^{4}$).  This is $4$--$32\times$ on the outer loop
+  of everything, and it grows with $L_{\max}$: the same count at
+  $L_{\max} = 26$ was $2$--$22$ of $25$.
+\item The geometry that would have made the old item~(1) safe is
+  nevertheless there, and it now serves refinement instead.  Across
+  all $73{,}120$ augmentations the dominant peak moves by a median of
+  \emph{exactly} zero and a maximum of $0.0127$ --- under a third of
+  one grid step --- and across levels by a stable $0.51$--$0.58$.  A
+  solved base saddle is therefore an almost exact starting point for
+  every member of its family, so the bracketed solves can be replaced
+  by two or three Newton steps.  That attacks the $94\%$, and it
+  composes with the level truncation rather than competing with it.
+\item In $224$ profile-levels at $N$ up to $1.7\cdot 10^{7}$ and
+  $\tilde k$ up to $931$, \emph{every} integrand had exactly one peak
+  within $40$ nats of the maximum, and no peak appeared or vanished
+  along $L$.  The bimodality the scan guards against is real but
+  evidently either rare or more than $40$ nats down, where it
+  contributes $2^{-58}$ relative.  It remains the reason any
+  replacement must keep the full sweep as a verified fallback.
+\end{itemize}
+
+\field{Implemented, 31 July: truncation of the sum over levels}
+\texttt{codelength.\_LevelWindow}.  Levels are walked upward and a
+profile is dropped once its term has fallen $80$ bits below its own
+running maximum \emph{and} has decreased for three consecutive levels.
+The discarded tail is bounded, not assumed: even at its crudest ---
+every remaining level as large as the last one evaluated --- the bound
+is $L_{\max}2^{-80}$, beneath float64 resolution and far beneath the
+$10^{-7}$ nat accuracy of the tables.  The caution is nearly free,
+since the measured curves fall by hundreds of bits within a few levels
+of the mode, so $80$ bits stops at the same level as $40$ for the
+heavy profiles.  Two properties make it safe rather than merely
+accurate: a \emph{family} is truncated as a unit, so the members of a
+prediction table share a level set and the row still normalizes
+exactly; and a family with no base is constant in $L$, so its skipped
+levels are filled with the value they would have had rather than with
+zero.  \texttt{PMM\_NO\_TRUNCATE=1} restores the full sweep.
+
+Since a level's cost is dominated by provisioning its columns when
+many profiles share it, the column set is also narrowed per level to
+the orders the still-active profiles need --- once the heavy profiles
+have collapsed the survivors are light rows with small counts.
+
+Measured twice.  On $256$ real first-order row profiles from
+\texttt{text8} ($d = 256$, $L_{\max} = 26$, two cores): $1.44\times$,
+every \texttt{log2 q\_avg} bitwise identical to the full sweep.  Then
+end to end on the state-family experiment at $V = 256$ over the whole
+corpus ($17$M tokens, $10$ family members, $12$ cores): $54.7$ s
+$\to 35.9$ s wall clock, $1.52\times$, and $5$\,m$13$ s $\to$
+$2$\,m$17$ s of CPU, $2.28\times$ --- the CPU ratio is the honest
+measure of work removed, the wall clock being held up by the serial
+phases.  The two results files are \emph{byte-identical} apart from
+the recorded runtime.  The factor should grow with $L_{\max}$ and with
+corpus size, both of which move rows into the heavy regime where the
+level curve collapses fastest.
+
 \field{What could be done}
-(1)~[exact] \emph{Remember where the peaks are.}  The full grid
-sweep exists only to locate the maxima.  They move very little when
-a profile changes slightly (in particular between refreshes of the
-same row); starting the solve from the stored location would replace
-the sweep by a small window, potentially $\sim 300\times$ on
-step~(i), with the full sweep as fallback.
-(2)~[approx] \emph{Truncate the sum over levels}: a few levels
-around the largest term carry the sum; evaluating those exactly and
-bounding the rest replaces $L_{\max}$ by an effective $5$--$10$.
-(3)~[approx] Coarser grids for small-$N$ profiles, chosen from a
+(1)~[done, see above] \emph{Truncate the sum over levels.}
+(2)~\textbf{Tried and abandoned, 31 July: continuation in the
+refinement.}  The plan was to carry the solved saddle from the base
+profile to each augmentation and replace the bracketed solve by Newton
+from that start.  The measured drift said it should work.  It does
+not, for three independent reasons, and the reasons are worth more
+than the idea was.
+
+\emph{Newton fails on the curvature.}  For heavy profiles the peak is
+far narrower than the grid spacing --- width $\sim N^{-1/2}$, against
+$H = 0.02$ --- so the integrand looks like a spike between grid
+points, and the curvature computed from linearly interpolated moment
+columns is not reliably negative at any point we can seed from.
+Measured: the curvature test rejected the Newton step on $218$ of
+$219$ family members.  Brent is untroubled because it uses only the
+\emph{sign} of the derivative, which is exactly the quantity that
+stays reliable.
+
+\emph{A seeded bracketed secant is slower.}  Built on sign information
+alone, maintaining the bracket, started at the base's saddle: $0.89
+\times$.  The cost of a solve is not the number of iterations but the
+Python-callback evaluations inside them, and \texttt{scipy}'s Brent is
+compiled and already close to the minimum callback count --- $16$ per
+member to take a $0.04$ bracket to $10^{-11}$, where plain bisection
+would need $32$.
+
+\emph{The tolerance is load-bearing, not cosmetic.}  Relaxing
+\texttt{xtol} from $10^{-11}$ to $10^{-8}$ buys $1.19\times$ and moves
+$\log q$ by $1.4$ nats --- two bits.  The saddle \emph{value} is
+insensitive to its last digits, as flatness at a maximum requires, but
+a sloppier root changes which branch the curvature test selects, and
+the local-trapezoid fallback is a materially different estimate.
+
+What this says about the remaining cost: it is $16$ vectorized gathers
+per member, each $O(\tilde k)$, driven from Python.  Making it cheaper
+means making the \emph{evaluation} cheaper or moving the loop out of
+Python --- the compiled-kernel item --- not finding a cleverer root.
+(3)~[exact] \emph{Remember where the peaks are} (the former item~1).
+Deprioritized: measured ceiling $1.17\times$.
+(4)~[approx] Coarser grids for small-$N$ profiles, chosen from a
 target accuracy.
 
 \section{T3 --- The prediction table of one row}
@@ -664,14 +798,27 @@ vectorized large-$t$ series, which together took deep columns from
 $0.5$ s to $0.02$--$0.15$ s (T1); sorted-key counting, $200$ GB
 $\to 2.6$ GB at identical counts (T4); the shared-integrand family
 evaluator (T3); the batched evaluation arithmetic, $4.8\times$ at
-bitwise-identical output (T2/T3); the sparse product normalization,
+bitwise-identical output (T2/T3); the shared-stencil provisioning and
+the series early exit, $3.4\times$ on what profiling showed to be a
+refresh's dominant phase (T1); the sparse product normalization,
 exact to $10^{-14}$ bits per token and independent of alphabet size
 (T7); profile memoization (T8); and parallel execution of table
 building, column provisioning and profile evaluation.
 
-Pending, in the order I would take them: remembered peak locations
-across refreshes (T2(1)); integrand updates between refreshes
-(T3(2)); a compiled kernel for the column builder (T1); and the
+Pending, in the order I would take them.  The list was reordered on
+31 July by the measurements in T2, and then two of its entries were
+closed by them: truncation of the sum over levels is \emph{done}
+($1.52\times$ wall, $2.28\times$ CPU, byte-identical output), and
+continuation of the saddle is \emph{abandoned} --- Newton is defeated
+by a peak narrower than the grid, a seeded secant loses to compiled
+Brent, and the solver tolerance turns out to be load-bearing.
+Remembering peak locations, which headed this list until it was
+instrumented, has a measured ceiling of $1.17\times$.
+
+What remains, therefore: a compiled kernel for the inner evaluation
+and the column builder (T1/T2) --- which the T2(2) post-mortem points
+to directly, since the residual cost is $16$ Python-driven gathers per
+family member; integrand updates between refreshes (T3(2)); and the
 refresh-on-growth schedule (T8(1)), which changes the coded numbers
 and is therefore an experiment-design decision rather than an
 optimization.

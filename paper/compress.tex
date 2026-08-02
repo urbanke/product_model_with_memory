@@ -10,7 +10,8 @@ still to be produced marked [RUN]}
 \author{}
 \date{July 2026 --- working plan}
 
-\newcommand{\planned}[1]{\begin{quote}\small\emph{Plan: #1}\end{quote}}
+% paragraph-safe: \emph would break on a blank line inside the argument
+\newcommand{\planned}[1]{\begin{quote}\small\itshape Plan: #1\end{quote}}
 
 \begin{document}
 \maketitle
@@ -68,17 +69,69 @@ checkpoints, valid code, staleness measured.  Forward references to
 the appendices for everything quantitative.}
 
 \section{Results}
-\planned{The core.  Per file: our whole-file bits/character placed
-INTO the published table, plus the ablation chain showing what each
-structural element buys.  text8 chain so far (verified): memoryless
-1.8870 $\to$ complete first order 1.7503 $\to$ pooled first order
-1.6979 $\to$ [RUN: lag pool, run 8] $\to$ [RUN: pooled-context tree,
-depth 3] $\to$ [RUN: multi-tier backoff] $\to$ [RUN: best structure
-as sequential code = the paper's text8 entry].  enwik8: [RUN: Stage B
---- tokenizer + fidelity accounting first].  enwik9: [RUN: Stage C].
-Also the same-rules vs same-mechanism placement: on text8, published
-floor 1.398 (paq8h) and best PPM-family 1.417 (durilca) --- state
-plainly where we land relative to both.}
+\planned{The core.  Organised by ACCOUNTING REGIME rather than by
+tokenizer, because that is the real distinction: what does the
+representation cost, and who pays for it?
+
+\emph{(a) Bytes.}  No representation cost; everything is in the model.
+Complete, self-contained, comparable to every entry on the published
+list.  DONE: text8 4.1235, enwik8 5.0802, enwik9 5.1565 bits/character
+(memoryless; redundancy $\le 2\cdot10^{-5}$ at all three scales, which
+also establishes that the per-state prior is free in the dense regime,
+so later gains are attributable to memory).
+
+\emph{(b) Our adaptive tokenizer} (TOKENIZER.md v3).  The
+representation is built from the past, so its cost is paid inside the
+code --- the spelling stream is exactly that cost --- and nothing is
+shipped.  A valid benchmark entry.  DONE at $10^8$: all four switch
+settings measured on enwik8, won by intern + conditioned at 3.1282
+bpc, ahead of intern + folded 3.1413, compositional + conditioned
+3.1902 and compositional + folded 3.2032; text8 2.2483.  Conditioning
+the case stream on the token halves it (0.8711 $\to$ 0.4640 bits per
+letter run) but is not free --- on text8, where every letter run is
+lowercase, conditioning \emph{costs} 547{,}004 bits, so both models
+are always evaluated and the cheaper one selected.  [RUN: the winner
+on enwik9.]
+
+\emph{(c) A standard LLM tokenizer} (cl100k\_base via tiktoken).  The
+representation comes from outside.  Reported TWICE: with the
+vocabulary charged (zipped size 776{,}019 bytes = 0.0621 bpc at
+$10^8$ --- a valid entry) and with it excluded (the convention of
+perplexity work --- an LLM-comparability line, not an entry).  One
+stream, fixed alphabet, no escape, spelling or case machinery: the
+purest measurement of the estimator on a token sequence.  DONE at
+$10^8$: text8 2.1716 charged / 2.1095 free; enwik8 2.9552 charged /
+2.8931 free.  [RUN: enwik9.]
+
+The comparison that (b) and (c) make possible, and whose sign we did
+not know in advance, has come out \emph{against} adaptivity: the
+pretrained vocabulary wins by 0.173 bpc on enwik8 even when charged
+for.  The decomposition is the paper's point.  Our dictionary costs
+0.1238 bpc and theirs 0.0621, so the accounting explains only a third
+of the gap; the rest is segmentation.  cl100k\_base packs 3.877 bytes
+into a token where our segmentation averages 2.405, because 63\% of
+our segments are single ``other'' bytes --- the brackets, slashes and
+quotes of XML, which BPE merges and we spend a symbol on each.  Even
+with our spelling streams removed entirely we would sit at 3.004 bpc,
+above the free BPE figure.  Two consequences for this paper: the
+subword variant deferred in the specification is where the next
+representation-level bit lives, and the markup bytes we currently
+spend a token on are exactly the ones a context model should predict
+almost for free, so this is the gap memory is most likely to close.
+
+On top of the representation, the memory chain, currently measured on
+text8 at $V$-capped scales: memoryless 1.8870 $\to$ complete first
+order 1.7503 $\to$ pooled first order 1.6979 bpc; the lag pool adds
+$0.064$ bits/token over the first-order expert and selects the
+additive rule.  Remaining: [RUN: pooled-context tree, depth 3] $\to$
+[RUN: multi-tier backoff] $\to$ [RUN: best structure as a sequential
+code].  Placement against the published floor for each file: text8
+paq8h 1.398 / durilca 1.417; enwik8 cmix 1.170 / durilca'kingsize
+1.297; enwik9 nncp 0.858.
+
+Note for the write-up: the combination rule deserves its own
+treatment --- the additive/multiplicative dichotomy is a special case
+of a more general scheme to be developed.}
 
 \section{Computation}
 \planned{Half a page.  Everything runs from one permanent certified

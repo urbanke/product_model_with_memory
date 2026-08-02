@@ -20,8 +20,7 @@
 \newtheorem{proposition}{Proposition}
 \newtheorem{remark}{Remark}
 
-\title{A Product Model for Sources with Memory\\[2pt]
-  \large Experimental log}
+\title{A Product Model for Sources with Memory}
 \author{}
 \date{\today}
 
@@ -29,17 +28,16 @@
 \maketitle
 
 \begin{abstract}
-This document records the experiments of the \texttt{product\_model\_with\_memory}
-project, which extends the layered product-simplex predictor
-of~\cite{layered2026} from exchangeable (memoryless) sources to sources with
-memory.  The past is summarized in a state, and the scheme predicts from
-(state, next token) pairs; the simplest instance is a first-order Markov
-model in which the state is the previous token.  The document is a running
-log: sections are added as experiments complete, and every number is
-produced by a script in the repository.
+The layered product-simplex predictor of~\cite{layered2026} is extended
+from exchangeable (memoryless) sources to sources with memory.  The past
+is summarized in a state and the scheme predicts from (state, next
+token) pairs; the simplest instance is a first-order Markov model whose
+state is the previous token.  Every number reported here is the exact
+codelength of a complete scheme, produced by a script in the
+repository.
 \end{abstract}
 
-\section{Setup and notation}
+\section{The model}
 \label{sec:setup}
 
 We use the layered product-simplex model of~\cite{layered2026}.  It is
@@ -175,106 +173,448 @@ diagnostic: it names the single depth that best explains the data, and
 its position (relative to $\ln d$) locates the source on the
 complexity spectrum of \cite{layered2026}.
 
-\section{Validation: reproducing the King James Bible experiment}
-\label{sec:kjv}
+\section{Sources and representations}
+\label{sec:sources}
 
-Before any new experiment we re-run the real-text experiment of
-\cite{layered2026}, Section~5.3 (Table~10) with the ported code.  The paper
-used Project Gutenberg etext \#10 ($915{,}849$ word-and-punctuation tokens,
-$13{,}550$ distinct types); our corpus is the closely related eBook \#30
-(``The Bible, King James Version, Complete''), which after removal of the
-header, verse markers, and book headings tokenizes to $917{,}150$ tokens and
-$13{,}542$ types (a $0.15\%$ edition difference).  Alphabet $d=100{,}000$,
-$L_{\max}=\operatorname{round}(2\cstar\ln d)=54$.
-Table~\ref{tab:kjv} compares the published redundancies of the
-depth-averaged predictor with our reproduction.
+\subsection*{Files}
+
+Every result in this paper is measured on the three files of the
+standard text-compression benchmarks (Table~\ref{tab:files}).
+\texttt{text8} is the first $10^8$ bytes of an English Wikipedia dump
+with everything removed except lowercase \texttt{a}--\texttt{z} and the
+space: no markup, no capitals, no punctuation, no digits.
+\texttt{enwik8} and \texttt{enwik9} are the first $10^8$ and $10^9$
+bytes of the same dump left exactly as it is --- XML tags, mixed case,
+punctuation, digits, and text in many languages.  The three differ by roughly one bit per character at every
+stage below.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{rrrrrrr}
+\begin{tabular}{lrrll}
 \toprule
-$n$ & $\hat H_n$ (paper/ours) & \multicolumn{2}{c}{redundancy PS avg} & \multicolumn{2}{c}{mode $L$} \\
- & & paper & ours & paper & ours \\
+file & bytes & byte values & contents & best published \\
 \midrule
- 10{,}000 & 7.56 / 7.504 & 1.052 & 1.019 & 21 & 22 \\
- 30{,}000 & 7.87 / 7.844 & 0.598 & 0.584 & 21 & 21 \\
-100{,}000 & 8.02 / 8.013 & 0.306 & 0.302 & 21 & 21 \\
-300{,}000 & 8.18 / 8.182 & 0.168 & 0.167 & 19 & 19 \\
-full text & 8.48 / 8.478 & 0.095 & 0.095 & 15 & 15 \\
+\texttt{text8}  & $10^8$ & $27$  & cleaned lowercase text & $1.398$ \\
+\texttt{enwik8} & $10^8$ & $205$ & raw Wikipedia XML      & $1.170$ \\
+\texttt{enwik9} & $10^9$ & $206$ & raw Wikipedia XML      & $0.858$ \\
 \bottomrule
 \end{tabular}
-\caption{Reproduction of the King James Bible experiment
-  (\cite{layered2026}, Table~10) with the ported code
-  (\texttt{scripts/unigram\_experiment.py}) on eBook \#30.  Redundancy in
-  bits/token of the depth-averaged product-simplex predictor.  Agreement is
-  to the third decimal on the full text and within the differences
-  expected from the two editions at the smallest prefixes (at $n=10^4$ the two corpora differ most in
-  relative terms: $1{,}108$ vs.\ $1{,}161$ observed types); the posterior
-  depth sequence $21\!-\!22 \to 15$ is reproduced.  We regard the port as
-  validated.}
-\label{tab:kjv}
+\caption{The three files.  ``Byte values'' is how many of the $256$
+  possible bytes actually occur.  ``Best published'' is the best result
+  on the public lists, in bits per character, by \texttt{paq8h},
+  \texttt{cmix~v21} and \texttt{nncp~v3.2} respectively.  Those programs
+  use memory heavily, so they are the target of this work rather than
+  a comparison for its early sections.  \texttt{text8} md5
+  \texttt{3bea1919949baf155f99411df5fada7e}.}
+\label{tab:files}
 \end{table}
 
-\section{The text8 corpus: memoryless baseline}
+\subsection*{Symbols}
+
+Before anything can be compressed we have to say what a symbol is.  This
+paper uses two answers, and everything else follows from them.
+
+\paragraph{Bytes.}  Every byte is a symbol, so the alphabet has $256$
+letters and never changes.  Nothing has to be explained to the decoder
+and bits per symbol are bits per character directly.  This is the honest
+floor: no tokenizer, no assumptions, and any scheme that cannot beat it
+is doing nothing.
+
+\paragraph{The LLM tokenizer.}  Language models are trained on a fixed
+subword vocabulary, built in advance from a large body of text, and
+every large model of recent years sees its training data as a stream of
+such tokens.  We use \texttt{cl100k\_base} --- the vocabulary behind
+GPT-3.5 and GPT-4 --- through the \texttt{tiktoken} library:
+$100{,}277$ subwords, identical for every file.  This is the
+representation that matters here, because the long-term aim of this
+project is a language model built on the same estimator, and a result
+measured on any other token stream would not transfer to it.
+
+It has one cost that bytes do not.  The vocabulary comes from outside
+the file, so a decompressor must carry it and have its size counted:
+$776$ kB zipped, which is $0.0621$ bits per character on a $10^8$-byte
+file and $0.0062$ on $10^9$.  We report every figure both ways --- with
+that charge, which is the honest number, and without it, which is the
+convention of the language-model literature and is not a valid entry.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lll}
+\toprule
+ & bytes & LLM tokenizer \\
+\midrule
+one symbol is         & one byte          & a subword from a fixed list \\
+alphabet size         & $256$             & $100{,}277$ \\
+vocabulary comes from & nothing to learn  & text outside the file \\
+must be shipped       & nothing           & $776$ kB zipped \\
+valid benchmark entry & yes               & only if that is counted \\
+\bottomrule
+\end{tabular}
+\caption{The two representations, before any measurement.  The last two
+  rows decide admissibility: a decompressor may use unlimited
+  computation, but everything it carries must be counted, and a
+  pretrained vocabulary is such a thing.}
+\label{tab:representations}
+\end{table}
+
+\section{No memory}
 \label{sec:text8}
 
-The first corpus beyond the Bible is \texttt{text8}: the first $10^8$ bytes
-of an English Wikipedia dump, stripped to lowercase a--z and space
-($17{,}005{,}207$ tokens, $253{,}854$ distinct types; canonical file, md5
-\texttt{3bea1919949baf155f99411df5fada7e}).  Empirical unigram entropy of
-the full corpus: $10.856$ bits/token; empirical conditional entropy given
-the previous token: $7.286$ bits/token, so first-order memory is worth about
-$3.57$ bits/token in sample.  We take $d=2^{18}=262{,}144$ (the smallest
-power of two above the number of observed types), giving
-$L_{\max}=59$.
-
-The column ``mode $L$'' in Table~\ref{tab:text8-unigram} is the mode
-$L^\star$ of the depth posterior \eqref{eq:depth-posterior}: among the
-$L_{\max}=59$ single-depth mixtures $Q^{(L)}$ that make up the average
-\eqref{eq:depth-average}, it is the depth to which the data assign the
-largest posterior weight $w_L \propto Q^{(L)}(x^n)$ --- equivalently, the
-depth whose mixture gives the prefix the shortest codelength.  It is a
-reported quantity, not a choice: every codelength in the table is that of the full
-depth average, in which all $59$ depths participate with their posterior
-weights.  Watching $L^\star$ move is nonetheless informative, and
-Table~\ref{tab:text8-unigram} shows a pronounced drift discussed in the
-caption.
+This section fixes the floor: what the construction achieves with no
+memory at all (Table~\ref{tab:memoryless}).  Each file is a single count
+profile, so these are one evaluation apiece, and every figure is the
+exact codelength of a complete scheme converted to bits per character of
+the original file.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{rrrrrr}
+\begin{tabular}{lccc}
 \toprule
-$n$ & types & $\hat H_n$ & PS avg & redundancy & mode $L$ \\
+ & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
 \midrule
-     10{,}000 &   2{,}520 &  9.275 & 11.462 & 2.187 & 15 \\
-     30{,}000 &   5{,}651 &  9.736 & 11.183 & 1.446 & 13 \\
-    100{,}000 &  12{,}023 & 10.109 & 10.939 & 0.830 & 12 \\
-    300{,}000 &  24{,}537 & 10.419 & 10.911 & 0.492 & 10 \\
- 1{,}000{,}000 &  52{,}754 & 10.614 & 10.876 & 0.262 &  8 \\
- 3{,}000{,}000 &  96{,}644 & 10.719 & 10.853 & 0.134 &  6 \\
-10{,}000{,}000 & 189{,}074 & 10.852 & 10.910 & 0.058 &  4 \\
-17{,}005{,}207 & 253{,}854 & 10.856 & 10.895 & 0.039 &  4 \\
+bytes                                  & $4.1235$ & $5.0802$ & $5.1565$ \\
+LLM tokenizer, vocabulary counted      & $2.1716$ & $2.9552$ & $2.9775$ \\
+LLM tokenizer, not counted$^{\dagger}$ & $2.1095$ & $2.8931$ & $2.9713$ \\
 \bottomrule
 \end{tabular}
-\caption{Memoryless (unigram) baseline on \texttt{text8}
-  ($d=2^{18}$, $L_{\max}=59$; full run, 20 cores, 41 min): codelength per
-  token of the depth-averaged predictor, redundancy above the empirical
-  unigram entropy of the prefix, and the posterior-mode depth.  Two
-  observations.  First, the redundancy decays smoothly to $0.039$
-  bits/token on the full corpus.  Second, the selected depth falls from
-  $L=15$ ($\approx 1.2\ln d$) to $L=4$ ($\approx 0.3\ln d$): unlike the
-  Bible (13.5\% of a $10^5$ vocabulary used, depth settling at
-  $1.3\ln d$), \texttt{text8} eventually reveals 97\% of its
-  $2^{18}$-sized alphabet, the target is not sparse relative to $d$, and
-  the posterior moves toward the shallow (Laplace-like) end.  This is
-  the behaviour \cite{layered2026} predicts for targets that are not
-  sparse relative to the alphabet, observed here on one corpus by
-  varying $n$ alone.}
-\label{tab:text8-unigram}
+\caption{Memoryless coding, bits per character of the original file.
+  $^{\dagger}$~The last row omits the $776$ kB vocabulary and is
+  therefore not a valid entry; it is given so that these results can be
+  compared with language-model work on equal terms.}
+\label{tab:memoryless}
 \end{table}
 
-\section{Pairs: plug-in conditionals from a joint mixture}
+\paragraph{The estimator costs nothing where there is nothing to learn.}
+Over bytes the layered mixture costs $4.123534$ against a plain order-0
+entropy of $4.123527$ on \texttt{text8}, and the gap is in the fifth
+decimal on all three files ($7\cdot10^{-6}$, $2\cdot10^{-5}$,
+$3\cdot10^{-6}$ bits per character).  The same holds on the large alphabet: over the $100{,}277$ subwords of the LLM
+tokenizer the redundancy over the plug-in entropy is $0.0150$ bits per
+token on \texttt{enwik8} and $0.0020$ on \texttt{enwik9}.  A hundred thousand symbols with tens of millions of
+observations is still the dense regime, so every gain reported below is
+attributable to memory rather than to the estimator.
+
+\paragraph{Choosing symbols well is worth about two bits per character.}
+Coding \texttt{enwik8} byte by byte costs $5.0802$ bits per character,
+while coding it as subwords costs $2.9552$ with the vocabulary counted.
+The difference is $2.13$ bits per character, obtained with no
+context.  It exceeds every gain from memory reported below.
+
+\paragraph{The shipped vocabulary amortizes.}  Its charge falls from
+$0.0621$ bits per character at $10^8$ to $0.0062$ at $10^9$; the
+counted and uncounted rows of Table~\ref{tab:memoryless} differ only
+in the fourth decimal on \texttt{enwik9}.
+
+\section{Memory of order one}
+\label{sec:firstorder}
+
+Each symbol is conditioned on the one immediately before it and on
+nothing else (Table~\ref{tab:firstorder}).  The state is the previous
+symbol, every distinct symbol has its own state, nothing is pooled and
+nothing is capped, and each state's successors are coded by the
+per-state layered mixture used throughout.  The state map is a function
+of the past that the decoder computes for itself, and the product over
+states is exactly the codelength of a symbol-by-symbol predictor: the
+one that weights the depths, at every step, by their posterior given
+what that state has seen so far.  Appendix~\ref{app:factorisation}
+proves this, distinguishes it from the receiver that weights the depths
+uniformly --- a different code, and a worse one --- and reports the
+check that the sequential walk and the closed form agree to $0.000$
+bits.  With a single state the same machinery is the
+memoryless model, and it reproduces the
+Table~\ref{tab:memoryless} figures to four decimals.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+file & memoryless & first order & saved & states & best possible \\
+\midrule
+\texttt{text8}  & $2.1716$ & $1.8298$ & $0.3418$ & $35{,}767$ & $0.701$ \\
+\texttt{enwik8} & $2.9552$ & $2.1135$ & $0.8417$ & $71{,}161$ & $1.242$ \\
+\texttt{enwik9} & $2.9775$ & $1.8371$ & $1.1404$ & $81{,}276$ & $1.281$ \\
+\bottomrule
+\end{tabular}
+\caption{First-order memory over the LLM tokenizer, bits per character
+  of the original file, vocabulary counted throughout.  ``States'' is
+  how many distinct previous symbols occur, so it is the number of
+  separate distributions the model must learn.  ``Best possible'' is the
+  empirical conditional entropy --- what a first-order model would save
+  if handed the true distributions --- so the gap between it and
+  ``saved'' is the price of having to learn them from the file.}
+\label{tab:firstorder}
+\end{table}
+
+\paragraph{Both accounting conventions.}  The figures above count the
+vocabulary.  The uncounted convention of Table~\ref{tab:memoryless} is
+obtained by subtracting the charge, $0.0621$ bits per character at
+$10^8$ and $0.0062$ at $10^9$: $1.7677$ on \texttt{text8}, $2.0514$ on
+\texttt{enwik8}, $1.8309$ on \texttt{enwik9}.  The charge does not
+depend on the model, so ``saved'' and ``best possible'' are the same
+under either convention and only the level changes.
+
+\paragraph{The cost of learning is large.}  In
+Section~\ref{sec:text8} one distribution is estimated from $25.8$
+million observations and the estimator is free.  First order estimates
+$71{,}161$ distributions from the same data, about $362$ observations
+each, and captures $68\%$ of what is available on \texttt{enwik8}.  The
+remainder is the cost of estimating that many distributions from that
+little data.
+
+\paragraph{The cost falls with data per state.}  \texttt{enwik8} and
+\texttt{enwik9} isolate this, since the vocabulary is fixed and the
+state count barely moves --- $71{,}161$ against $81{,}276$ --- while
+the data grows tenfold, from $362$ observations per state to $3{,}368$.
+The captured share rises from $68\%$ to $89\%$, and the shortfall falls
+from $0.400$ to $0.141$ bits per character.  \texttt{enwik9} is
+therefore cheaper per character than \texttt{enwik8} under first-order
+memory, $1.8371$ against $2.1135$, although it is the more expensive
+file without memory.  The learning cost is a property of the ratio of
+data to states, not of the alphabet.
+
+\paragraph{Coarsening the state does not help.}  If the shortfall in
+Table~\ref{tab:firstorder} is the price of learning too many
+distributions, the model should be able to lower it
+by learning fewer.  Fix a grid of values $M$ and let member $M$ give
+its own state to $M$ symbols and pool every other symbol into one
+shared backoff state, so member $M$ has at most $M+1$ states; $M=0$ is
+the memoryless model and $M$ at least the vocabulary size is first
+order.  The family is averaged uniformly, which costs $\log_2$ of the
+number of members over the whole file --- $3.5$ bits for the eleven
+members used here --- and guarantees a codelength within that of the
+best member.  Which $M$ symbols keep their own state is part of the code, so the
+decoder has to know it before decoding begins.  Ranking symbols by
+their frequency in the file being compressed does not satisfy this:
+the ranking would have to be transmitted, about $1.5$ million bits at
+$d = 100{,}277$, or $0.19$ bits per character on \texttt{enwik8},
+which exceeds the entire first-order saving.  Member $M$ therefore
+keeps the $M$ smallest vocabulary indices.  The tokenizer assigns
+indices in merge order, so a small index is a subword that was
+frequent in the tokenizer's training corpus, and the ordering is part
+of the vocabulary that Table~\ref{tab:firstorder} already pays for.
+At $M=0$ and at full memory the two rules coincide, so
+Tables~\ref{tab:memoryless} and~\ref{tab:firstorder} are unaffected.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+states kept & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
+\midrule
+$0$        & $2.1716$ & $2.9552$ & $2.9775$ \\
+$1{,}024$  & $1.9805$ & $2.5686$ & $2.4670$ \\
+$8{,}192$  & $1.8698$ & $2.3311$ & $2.1686$ \\
+$32{,}768$ & $1.8318$ & $2.1666$ & $1.9323$ \\
+all        & $1.8298$ & $2.1135$ & $1.8371$ \\
+\bottomrule
+\end{tabular}
+\caption{Coarsening the first-order state, bits per character,
+  vocabulary counted.  ``All'' is $35{,}767$, $71{,}161$ and $81{,}276$
+  states respectively.  The full grids run to eleven members; the rows
+  shown are those the three grids have in common.}
+\label{tab:coarsen}
+\end{table}
+
+The codelength falls monotonically in $M$ on all three files
+(Table~\ref{tab:coarsen}), the posterior places all its weight on the
+full model, and the mixture equals the best member to four decimals.
+Coarsening never pays.  Each doubling of $M$ still buys between $0.048$
+and $0.11$ bits per character on \texttt{enwik8} up to $65{,}536$
+states, where the remaining states hold fewer than $400$ observations
+each.
+Giving a rare symbol its own state costs the layered estimator very
+little, while pooling it with seventy thousand others discards nearly
+everything it carries, and the family offers only that choice.
+
+The last step is the informative one.  Going from $65{,}536$ states to
+all $71{,}161$ gains $0.0049$ bits per character on \texttt{enwik8},
+and the corresponding last step on \texttt{text8} ($32{,}768$ to all
+$35{,}767$) gains $0.0020$, against tens of thousandths for every
+earlier doubling.  First-order memory sits at the point where additional state
+stops earning its cost, which is a statement about the data rather than
+about the estimator.
+
+\paragraph{Where the excess is.}  The shortfall is therefore not
+caused by having too many states, and its composition can be measured
+directly.  For each state, compare what the code pays with what a
+decoder that already knew that state's successor distribution would
+pay; the difference, summed, is the cost of learning.  The empirical
+conditional entropy is optimistic by an amount that grows with the
+number of states, so it is reported with the Miller--Madow correction
+$(\text{support}_s - 1)/2n_s$ nats per state.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+file & model & $H(X \mid \text{prev})$ & excess & obs.\ per state \\
+\midrule
+\texttt{text8}  & $1.8298$ & $1.4943$ & $0.3355$ & $543$ \\
+\texttt{enwik8} & $2.1135$ & $1.7359$ & $0.3776$ & $362$ \\
+\texttt{enwik9} & $1.8371$ & $1.7062$ & $0.1309$ & $3{,}367$ \\
+\bottomrule
+\end{tabular}
+\caption{The cost of learning under first-order memory, bits per
+  character of the original file, vocabulary counted, on the scale of
+  every other table here.  The conditional entropy carries the
+  Miller--Madow correction of Appendix~\ref{app:mm}, which is $0.026$,
+  $0.027$ and $0.011$ bits per character.  ``Excess'' is the difference
+  between the two columns to its left; the vocabulary charge is common
+  to both and cancels.}
+\label{tab:excess}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+observations in the state & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
+\midrule
+$1$ to $29$          & $3.6\%$  & $7.5\%$  & $1.1\%$ \\
+$30$ to $99$         & $10.1\%$ & $14.9\%$ & $2.6\%$ \\
+$100$ to $999$       & $41.3\%$ & $41.8\%$ & $25.6\%$ \\
+$1{,}000$ to $9{,}999$ & $33.2\%$ & $22.9\%$ & $42.3\%$ \\
+$10{,}000$ and above & $11.8\%$ & $12.9\%$ & $28.4\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Share of the total excess in Table~\ref{tab:excess},
+  by how many observations the state has.}
+\label{tab:excess-where}
+\end{table}
+
+Two facts follow.  The excess falls sharply with data per state:
+\texttt{enwik8} and \texttt{enwik9} differ by a factor of nine in
+observations per state and by a factor of three in excess, at a fixed
+vocabulary and nearly fixed state count.  And the excess does not sit
+in the near-empty states.  A state observed once costs $16.614$ bits
+for its single symbol on every file, which is $\log_2 100{,}277$
+exactly --- the model paying the uniform price over the whole alphabet
+when it knows nothing.  (That figure is per symbol rather than per
+character, because it is a statement about the alphabet; everything
+else in this section is per character.)  Such states hold too few
+tokens to matter.  Two thirds of the excess sits
+in states with between one hundred and ten thousand observations
+(Table~\ref{tab:excess-where}), where estimation would seem
+comfortable.  A state with a thousand observations spread over a
+hundred thousand symbols still pays, in effect, to say which symbols
+occur, and it pays separately from every other state, although the
+marginal distribution already answers most of the question.  What is
+missing is a way for a state to borrow the marginal by a graded amount
+while keeping its own evidence.  The family above cannot express that,
+because the only alternative it offers to a state's own counts is to
+discard them.
+
+\section{Memory of order two}
+\label{sec:ordertwo}
+
+Each additional symbol of context multiplies the number of states
+while the data stay fixed, and Table~\ref{tab:excess-where} prices the
+consequence: a state observed twenty times carries about $2.2$ bits
+per character of excess, against the $0.378$ paid on average, and
+coarsening cannot recover the difference (Table~\ref{tab:coarsen}).
+Whether a second symbol of context pays is therefore a question about
+data per state, and it is answered by running it.
+
+Keep full resolution on the previous token and add graded resolution
+on the one before it: the state is $(x_{t-1},\, b_{M_2}(x_{t-2}))$,
+where $b_{M_2}$ keeps a token if its vocabulary identifier is among
+the $M_2$ smallest and buckets it otherwise, so that $M_2 = 0$
+recovers the first-order model of Table~\ref{tab:firstorder} exactly.
+The map must not depend on the data, which is why the retained set is
+defined by identifier and not by frequency; a frequency threshold
+would have to be transmitted.  Table~\ref{tab:order-two} gives the
+result on all three files.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+file & $M_2$ & states & obs./state & bits/char & vs.\ order one \\
+\midrule
+\texttt{text8}
+ &    0 &    35{,}767 &   543 & \textbf{1.8298} & --- \\
+ &   16 &    59{,}664 &   326 & 1.8329 & $+0.0031$ \\
+ &   64 &   179{,}826 &   108 & 1.8581 & $+0.0282$ \\
+\midrule
+\texttt{enwik8}
+ &    0 &    71{,}160 &   363 & \textbf{2.1135} & --- \\
+ &   16 &   146{,}050 &   177 & 2.1240 & $+0.0105$ \\
+ &   64 &   243{,}396 &   106 & 2.1284 & $+0.0149$ \\
+ &  256 &   427{,}694 &    60 & 2.1519 & $+0.0383$ \\
+\midrule
+\texttt{enwik9}
+ &    0 &    81{,}275 & 3{,}367 & 1.8371 & --- \\
+ &  256 & 1{,}063{,}906 &  257 & 1.7972 & $-0.0399$ \\
+ & 1{,}024 & 2{,}753{,}260 &   99 & \textbf{1.7915} & $-0.0456$ \\
+ & 2{,}048 & 3{,}719{,}340 &    74 & 1.7931 & $-0.0440$ \\
+\bottomrule
+\end{tabular}
+\caption{Order two on the subword alphabet at the full vocabulary
+  ($V = 100{,}277$, $M_1 = V$), against the first-order model
+  ($M_2 = 0$) of Table~\ref{tab:firstorder}.  Observations per state
+  are counted over states actually observed.  The sign of the answer
+  is set by the corpus, not by the construction: on \texttt{text8} and
+  \texttt{enwik8} every allocation of two-back resolution costs more
+  to learn than it gains, and the family posterior puts mass $1.0$ on
+  the first-order member; on \texttt{enwik9}, ten times the data, the
+  same grid pays $0.046$ bits per character, with an optimum in the
+  interior at $M_2 = 1{,}024$.  The two files that lose are exactly the
+  two that begin with a few hundred observations per state; the one
+  that wins begins with a few thousand.}
+\label{tab:order-two}
+\end{table}
+
+\paragraph{Where the crossing is.}  Two files disagreeing is weak
+evidence, because they differ in more than size.  Running prefixes of
+\texttt{enwik9} varies size alone, and brackets the crossing on a
+single source.  At $50$ million tokens the first-order model wins,
+$7.7075$ against $7.7330$ bits per token at $M_2 = 64$; at $100$
+million the order is reversed, $7.4277$ against $7.4182$; over the
+whole file order two wins by $0.1666$.  In observations per first-order
+state those three points are $669$, $1{,}283$ and $3{,}367$, so the
+crossing lies between roughly seven hundred and thirteen hundred
+observations per state.  (Prefixes are reported per token: bits per
+character needs the whole file's byte count and the vocabulary charge,
+neither of which applies to a prefix, so dividing a prefix's bits by
+the file's bytes would give a number that is neither a rate nor
+comparable between prefixes.)  Read together with
+Table~\ref{tab:excess-where}, this is the same statement twice.  The
+second symbol of context does not pay or fail to pay in itself; it pays
+once the states it creates are large enough to learn, and the threshold
+is a property of the estimator, measurable, and roughly a thousand
+observations here.
+
+\paragraph{Forecasts chose what to run; what is reported is measured.}
+Each run above costs hours, so candidate grids were ranked beforehand
+by a forecast that needs no model: count the states a map creates,
+take the plug-in conditional entropy, and add the learning cost that
+Table~\ref{tab:excess-where} measures per bucket of state size.  The
+forecast ranks maps reliably on a fixed stream (within $0.0004$ bits
+per token at moderate splits) but not across stream lengths (off by
+$0.068$ bits per token on the $100$-million-token prefix, seven times
+the effect being forecast), so it was used for the ranking and for
+nothing else.  Every number in Tables~\ref{tab:firstorder}
+and~\ref{tab:order-two} is measured.
+
+The finding of these first three sections constrains everything that
+follows: the cost of memory is set by what a single state must pay to
+learn its own distribution, not by how many states there are.
+Table~\ref{tab:firstorder} is the reference point for the
+constructions of the next sections.
+
+\section{Pairs}
 \label{sec:pairs}
+
+\emph{Representation.  From here to
+Section~\ref{sec:comparison} the symbol is a \texttt{text8} word:
+\texttt{text8} split on spaces, the space folded into the word,
+$253{,}854$ types.  This is a third alphabet, distinct from the two of
+Section~\ref{sec:sources}, and it applies to \texttt{text8} alone, since
+\texttt{enwik8} and \texttt{enwik9} are raw markup with nothing to
+split on.  Its figures are therefore not comparable with
+Tables~\ref{tab:memoryless} and~\ref{tab:firstorder}: a different
+alphabet over a different file.  What the sections below establish is
+the behaviour of the constructions, not a benchmark position.}
 
 The first memory experiment applies the same machinery to sliding-window
 pairs.  We describe exactly what \texttt{scripts/pair\_experiment.py}
@@ -378,13 +718,15 @@ $K$ & $d=V^2$ & $L_{\max}$ & pairs obs. & $\hat H_1$ & $\hat H(x'|x)$ & $\ell$ (
   the $2^{28}$ pair alphabet unseen and $6.6$ samples per observed pair,
   the gap is $2.2\%$ of the conditional entropy.  The joint posterior
   remains a point mass throughout, at depths $L = 7, 6, 8, 10, 15$ that
-  grow as the pair distribution becomes sparse relative to its alphabet,
-  as in Table~\ref{tab:text8-unigram}.  Predictive normalization
+  grow as the pair distribution becomes sparse relative to its alphabet
+  --- the mirror image of the drift reported in
+  Section~\ref{sec:text8}, where the posterior moved to shallow depths
+  as \texttt{text8}'s alphabet filled up.  Predictive normalization
   diagnostics: $10^{-13}$--$10^{-6}$ in all rows.}
 \label{tab:pairs}
 \end{table}
 
-\section{Program: averaging over a family of state maps}
+\section{Families of state maps}
 \label{sec:states}
 
 The pair experiment is the first step of a more general program, which we
@@ -526,7 +868,7 @@ the $\sim 2\cdot 10^5$ states of a ten-member grid on full \texttt{text8}
 collapse to $\sim 2.7\cdot 10^4$ unique profiles, each evaluated once.
 
 \subsubsection*{The first order-two experiment}
-The first run of this family (full \texttt{text8}, $V=1{,}024$) uses the
+At $V=1{,}024$ the family uses the
 ten-member grid
 \[
   \{(0,0)\} \;\cup\; \{(M,0): M = 64, 256, 1024\}
@@ -808,7 +1150,7 @@ that allocation.  (iii) The \emph{MAP pruning} (replace the sum in
 leaves-by-depth histogram reports \emph{where} in the corpus depth is
 used, in addition to how much it is worth.
 
-\subsubsection*{First run: full \texttt{text8}, $V=1{,}024$, $D=2$}
+\subsubsection*{$V=1{,}024$, depth $2$}
 Table~\ref{tab:context-tree} reports the run ($n$ coded
 $= 17{,}005{,}205$, $L_{\max}=33$; $31$ minutes on 20 cores).  The
 fixed-depth baselines land exactly on their counterparts in
@@ -858,7 +1200,7 @@ first-order plug-in ceiling $\hat H(x'\,|\,x)$
 \label{tab:context-tree}
 \end{table}
 
-\subsubsection*{Second run: full \texttt{text8}, $V=4{,}096$, $D=2$}
+\subsubsection*{$V=4{,}096$, depth $2$}
 The question left open by Table~\ref{tab:product-family-4096} was
 whether the return of the optimum to the first-order boundary at
 $V=4{,}096$ meant that second-order structure had become worthless at
@@ -958,10 +1300,9 @@ MAP: depth-2 leaves & 26{,}506 & 2{,}038 & & & 31{,}626 & 0 & \\
 A remaining experiment is $D=3$ at $V=1{,}024$: whether any context
 supports a third token of depth.
 
-\subsubsection*{Third and fourth runs: $V=16{,}384$ and the full
-vocabulary}
-Two further scales, run on the laboratory cluster
-(Table~\ref{tab:context-tree-large}), complete the vocabulary sweep at
+\subsubsection*{$V=16{,}384$ and the full vocabulary}
+Two further scales (Table~\ref{tab:context-tree-large}) complete the
+vocabulary sweep at
 $D=2$.  At $V=16{,}384$ every trend of the sweep continues in the same
 direction: the tree still beats the best fixed depth, but by less
 ($0.0135$ bits/token from $49$ split contexts), and the sequential
@@ -991,16 +1332,16 @@ depth is spent only on top of an affordable context alphabet.
  & $V=16{,}384$ & & $V=253{,}855$ \\
 \midrule
 complete depth $0$      & 9.7068  & & 10.8942 \\
-complete depth $1$      & 8.2518  & & 10.0909 \\
-complete depth $2$      & 9.8690  & & 13.0817 \\
-\textbf{family}         & \textbf{8.2383} & & 10.0919 \\
+complete depth $1$      & 8.2518  & & 10.0915 \\
+complete depth $2$      & 9.8672  & & 13.0887 \\
+\textbf{family}         & \textbf{8.2382} & & 10.0926 \\
 MAP split contexts      & 49      & & --- \\
 plug-in $\hat H(x'|x)$  & 7.1541  & & 7.2863 \\
 \bottomrule
 \end{tabular}
 \caption{The context-tree family at the two largest scales (full
   \texttt{text8}, $D=2$, bits/token; $73{,}091$ and $70{,}090$ unique
-  profiles; cluster runs).  At $V=16{,}384$ the pattern of
+  profiles).  At $V=16{,}384$ the pattern of
   Table~\ref{tab:context-tree-4096} continues: a small, real gain over
   the best fixed depth, concentrated in few contexts.  At the full
   vocabulary the tree family is marginally \emph{above} complete
@@ -1031,8 +1372,8 @@ a common learning-cost \emph{offset} $L$ (the cost of estimating $V$
 conditional distributions instead of one), so $v(\delta)$ below is the
 \emph{net} value
 of lag $\delta$, and estimates the raw pairwise information only up to
-$L$ --- a distinction invisible at $V=1{,}024$ on short lags but, as
-the second run shows, both visible and measurable at $V=4{,}096$.  Second, the $\delta = 1$
+$L$ --- a distinction invisible at $V=1{,}024$ on short lags but
+both visible and measurable at $V=4{,}096$.  Second, the $\delta = 1$
 member must reproduce the first-order family's finest member, which it
 does ($5.0564$, matching Tables~\ref{tab:state-family}
 and~\ref{tab:product-family} to all reported decimals).
@@ -1078,7 +1419,7 @@ family mixture & 5.0564 & & \\
 \end{table}
 
 \paragraph{Scale two: $V=4{,}096$, lags to $32$.}
-The second run (deltas $\{0,1,2,3,4,6,8,12,16,24,32\}$; $40{,}961$
+At the wider grid (deltas $\{0,1,2,3,4,6,8,12,16,24,32\}$; $40{,}961$
 profiles, no deduplication benefit at full resolution; $85$ minutes on
 20 cores) is reported in Table~\ref{tab:lag-family-4096}.  Its
 qualitatively new feature is that the \emph{net} profile crosses zero:
@@ -1201,7 +1542,68 @@ total does not level off.  A model that spends $V$ conditional
 distributions per lag therefore cannot use the tail; a rule that
 combines per-lag predictions pays one weight per added lag
 (Section~\ref{sec:outlook}, scheme 5).  How much of the total remains
-after accounting for the overlap between lags has not been measured.
+after accounting for the overlap between lags is measured next.
+
+\subsection*{Pooled lags}
+\label{sec:pooled-result}
+The pooled evaluator of scheme 5 was run at $V = 1{,}024$ over the
+full corpus with lags $\{1,2,3,4,6,8\}$, tables refreshed at $C = 32$
+checkpoints, and $115$ members evaluated in one pass: the mixture
+grid, the tempered-product grid, and every one-hot member of both.
+Every member codes the same $17{,}005{,}199$ positions, so all are
+directly comparable and mixable (Table~\ref{tab:pooled-lags}).
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lr}
+\toprule
+member & bits/token \\
+\midrule
+memoryless expert                       & 6.1147 \\
+lag $2$ alone                           & 5.8398 \\
+lag $3$ alone                           & 6.0390 \\
+lag $8$ alone                           & 6.1673 \\
+lag $1$ alone (checkpointed first order) & 5.1975 \\
+best tempered product ($b=1.0$, $c=2.0$) & 5.1558 \\
+\textbf{best mixture} ($a=3.0$, $s=0.8$, $m=0.02$) & \textbf{5.1539} \\
+family mixture over all $115$ members   & 5.1539 \\
+\bottomrule
+\end{tabular}
+\caption{Pooled lag predictors at $V=1{,}024$ (full \texttt{text8},
+  $C=32$, layered per-state leaves).  These are \emph{sequential}
+  codes whose tables are frozen between checkpoints, so the staleness
+  cost is included in every row --- which is why lag $1$ alone reads
+  $5.1975$ against the $5.0564$ of the static first-order family
+  (Table~\ref{tab:state-family}); the comparison to make here is
+  internal, between rows.}
+\label{tab:pooled-lags}
+\end{table}
+
+Three findings.  \emph{The tail is worth $0.044$ bits/token}: pooling
+five further lags onto the first-order expert improves it from
+$5.1975$ to $5.1539$, about $0.8\%$.  The cumulative tail information
+of Figure~\ref{fig:lag-profile} does not level off, but most of it is
+redundant with lag $1$ once the overlap is paid for --- and the gain
+is an order of magnitude smaller than the $0.31$ bits/token that
+pooling \emph{contexts} bought at the full vocabulary
+(Table~\ref{tab:interior-m}).
+
+\emph{The two pooling rules nearly tie, with a slight edge to the
+additive rule.}  Eleven of the twelve best members are mixtures and
+the posterior places mass $1.0000$ on a single mixture member, but
+the best tempered product trails the best mixture by only $0.002$
+bits/token.  At these lags the two idealizations --- a latent switch
+between experts and conditionally independent evidence --- are close
+to indistinguishable in codelength; neighbouring lags are strongly
+redundant, which caps what multiplying their evidence can add over
+reweighting it.
+
+\emph{The optimum wants lag $1$ to dominate.}  The winning vector has
+the steepest available decay ($\lambda_i \propto (1+i)^{-3}$, the
+boundary of the decay grid) with $2\%$ reserved for the memoryless
+expert, so the family wants a fast-fading contribution from the tail;
+the true optimum in the decay exponent may lie outside the grid, and
+a wider range is the cheap next run.
 
 \begin{figure}[ht]
 \centering
@@ -1217,7 +1619,7 @@ after accounting for the overlap between lags has not been measured.
 \label{fig:lag-profile}
 \end{figure}
 
-\section{Comparison with published results on \texttt{text8}}
+\section{Comparison with published results}
 \label{sec:comparison}
 
 \paragraph{Units.}
@@ -1398,12 +1800,13 @@ the state-family and context-tree experiments up to the full
 vocabulary, and the KT-leaf ablation; outcome: the interior optimum
 (Table~\ref{tab:interior-m}), the $1.6979$ bpc figure, and the
 finding that further gains at full vocabulary lie in pooled context
-alphabets.  \emph{Phase 2} (built and verified; first full run in
-progress): the sequential pooled-lag evaluator --- per-step
-predictive distributions of the layered per-state mixtures,
+alphabets.  \emph{Phase 2} (done): the sequential pooled-lag evaluator ---
+per-step predictive distributions of the layered per-state mixtures,
 refreshed at checkpoints, pooled under both combination rules with
-grids averaged at sequence level; its output is the marginal value
-of the long-range tail.
+grids averaged at sequence level.  Outcome
+(Section~\ref{sec:pooled-result}): the long-range tail is worth
+$0.064$ bits/token over the first-order expert, and the data selects
+the additive rule over the tempered product.
 
 \emph{Stage A (text8): close the $0.575$ bits/token to
 \texttt{ppmd}.}  Four measured increments: (i)~the Phase-2 result;
@@ -1442,12 +1845,11 @@ through mixing networks tuned by online gradient steps; reaching
 them would abandon this paper's design principle --- posteriors over
 generated families --- and is a different project.
 
-\section{Outlook: generating state maps, not designing them}
+\section{Generated state maps}
 \label{sec:outlook}
 
-This section records the candidate schemes for state maps that
-summarize \emph{much longer} contexts, together with the criterion that
-selects them.  Throughout, two design principles are held fixed:
+State maps that summarize \emph{much longer} contexts, and the
+criterion that selects among them.  Throughout, two design principles are held fixed:
 (a) every predictor is a Bayesian mixture; (b) the prior over state
 maps is \emph{generated} by products or recursion --- so that a broad
 range of memory complexities arises implicitly, as the layered
@@ -1588,6 +1990,292 @@ solvable instance of architectures-as-priors in which \emph{recurrence},
 not only depth, is part of the architecture; two nested layered
 constructions, one spreading emission complexity ($L$), one spreading
 memory complexity ($R$), each averaged, each priced, jointly adapting.
+
+\appendix
+
+\section{The bias of the empirical conditional entropy}
+\label{app:mm}
+
+The ``best possible'' column of Table~\ref{tab:firstorder} and the
+target in Table~\ref{tab:excess} are computed from the file's own
+counts, and such an estimate is systematically too small.  This
+appendix states the correction used and why it is needed, since the
+size of the bias differs between the files and a comparison across
+them is otherwise not a comparison.
+
+Let a state $s$ occur $n_s$ times with successor counts
+$(c_{s1},\dots,c_{sk_s})$ over the $k_s$ symbols that actually follow
+it, and write $\hat p_{sj} = c_{sj}/n_s$.  The empirical conditional
+entropy is
+\[
+  \hat H(X \mid \text{prev})
+  \;=\; \sum_s \frac{n_s}{n} \, \hat H_s ,
+  \qquad
+  \hat H_s = -\sum_{j} \hat p_{sj} \log_2 \hat p_{sj} .
+\]
+Each $\hat H_s$ is the entropy of the observed proportions rather than
+of the true ones.  Sampling noise always makes a distribution look
+less uniform than it is --- some symbols happen not to occur, others
+occur more often than their probability warrants --- and entropy is
+concave, so $\mathbb{E}\,\hat H_s < H_s$.  Expanding $\hat H_s$ about
+the true probabilities and taking expectations gives the classical
+first-order term
+\[
+  \mathbb{E}\,\hat H_s \;=\; H_s - \frac{k_s - 1}{2 n_s} + O(n_s^{-2})
+  \quad \text{nats},
+\]
+so adding $(k_s-1)/2n_s$ nats to each state removes the leading bias.
+This is the Miller--Madow correction.  Weighting by $n_s/n$ and
+converting to bits, the correction to the whole table is
+\[
+  \frac{1}{2 n \ln 2} \sum_s (k_s - 1)
+  \;=\; \frac{P - S}{2 n \ln 2},
+\]
+with $P$ the number of distinct (state, successor) pairs and $S$ the
+number of states.  It depends on the data only through those two
+counts.
+
+Three properties matter for how the corrected figures are read.  The
+correction grows with the number of distinct pairs, so a model with
+more states is flattered more by the uncorrected estimate; this is
+exactly the comparison made between \texttt{enwik8} and
+\texttt{enwik9}, and leaving it out would exaggerate the difference
+between them.  It is $0.026$, $0.027$ and $0.011$ bits per character on
+\texttt{text8}, \texttt{enwik8} and \texttt{enwik9}, so it is small
+against the excesses of $0.336$, $0.378$ and $0.131$ that it adjusts
+--- the gap those tables report is not an artefact of the estimator.
+And it is a first-order term only: it is accurate when $n_s$ is large
+relative to $k_s$ and understates the bias when it is not, so for
+states seen once or twice the corrected target is still optimistic.
+Those states hold a negligible share of the tokens
+(Table~\ref{tab:excess-where}), so this does not affect the totals,
+but it means the corrected entropy should be read as a lower bound on
+what a first-order model could achieve, not as an attainable target.
+
+Nothing in the model or in any codelength depends on this correction.
+It is applied only to the empirical quantity the codelengths are
+compared against.
+
+\section{Why the product over states is a code}
+\label{app:factorisation}
+
+Every codelength reported here for a model with memory is computed as a
+product over states,
+\[
+  Q^{\sigma}(x^n) \;=\; \prod_{s} q\bigl(\lambda_s\bigr),
+\]
+with $\lambda_s$ the final count profile of the successors emitted from
+state $s$, and $q$ the depth-averaged layered mixture.  Nothing is
+recomputed as the file is read.  That deserves an argument, because it
+appears to use counts the decoder does not have, and because the
+product does not in general commute with the averaging inside $q$.
+
+\paragraph{What is required of $q$.}  Let $q$ assign a probability to
+each finite sequence over the alphabet, and require two properties.  It
+is \emph{exchangeable}: $q$ depends on a sequence only through its count
+profile.  And it is \emph{consistent}:
+$\sum_{y} q(\lambda \oplus y) = q(\lambda)$ for every profile $\lambda$,
+where $\lambda \oplus y$ is $\lambda$ with the count of $y$ raised by
+one.  Both hold for $q^{(L)}$ at each depth, being the law of an
+exchangeable sequence, and both are preserved by convex combination, so
+they hold for $q_{\mathrm{avg}} = L_{\max}^{-1}\sum_L q^{(L)}$.
+
+\paragraph{The state map.}  Let $\sigma$ send a past $x^{t-1}$ to a
+state $\sigma(x^{t-1})$, using only symbols the decoder has already
+recovered.  Write $s_t = \sigma(x^{t-1})$, and let $\lambda_s^{(t)}$ be
+the profile of the successors emitted from state $s$ strictly before
+time $t$.  Both are functions of the past alone.
+
+\paragraph{Claim.}  Define the one-step predictor
+\[
+  P(y \mid x^{t-1}) \;=\;
+  \frac{q\bigl(\lambda^{(t)}_{s_t} \oplus y\bigr)}
+       {q\bigl(\lambda^{(t)}_{s_t}\bigr)} .
+\]
+Then $P$ is a probability distribution at every step, and
+$\prod_{t} P(x_t \mid x^{t-1}) = Q^{\sigma}(x^n)$.
+
+\paragraph{Proof.}  That $P$ sums to one over $y$ is consistency, applied
+at the profile $\lambda^{(t)}_{s_t}$, which the decoder can form.  So
+$\prod_t P(x_t \mid x^{t-1})$ is a probability assignment on sequences,
+and $-\log_2$ of it is a codelength realisable symbol by symbol.  For
+the identity, group the product by state.  Fix $s$ and let
+$t_1 < \dots < t_{n_s}$ be the times at which the state is $s$.  Before
+$t_1$ that state has emitted nothing, so $\lambda^{(t_1)}_s$ is empty;
+and $\lambda^{(t_{i+1})}_s = \lambda^{(t_i)}_s \oplus x_{t_i}$, because
+between $t_i$ and $t_{i+1}$ no successor is emitted from $s$.  Hence
+\[
+  \prod_{i=1}^{n_s}
+  \frac{q\bigl(\lambda^{(t_i)}_s \oplus x_{t_i}\bigr)}
+       {q\bigl(\lambda^{(t_i)}_s\bigr)}
+  \;=\; \frac{q(\lambda_s)}{q(\emptyset)} \;=\; q(\lambda_s),
+\]
+the intermediate factors cancelling in pairs.  Multiplying over states
+gives the claim. \qed
+
+Exchangeability is what makes the telescoped numerator depend only on
+the profile: the order in which a state's successors arrived is
+irrelevant, so a running profile per state is all the decoder carries.
+The final counts appear in our arithmetic and never in the decoder's.
+
+\paragraph{The averaging does not commute with the product.}  Here a
+plausible-looking alternative is wrong.  The two expressions
+\[
+  \prod_s \Bigl( \tfrac{1}{L_{\max}} \sum_L q^{(L)}(\lambda_s) \Bigr)
+  \qquad\text{and}\qquad
+  \tfrac{1}{L_{\max}} \sum_L \prod_s q^{(L)}(\lambda_s)
+\]
+are not equal.  Both are legitimate codes and they are different models:
+the first draws a depth independently for each state, the second draws
+one depth and applies it everywhere.  We compute the first, which is the
+model of Section~\ref{sec:firstorder} --- the construction gives every
+state its own weights and therefore its own depth.  The proof above
+establishes the first, and nothing in it licenses the second.
+
+The family average sits outside all of this.  A convex combination
+$\sum_\sigma w_\sigma Q^{\sigma}$ of probability assignments on the same
+sequence space is again one, and its one-step predictor is the mixture
+of the members' predictors weighted by their \emph{posteriors} given the
+past.  Its receiver keeps one bookkeeping per member --- that member's
+own partition and its own running profiles --- predicts with each, and
+mixes.  The posterior weights move at every step, yet the accumulated
+cost is $-\log_2 \sum_\sigma w_\sigma Q^{\sigma}(x^n)$ with the
+\emph{prior} weights on the final member joints, because each posterior
+weight cancels against the member joint it is built from.
+
+\paragraph{Which scheme the number measures.}  Every codelength in
+this paper is obtained from one evaluation at the final counts.  It is
+worth stating as plainly as possible what that number is, because more
+than one sequential scheme can be described as ``averaging the
+estimators'', and they do not agree.
+
+Write $P^{(L)}(y \mid \lambda) = q^{(L)}(\lambda \oplus y)/q^{(L)}(\lambda)$
+for the prediction the depth-$L$ model makes at a state whose running
+profile is $\lambda$.  Two receivers suggest themselves:
+\[
+  \text{(a)}\;\; \sum_L w_L(\lambda)\, P^{(L)}(y \mid \lambda),
+  \qquad
+  \text{(b)}\;\; \frac{1}{L_{\max}} \sum_L P^{(L)}(y \mid \lambda),
+\]
+where $w_L(\lambda) = q^{(L)}(\lambda) / \sum_{L'} q^{(L')}(\lambda)$ is
+the posterior over depth given what that state has seen so far.
+Receiver (a) weights the depths by how well each has explained that
+state's data; receiver (b) weights them equally at every step,
+regardless.  Both sum to one over $y$, so both are codes.  They charge
+different numbers for the same file.
+
+Three statements, and the whole matter rests on them.
+
+\emph{First: our number is receiver (a), not receiver (b).}  The
+weighted sum in (a) is algebraically identical to
+$q_{\mathrm{avg}}(\lambda \oplus y)/q_{\mathrm{avg}}(\lambda)$, a ratio
+of one function at consecutive profiles, so the per-step costs cancel
+in pairs and the total collapses to $-\log_2 \prod_s
+q_{\mathrm{avg}}(\lambda_s)$ at the final profiles.  Receiver (b) is
+\emph{not} such a ratio, nothing cancels, and its total must be
+accumulated position by position.  It cannot be recovered from the
+final counts at any price.
+
+\emph{Second: the receiver never sees a final count.}  At time $t$ it
+holds $\lambda$, the profile of what it has already decoded from the
+current state, and forms both $q_{\mathrm{avg}}(\lambda)$ and
+$q_{\mathrm{avg}}(\lambda \oplus y)$ from it.  The final profile is the
+\emph{outcome} of its walk, not an input to it, and the closed form is
+our shortcut for summing the walk --- verified on a $200{,}000$-token
+prefix of \texttt{text8} over the subword alphabet, where the walk with
+running counts and the closed form at the final counts agree to
+$0.000$ bits.
+
+\emph{Third: (a) is the better code, and that is why we want it.}  For
+components $c$ with prior $\pi_c$,
+\[
+  -\log_2 \sum_{c} \pi_c Q^{(c)}(x)
+  \;\le\; -\log_2 Q^{(c)}(x) + \log_2 (1/\pi_c)
+  \qquad\text{for every } c,
+\]
+because a sum is at least any one of its terms.  With a uniform prior
+this is the guarantee quoted throughout: never more than $\log_2$ of
+the component count worse than the best component, on any file, chosen
+with hindsight.  Receiver (b) admits no such bound and can be worse
+than every component.  Measured on a byte stream, (b) costs
+$0.049$ bits per character more than (a).
+
+So the cheapest computation and the strongest scheme are the same one.
+That is not quite a coincidence: both properties follow from the object
+being a genuine mixture of joint distributions rather than a blend of
+predictors.  The telescoping is that mixture's chain rule; the bound is
+the fact that a sum exceeds its terms.  What is fortunate is only that
+one had no obligation to be cheap.
+
+\paragraph{How well consistency actually holds.}  The argument needs
+$\sum_y q(\lambda \oplus y) = q(\lambda)$ exactly, and $q$ is a
+numerical evaluation of an integral, so it holds only to the estimator's
+accuracy.  That shortfall was measured rather than assumed.  Summing the
+assigned probability over every sequence of a given length, at alphabets
+small enough to enumerate exhaustively, the total is $0.987$ at $d=2$,
+$0.992$ at $d=3$ and $0.994$ at $d=4$, improving with both alphabet size
+and sequence length.  At the alphabet used here, $d = 100{,}277$, the
+one-step predictor sums to within $2 \cdot 10^{-3}$ of one for a state
+with five or more observations, and within $3.6 \cdot 10^{-2}$ for a
+state seen once.  Accumulated over the $71{,}161$ states of the
+first-order model on \texttt{enwik8}, the total effect is of order
+$10^{-5}$ bits per character, four orders below the last digit reported
+anywhere here.  Where the assignment is sub-normalised the reported
+codelength is an over-estimate, which is the safe direction; the
+measured deviations carry both signs and do not accumulate
+systematically.
+
+\section{The moment store, and why it is stored rather than evaluated}
+\label{app:store}
+
+Every codelength here is assembled from values of
+$\ln \phi_r^{(L)}(t)$, the $L$-fold moment integrand at count $r$.
+These are held in a universal store indexed by $(L, r)$ alone --- not by
+the alphabet, which enters the integrand only as a multiplier --- on a
+grid of spacing $H = 0.02$ in $u = \ln t$, running from a left edge near
+$u \approx -8 - L \ln (r+1)$ up to $u = 35$, with degree-seven
+barycentric interpolation between grid points.  Values are certified
+against an independent contour integration: median error
+$1.5 \cdot 10^{-12}$ nats, worst case $1.3 \cdot 10^{-5}$.
+
+The store is expensive, and lopsidedly so.  A column's \emph{length}
+grows like $L \ln r$, so the deep, high-count columns are individually
+enormous; after the order-two runs the store held $2.9$ million columns
+in $350$ gigabytes, of which the columns with $r \ge 10^4$ accounted for
+$78\%$ of the bytes and the columns with $r < 10^3$ --- the ones that
+recur in every experiment --- for under $2\%$.
+
+This invites an obvious economy.  A closed-form saddlepoint expansion
+for $\ln \phi_r^{(L)}$ is available, and it is a large-parameter
+asymptotic, so it should improve exactly where the storage is
+expensive; if it were accurate enough above some $r^\star$, those
+columns would not have to exist.  The economy was measured rather than
+assumed, by evaluating the second-order saddle expansion against stored
+columns over the range of $u$ the reader actually visits, at levels
+$L \in \{2,4,10,18,26,35,43\}$ and counts $r$ from $1$ to $10^6$
+(\texttt{scripts/saddle\_accuracy.py}).
+
+The measurement does not support it, and the reason is instructive.
+The \emph{typical} error does fall steeply with $r$: at $L = 26$ the
+median error drops from $5.6\cdot 10^{-5}$ nats at $r = 1$ to
+$1.5\cdot 10^{-8}$ at $r = 4.5 \cdot 10^5$.  The \emph{worst} error over
+the column does not; it is governed by $L$, not $r$, sitting near
+$5 \cdot 10^{-3}$ nats at $L = 2$ for every $r$, and improving to about
+$2 \cdot 10^{-6}$ only by $L \ge 35$.  A codelength is a sum of many
+such evaluations, so the worst case is the operative one, and at the
+shallow levels the expansion is two to three orders of magnitude
+coarser than the certification the reported numbers rest on.  The
+region where it is competitive --- deep $L$, large $r$ --- is genuinely
+the expensive one, so a hybrid that evaluates there and stores
+elsewhere remains open; a plain replacement is not.
+
+The practical consequence is narrower than it sounds.  Large-$r$
+columns are specific to the few very heavy states of one run, and
+splitting a state manufactures new integers, so they seldom recur.
+Discarding them is a cache eviction, not a change of method: the store
+rebuilds any column on demand, by the same certified route that built
+it.  What the measurement rules out is discarding them
+\emph{permanently} in favour of the closed form.
 
 \begin{thebibliography}{1}
 \bibitem{layered2026}
