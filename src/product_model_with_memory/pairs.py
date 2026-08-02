@@ -66,8 +66,35 @@ def pair_counts(reduced: Sequence[str]) -> Counter:
     return Counter(zip(reduced[:-1], reduced[1:]))
 
 
+def _entropies_ids(ids) -> dict[str, float]:
+    """The same three entropies for an integer stream, without building
+    a Counter over tens of millions of Python objects."""
+
+    import numpy as np
+
+    ids = ids.astype(np.int64, copy=False)
+    n, n_pairs = len(ids), len(ids) - 1
+    V = int(ids.max()) + 1
+
+    def h(counts, total):
+        c = counts[counts > 0].astype(np.float64) / total
+        return float(-(c * np.log2(c)).sum())
+
+    key = ids[:-1] * V + ids[1:]
+    pair = np.unique(key, return_counts=True)[1]
+    return {
+        "unigram_bits": h(np.bincount(ids, minlength=V), n),
+        "pair_bits": h(pair, n_pairs),
+        "conditional_bits": (h(pair, n_pairs)
+                             - h(np.bincount(ids[:-1], minlength=V), n_pairs)),
+    }
+
+
 def empirical_entropies(reduced: Sequence[str]) -> dict[str, float]:
     """Unigram entropy of the stream and conditional entropy H(next|prev)."""
+
+    if hasattr(reduced, "dtype") and getattr(reduced.dtype, "kind", "") in "iu":
+        return _entropies_ids(reduced)
 
     n_pairs = len(reduced) - 1
     pc = pair_counts(reduced)

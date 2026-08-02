@@ -274,56 +274,6 @@ def log_q_lambda_closed_l1(*, d: int, partition: tuple[int, ...]) -> QLambdaResu
         partition=tuple(partition),
         message="closed form for L=1",
     )
-
-
-def log_q_lambda_grid(
-    *,
-    d: int,
-    L: int,
-    partition: tuple[int, ...],
-    tables: ProductMomentTables,
-) -> QLambdaResult:
-    """Compute ``log q_lambda`` by trapezoidal integration on the table grid."""
-
-    _validate_q_inputs(d=d, L=L, partition=partition)
-    N = sum(partition)
-    if N == 0:
-        return QLambdaResult(0.0, "grid", d, L, N, tuple(partition))
-    if L == 1:
-        return log_q_lambda_closed_l1(d=d, partition=partition)
-
-    _validate_tables_for_partition(
-        tables=tables,
-        L=L,
-        partition=partition,
-        extra_orders=0,
-    )
-    s = len(partition)
-    multiplicity_pairs = partition_multiplicities(partition)
-    u_grid = tables.u_grid
-    log_integrand = (
-        N * u_grid
-        - math.lgamma(N)
-        + (d - s) * tables.log_phi[(L, 0)]
-    )
-    for part, count in multiplicity_pairs:
-        log_integrand = log_integrand + count * tables.log_phi[(L, part)]
-
-    log_q = _log_trapezoid_integral(log_integrand, u_grid)
-    peak = float(np.max(log_integrand))
-    return QLambdaResult(
-        log_q=float(log_q),
-        method="grid",
-        d=d,
-        L=L,
-        N=N,
-        partition=tuple(partition),
-        left_gap=peak - float(log_integrand[0]),
-        right_gap=peak - float(log_integrand[-1]),
-        message="trapezoidal integration on product-moment grid",
-    )
-
-
 def log_q_lambda_scan(
     *,
     d: int,
@@ -334,7 +284,7 @@ def log_q_lambda_scan(
 ) -> QLambdaResult:
     """``log q_lambda`` by global peak scan plus Laplace refinement.
 
-    Extension of :func:`log_q_lambda_laplace` for real-corpus profiles, where
+    Full evaluator for real-corpus profiles, where
     the outer integrand can be *multimodal* (deep layers with heavy counts
     produce a second, far-left peak) and its dominant peak can be narrower
     than the grid spacing (large ``N``).  The method:
@@ -950,247 +900,6 @@ def _logsumexp_list(values: list[float]) -> float:
     return m + math.log(sum(math.exp(v - m) for v in finite))
 
 
-def log_q_lambda_laplace(
-    *,
-    d: int,
-    L: int,
-    partition: tuple[int, ...],
-    tables: ProductMomentTables,
-    min_endpoint_gap: float = 10.0,
-) -> QLambdaResult:
-    """Approximate ``log q_lambda`` by a one-dimensional Laplace formula.
-
-    Only the outer integral over the shared normalization variable is
-    approximated.  The finite-``L`` moment functions are read from
-    :class:`ProductMomentTables`.
-    """
-
-    _validate_q_inputs(d=d, L=L, partition=partition)
-    N = sum(partition)
-    if N == 0:
-        return QLambdaResult(0.0, "laplace", d, L, N, tuple(partition))
-    if N == 1:
-        return QLambdaResult(
-            log_q=-math.log(d),
-            method="symmetry",
-            d=d,
-            L=L,
-            N=N,
-            partition=tuple(partition),
-            message="one-symbol profile by exchangeability",
-        )
-    if L == 1:
-        return log_q_lambda_closed_l1(d=d, partition=partition)
-
-    _validate_tables_for_partition(
-        tables=tables,
-        L=L,
-        partition=partition,
-        extra_orders=2,
-    )
-    multiplicity_pairs = partition_multiplicities(partition)
-    s = len(partition)
-
-    def derivative(u: float) -> float:
-        return N - _weighted_rho_sum(
-            d=d,
-            s=s,
-            L=L,
-            multiplicity_pairs=multiplicity_pairs,
-            tables=tables,
-            u=u,
-        )
-
-    # Heavy-count / deep-layer extension: when L*log(r_max + 1) is large the
-    # saddle lies left of the tabulated grid.  Below the grid,
-    # ``log_phi_value`` returns the exact t -> 0 asymptote
-    # ``L * lgamma(r + 1)`` (the interpolation's analytic left fill), under
-    # which rho, its derivative, and the integrand are all exact up to
-    # O(e^u) corrections, so the bracket may be extended analytically far
-    # below the grid at no table cost.
-    max_part = max(part for part, _ in multiplicity_pairs)
-    asymptotic_lower = -(L * math.log(max_part + 1.0)) - 40.0
-    lower = min(float(tables.u_grid[0]), asymptotic_lower)
-    upper = float(tables.u_grid[-1])
-    lower_value = derivative(lower)
-    for _ in range(50):
-        if lower_value > 0.0:
-            break
-        lower -= 50.0
-        lower_value = derivative(lower)
-    upper_value = derivative(upper)
-    if lower_value <= 0.0 or upper_value >= 0.0:
-        message = (
-            "saddlepoint is outside the product-moment grid: "
-            f"derivative({lower:.3g})={lower_value:.3g}, "
-            f"derivative({upper:.3g})={upper_value:.3g}"
-        )
-        return QLambdaResult(
-            log_q=math.nan,
-            method="laplace",
-            d=d,
-            L=L,
-            N=N,
-            partition=tuple(partition),
-            saddle_u=None,
-            converged=False,
-            message=message,
-        )
-
-    saddle_u = float(brentq(derivative, lower, upper, xtol=1e-11, rtol=1e-11))
-    psi = _log_q_integrand_without_gamma(
-        d=d,
-        L=L,
-        N=N,
-        s=s,
-        multiplicity_pairs=multiplicity_pairs,
-        tables=tables,
-        u=saddle_u,
-    )
-    curvature = -_weighted_rho_prime_sum(
-        d=d,
-        s=s,
-        L=L,
-        multiplicity_pairs=multiplicity_pairs,
-        tables=tables,
-        u=saddle_u,
-    )
-
-    if not math.isfinite(curvature) or curvature >= 0.0:
-        return QLambdaResult(
-            log_q=math.nan,
-            method="laplace",
-            d=d,
-            L=L,
-            N=N,
-            partition=tuple(partition),
-            saddle_u=saddle_u,
-            curvature=curvature,
-            converged=False,
-            message=f"non-negative saddle curvature {curvature:.6g}",
-        )
-
-    log_q = (
-        -math.lgamma(N)
-        + psi
-        + 0.5 * math.log(2.0 * math.pi / (-curvature))
-    )
-    left_psi = _log_q_integrand_without_gamma(
-        d=d,
-        L=L,
-        N=N,
-        s=s,
-        multiplicity_pairs=multiplicity_pairs,
-        tables=tables,
-        u=lower,
-    )
-    right_psi = _log_q_integrand_without_gamma(
-        d=d,
-        L=L,
-        N=N,
-        s=s,
-        multiplicity_pairs=multiplicity_pairs,
-        tables=tables,
-        u=upper,
-    )
-    left_gap = psi - left_psi
-    right_gap = psi - right_psi
-    converged = left_gap >= min_endpoint_gap and right_gap >= min_endpoint_gap
-    message = "Laplace saddlepoint"
-    if not converged:
-        message += (
-            f"; grid endpoint may be close to peak "
-            f"(left_gap={left_gap:.3g}, right_gap={right_gap:.3g})"
-        )
-
-    return QLambdaResult(
-        log_q=float(log_q),
-        method="laplace",
-        d=d,
-        L=L,
-        N=N,
-        partition=tuple(partition),
-        saddle_u=saddle_u,
-        curvature=float(curvature),
-        left_gap=float(left_gap),
-        right_gap=float(right_gap),
-        converged=converged,
-        message=message,
-    )
-
-
-def compute_log_q_by_partition(
-    *,
-    d: int,
-    L: int,
-    N: int,
-    method: QMethod = "auto",
-    tables: ProductMomentTables | None = None,
-    u_min: float = -70.0,
-    u_max: float = 35.0,
-    u_points: int = 16_001,
-    laguerre_order: int = 96,
-    chunk_size: int = 512,
-) -> dict[tuple[int, ...], float]:
-    """Return ``log q_lambda`` for every partition of ``N``.
-
-    ``method="auto"`` uses the exact closed form for ``L=1`` and the Laplace
-    approximation otherwise.  Pass ``method="grid"`` for the older validation
-    integral.
-    """
-
-    if N < 0:
-        raise ValueError("N must be non-negative")
-    partitions = _integer_partitions(N)
-    if N == 0:
-        return {(): 0.0}
-    if N == 1:
-        return {(1,): -math.log(d)}
-    if method == "auto":
-        method = "closed_l1" if L == 1 else "laplace"
-    if method == "closed_l1" and L != 1:
-        raise ValueError("method='closed_l1' is only valid for L=1")
-    if method == "closed_l1" or L == 1:
-        return {
-            partition: log_q_lambda_closed_l1(d=d, partition=partition).log_q
-            for partition in partitions
-        }
-
-    if tables is None:
-        tables = build_product_moment_tables(
-            max_L=L,
-            max_r=N + (2 if method == "laplace" else 0),
-            u_min=u_min,
-            u_max=u_max,
-            u_points=u_points,
-            laguerre_order=laguerre_order,
-            chunk_size=chunk_size,
-        )
-
-    log_q: dict[tuple[int, ...], float] = {}
-    for partition in partitions:
-        if method == "grid":
-            result = log_q_lambda_grid(
-                d=d,
-                L=L,
-                partition=partition,
-                tables=tables,
-            )
-        elif method == "laplace":
-            result = log_q_lambda_laplace(
-                d=d,
-                L=L,
-                partition=partition,
-                tables=tables,
-            )
-        else:
-            raise ValueError(f"unknown q method {method!r}")
-        if not result.converged:
-            raise RuntimeError(result.message)
-        log_q[partition] = result.log_q
-    return log_q
-
-
 # Method choice for interior peaks (see _integrate_grid_peaks).
 _PEAK_NARROW_FACTOR = 2.0     # width below this many grid steps = NARROW
 _PEAK_WINDOW_DROP = 45.0      # trapezoid window: psi drop below peak, nats
@@ -1256,12 +965,21 @@ def _integrate_grid_peaks(psi, u, cands, *, d, s, L, N,
             notes.append(f"grid trapezoid (w={width:.3f}) at "
                          f"u={float(u[i]):.4f}")
             continue
-        # NARROW: refine the root; curvature from the nodes (least-bad)
+        # NARROW: refine the root; curvature from the nodes (least-bad).
+        # A degenerate node curvature (c2 >= 0) means neither estimate
+        # can be trusted --- integrate what the grid saw and say so,
+        # rather than let the rho-based accept test decide by noise.
+        if c2 >= 0.0:
+            contribs.append(_log_trapezoid_integral(seg, u[lo:hi + 1]))
+            locs.append(float(u[i]))
+            notes.append(f"NARROW peak (degenerate c2) grid trapezoid "
+                         f"at u={float(u[i]):.4f} --- unresolved")
+            continue
         b_lo, b_hi = float(u[max(i - 1, 0)]), float(u[min(i + 1, G - 1)])
         fd = _local_derivative(
             d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
             tables=tables, u_lo=b_lo, u_hi=b_hi, cache=cache)
-        got = _solve_peak(fd, b_lo, b_hi)
+        got = _solve_peak(fd, b_lo, b_hi, curv_hint=c2)
         if got is not None:
             saddle, curv, psi_val = got
             if c2 < 0.0:
@@ -1409,10 +1127,16 @@ _OUT_PTR = (_OUT[0:1].ctypes.data, _OUT[1:2].ctypes.data,
 _SCRATCH: list = [np.empty(0), 0, 0]   # [array, pointer, length]
 
 
-def _solve_peak(fd, lo: float, hi: float):
+def _solve_peak(fd, lo: float, hi: float, curv_hint: float | None = None):
     """``(saddle, curvature, psi)`` for the peak bracketed by
     ``[lo, hi]``, or None when the bracket holds no sign change or the
     curvature test rejects the root.
+
+    ``curv_hint``: a trusted (node-based) curvature from the caller.
+    When given and negative it replaces the rho-based curvature, whose
+    accept/reject sign at large counts is decided by interpolation
+    noise (measured 2 Aug) --- a rejection there would flip the
+    integration method depending on which store is being read.
 
     Runs in the compiled kernel when one could be built, and in Python
     otherwise; the two do the same arithmetic on the same slices, and
@@ -1449,6 +1173,8 @@ def _solve_peak(fd, lo: float, hi: float):
     if not (d_lo > 0.0 > d_hi):
         return None
     saddle = float(brentq(fd, lo, hi, xtol=1e-11, rtol=1e-11))
+    if curv_hint is not None and curv_hint < 0.0:
+        return saddle, float(curv_hint), fd.psi(saddle)
     curv = fd.curvature(saddle)
     if not (math.isfinite(curv) and curv < 0.0):
         return None

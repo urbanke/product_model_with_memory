@@ -25,6 +25,10 @@ describe the SAME single-expert code, which the tests exploit.
 
 from __future__ import annotations
 
+import gc
+import time
+import os
+
 import math
 from dataclasses import dataclass
 
@@ -33,6 +37,14 @@ import numpy as np
 FloatArray = np.ndarray
 
 LOG2E = math.log2(math.e)
+
+
+def _timing_on() -> bool:
+    """Per-checkpoint [phase] lines, opt-in via PMM_TIMING=1.  The
+    instrumentation was added to diagnose the quadratic memo (fixed) and
+    is kept behind a flag so ordinary logs stay clean."""
+
+    return os.environ.get("PMM_TIMING", "") not in ("", "0")
 
 
 # ----------------------------------------------------------------- grids
@@ -558,14 +570,34 @@ def pooled_lag_codelengths(
                 for f in sorted(resume_dir.glob("memo_*.pkl")):
                     f.unlink()
 
-    def _save_resume(ck: int, known_before: set) -> None:
+    def _memo_n() -> int:
+        """Memo size, or 0 for experts that have no builder."""
+
+        return len(builder.memo) if expert_model == "layered" else 0
+
+    def _save_resume(ck: int, n_before: int) -> None:
+        """Persist the entries added since the last checkpoint.
+
+        The previous version took `known_before = set(builder.memo)` at
+        the top of every checkpoint --- a fresh set holding every key in
+        the memo, millions of them --- and then filtered the whole memo
+        against it here.  Two O(total memo) passes per checkpoint, to
+        compute a delta that is known exactly: the memo is append-only,
+        so the new entries are simply the ones after position n_before.
+        The old form also allocated a multi-million-element set each
+        checkpoint, which is the kind of spike that triggers a full
+        generation-2 collection --- cost O(live heap) --- and that is
+        the most likely source of the 78s / 1886s oscillation in the
+        checkpoint times.
+        """
+
         if resume_dir is None:
             return
         import json as _json
         import pickle
+        from itertools import islice
 
-        new_entries = {k: v for k, v in builder.memo.items()
-                       if k not in known_before}
+        new_entries = dict(islice(builder.memo.items(), n_before, None))
         if new_entries:
             with open(resume_dir / f"memo_{ck:03d}.pkl", "wb") as fh:
                 pickle.dump(new_entries, fh, protocol=4)
@@ -584,13 +616,61 @@ def pooled_lag_codelengths(
         raise ValueError("sparse evaluation requires the layered expert")
 
     bounds = np.linspace(start, n, checkpoints + 1).astype(int)
+    # The profile memo grows monotonically across rows, lags and
+    # checkpoints and is never discarded, so every cyclic-GC pass walks
+    # the whole of it.  Sampled on a live run (2 August, V=1024, 21
+    # checkpoints in): 3678 of 4041 stack samples were inside
+    # gc_collect_main traversing dicts and sets --- 91% of the process's
+    # time was garbage collection, on one core, while the machine looked
+    # idle.  That is almost certainly why this run has never finished.
+    #
+    # gc.freeze() moves everything currently alive into a permanent
+    # generation that the collector never visits again.  Calling it once
+    # per checkpoint keeps the accumulated memo out of every subsequent
+    # pass while leaving collection working normally for whatever the
+    # next checkpoint allocates.  The gain scales with memo size
+    # (measured on a synthetic memo: 1.2x at 200k entries, 1.6x at 800k,
+    # 3.1x at 3.2M), so it is largest exactly where the problem is.
+    gc.freeze()
+
+    # INSTRUMENTATION, not a fix.  The checkpoint times oscillate --- 78s
+    # and 1886s alternating on a heap that grows smoothly --- and a
+    # sampled profile showed 91% of the time inside the collector.  Those
+    # two facts do not reconcile unless the expensive collections are
+    # threshold-triggered rather than steady: a full (generation-2) pass
+    # costs O(live heap) and fires only when the long-lived allocation
+    # ratio crosses a threshold, so a checkpoint that crosses it twice
+    # pays minutes and its neighbour pays nothing.  That is a hypothesis.
+    # PMM_GC_TRACE=1 logs every collection with its generation and
+    # duration, which confirms or kills it from one run's log.
+    if os.environ.get("PMM_GC_TRACE", "") not in ("", "0"):
+        _gc_t0 = {}
+
+        def _gc_cb(phase, info):
+            gen = info.get("generation")
+            if phase == "start":
+                _gc_t0[gen] = time.time()
+            else:
+                dt = time.time() - _gc_t0.get(gen, time.time())
+                if dt > 0.5 or gen == 2:
+                    print(f"  [gc] gen{gen} {dt:8.2f}s "
+                          f"collected={info.get('collected')} "
+                          f"uncollectable={info.get('uncollectable')}",
+                          flush=True)
+
+        gc.callbacks.append(_gc_cb)
+
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         for ck in range(checkpoints):
             if ck <= ck_done:
                 continue
-            known_before = set()
+            # a COUNT, not a copy of every key (see _save_resume).
+            # `builder` exists only for the layered expert, which is
+            # also the only one that resumes --- keep the guard.
+            known_before = 0
             if resume_dir is not None:
-                known_before = set(builder.memo)
+                known_before = len(builder.memo)
+            _t_ck = time.time()
             lo, hi = int(bounds[ck]), int(bounds[ck + 1])
             if hi <= lo:
                 continue
@@ -635,9 +715,16 @@ def pooled_lag_codelengths(
                         mix_w, sd, tgt)
                     mix_bits -= mix_vals
                     prod_bits -= prod_vals
+                _t_work = time.time()
                 _save_resume(ck, known_before)
+                gc.freeze()
                 if progress is not None:
                     progress(("checkpoint", ck + 1, checkpoints), None)
+                if _timing_on():
+                    print(f"  [phase] ck {ck + 1}: work "
+                          f"{_t_work - _t_ck:7.1f}s  "
+                          f"save {time.time() - _t_work:6.1f}s  "
+                          f"memo {_memo_n():,}", flush=True)
                 continue
             for c0 in range(lo, hi, step_chunk):
                 c1 = min(c0 + step_chunk, hi)
@@ -672,9 +759,16 @@ def pooled_lag_codelengths(
                     ):
                         prod_bits[k] -= val
                     del G
+            _t_work = time.time()
             _save_resume(ck, known_before)
+            gc.freeze()          # the normal completion path; see above
             if progress is not None:
                 progress(("checkpoint", ck + 1, checkpoints), None)
+            if _timing_on():
+                print(f"  [phase] ck {ck + 1}: work "
+                      f"{_t_work - _t_ck:7.1f}s  "
+                      f"save {time.time() - _t_work:6.1f}s  "
+                      f"memo {_memo_n():,}", flush=True)
 
     names = list(mix_names) + list(prod_names)
     totals = np.concatenate([mix_bits, prod_bits])

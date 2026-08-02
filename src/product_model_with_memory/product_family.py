@@ -75,6 +75,41 @@ def member_profile_multiset(
     return multiset
 
 
+def member_profile_multiset_ids(
+    ids: np.ndarray, rank: np.ndarray, m1: int, m2: int
+) -> Counter:
+    """Multiset of successor profiles over the states of member
+    (m1, m2), for an INTEGER symbol stream.
+
+    ``rank[j]`` is the position of symbol ``j`` in the promotion order,
+    so ``b_M(j)`` keeps ``j`` when ``rank[j] < M`` and sends it to the
+    shared backoff state otherwise; ``min(rank, M)`` computes both at
+    once with M as the backoff index.
+
+    Same result as :func:`member_profile_multiset`, computed by sorting
+    packed (state, successor) keys.  The dictionary path costs one
+    Python iteration per position, which is fine for a few million
+    tokens and impossible for the 2.7e8 of enwik9.
+    """
+
+    x2, x1, y = ids[:-2], ids[1:-1], ids[2:]
+    b1 = np.minimum(rank[x1], m1)
+    if m2 == 0:
+        state = b1
+    else:
+        state = b1 * (m2 + 1) + np.minimum(rank[x2], m2)
+    _, state = np.unique(state, return_inverse=True)   # densify
+    V = int(ids.max()) + 1
+    uniq, counts = np.unique(state.astype(np.int64) * V + y.astype(np.int64),
+                             return_counts=True)
+    owner = uniq // V
+    cuts = np.flatnonzero(np.diff(owner)) + 1
+    multiset: Counter = Counter()
+    for g in np.split(counts, cuts):
+        multiset[tuple(sorted((int(c) for c in g), reverse=True))] += 1
+    return multiset
+
+
 def product_family_codelengths(
     reduced: Sequence[str],
     *,
@@ -84,22 +119,47 @@ def product_family_codelengths(
     cache_dir: str | Path,
     jobs: int = 1,
     progress=None,
+    state_order=None,
 ) -> dict:
-    """Codelengths of every (M1, M2) member, their mixture, and the posterior."""
+    """Codelengths of every (M1, M2) member, their mixture, and the posterior.
+
+    ``state_order`` lists symbols in the order they are promoted out of
+    the backoff state, at BOTH lags.  Pass `streams.state_order_by_id`
+    for the admissible family: that order is fixed by the vocabulary,
+    so the decoder knows it before the file is seen.  Left as None the
+    order is this file's own frequency ranking, which is not admissible
+    without transmitting the ranking, and is kept only to reproduce the
+    earlier text8 runs.
+    """
 
     if l_max is None:
         l_max = default_l_max(vocabulary_size)
     n_coded = len(reduced) - 2  # tokens x_3 .. x_n are coded
 
-    frequency = Counter(reduced)
-    order_vocab = [w for w, _ in frequency.most_common()]
+    fast = isinstance(reduced, np.ndarray) and reduced.dtype.kind in "iu"
+    if fast:
+        ids = reduced.astype(np.int64, copy=False)
+        n_sym = int(ids.max()) + 1
+        if state_order is None:
+            first = np.bincount(ids[1:-1], minlength=n_sym)
+            state_order = np.argsort(-first, kind="stable")
+        state_order = np.asarray(state_order, dtype=np.int64)
+        rank = np.full(n_sym, n_sym, dtype=np.int64)
+        inside = state_order[state_order < n_sym]
+        rank[inside] = np.arange(len(inside))
+    else:
+        frequency = Counter(reduced)
+        order_vocab = [w for w, _ in frequency.most_common()]
 
     members: dict[tuple[int, int], Counter] = {}
     unique_profiles: set[tuple[int, ...]] = set()
     for m1, m2 in grid:
-        multiset = member_profile_multiset(reduced, order_vocab, m1, m2)
+        multiset = (member_profile_multiset_ids(ids, rank, m1, m2) if fast
+                    else member_profile_multiset(reduced, order_vocab, m1, m2))
         members[(m1, m2)] = multiset
         unique_profiles.update(multiset)
+        if progress is not None:
+            progress(("member", len(members), len(grid)), None)
     if progress is not None:
         progress(("profiles", len(unique_profiles), len(unique_profiles)), None)
 

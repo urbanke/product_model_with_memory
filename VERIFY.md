@@ -16,12 +16,24 @@ changes.  Prediction tables now go through the shared-integrand
 family evaluator (same numbers, ~k-fold fewer grid operations per
 row).
 
-Expectations for the numbers: small shifts are EXPECTED and are the
-point --- the old tables were measurably wrong at counts above ~360
-(far-left region, tens of nats per moment value) and by ~5e-3 bits
-per heavy profile at depth even at counts ~300.  The new values are
-certified to ~1e-7 nats worst case.  Shifts should be at the
-1e-3..1e-2 bpc scale at most; anything larger deserves a look.
+Expectations for the numbers (updated 2 Aug 2026; the earlier
+1e-3..1e-2 bpc tolerance was for the v1->v2 correction and is far too
+loose for this round): the evaluator+ladder system is measured to
+under 1e-4 bits per profile on every instrument case
+(`scripts/compare_evaluators.py`, worst 5.6e-6 bits), so a v4 rerun
+shifting a published number by MORE than ~1e-4 bpc means one of the
+known defects reached it --- the pre-fix evaluator's Laplace
+curvature (HANDOVER.md, 2 Aug evening entry) or universal_v2's
+series-era columns at large r --- and the v4 value, not the published
+one, is the corrected number.  Confirmed so far: state256 unchanged
+(3.7198465 vs published 3.719846); ctree_fullvocab corrected
+10.0919 -> 10.0926.
+
+Two rules for any verification run: export the four PMM_* store
+variables explicitly (a stale environment silently reruns the cache
+and proves nothing), and set PMM_BUILD_EXACT=1 for anything that can
+build columns, including check_store.py --- without it the contour
+reference can take the same series branch as the bug it is checking.
 
 Timing: every script prints its phases with elapsed seconds
 ("tables k/n (Xs)" = column building, "depth L/Lmax (Xs)" =
@@ -96,6 +108,63 @@ tables named above).  I (Claude) do the comparison and update the
 paper.  There is nothing to transfer: the results land in this
 project folder and I read them directly --- just say when a run is
 done.
+
+## Stage B: the representation runs (three benchmarks x three regimes)
+
+These are the runs behind Section "Results" of `paper/compress.tex`,
+which is organised by ACCOUNTING REGIME, not by tokenizer.
+
+**(a) Bytes --- DONE.**  No representation cost; a self-contained,
+comparable entry.  text8 4.1235, enwik8 5.0802, enwik9 5.1565
+bits/character; redundancy over the empirical order-0 entropy at most
+2e-5 bits/character at all three scales.
+
+       python scripts/byte_baseline.py --file data/text8  --out output/byte_text8  --jobs 12
+       python scripts/byte_baseline.py --file data/enwik8 --out output/byte_enwik8 --jobs 12
+       python scripts/byte_baseline.py --file data/enwik9 --out output/byte_enwik9 --jobs 12
+
+**(b) Our adaptive tokenizer** (TOKENIZER.md v3) --- DONE at 10^8.
+enwik8: intern+conditioned **3.1282** (winner), intern+folded 3.1413,
+compositional+conditioned 3.1902, compositional+folded 3.2032.
+text8: 2.2483.  Only enwik9 remains, with the winning setting.
+
+       python scripts/token_baseline.py --file data/enwik8 --numbers intern        --case conditioned --out output/tok_enwik8_ic --jobs 12
+       python scripts/token_baseline.py --file data/enwik8 --numbers intern        --case folded      --out output/tok_enwik8_if --jobs 12
+       python scripts/token_baseline.py --file data/enwik8 --numbers compositional --case conditioned --out output/tok_enwik8_cc --jobs 12
+       python scripts/token_baseline.py --file data/enwik8 --numbers compositional --case folded      --out output/tok_enwik8_cf --jobs 12
+
+       python scripts/token_baseline.py --file data/text8  --numbers intern --case conditioned --out output/tok_text8 --jobs 12
+
+Then, once the four have been read (enwik9, ~10x, add
+`--skip-round-trip` only if the decode pass is the thing holding it
+up; the round trip has already been verified on enwik8 and in the
+unit tests):
+
+       python scripts/token_baseline.py --file data/enwik9 --numbers WINNER --case WINNER --out output/tok_enwik9 --jobs 12
+
+Every stream cost is printed and written separately, so the spelling
+stream --- the price of adaptivity --- can be read off directly.  The
+case stream is reported both independently and conditioned on the
+current token; the difference is the number TOKENIZER.md argues about.
+
+**(c) A standard LLM tokenizer** --- external, data-derived
+vocabulary, so it is reported twice (charged / not charged) and the
+not-charged line is NOT a benchmark entry.  DONE at 10^8 with
+`cl100k_base`: text8 2.1716 charged / 2.1095 free; enwik8 2.9552
+charged / 2.8931 free.  The charge is the zipped vocabulary file,
+776,019 bytes = 0.0621 bpc at 10^8 and 0.0062 at 10^9.  enwik9
+remains:
+
+       python scripts/llm_token_baseline.py --file data/enwik9 --encoding cl100k_base --vocab-dir vocab_cache --out output/llm_enwik9 --jobs 12
+
+NETWORK NOTE.  tiktoken ships the tokenizer code but not the
+vocabulary, which it downloads from
+`openaipublic.blob.core.windows.net` on first use --- a host EPFL
+blocks.  The file was fetched over a phone tether into `vocab_cache/`,
+named by the SHA-1 of its URL, which is exactly how tiktoken addresses
+its cache; `--vocab-dir vocab_cache` points at it and no run touches
+the network again.  `--show-vocab-urls` prints the plan for any other
+encoding.
 
 ## Bottleneck reading (for efficiency round two)
 

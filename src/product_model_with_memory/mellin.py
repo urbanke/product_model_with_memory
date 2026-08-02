@@ -32,6 +32,7 @@ Everything returns natural logarithms.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 from scipy.optimize import brentq
@@ -148,7 +149,15 @@ def log_phi_contour(
     # z = r + 1 and the vertical contour degenerates; there the
     # right-pole residue series (which converges exactly in this
     # regime) is the reference.
-    if dispatch and log_t > math.log(1.2 * (r + 1.0)):
+    # NB this shortcut uses the same right-pole series whose certificate
+    # was found to understate its error by ~8e6 at large r (see
+    # exact_log_phi_column).  The threshold here is tighter (1e-12), but
+    # a certificate that is wrong by six orders is not made safe by
+    # demanding two more, so PMM_BUILD_EXACT also disables it here ---
+    # otherwise the "independent reference" would sometimes BE the
+    # method it is supposed to be checking.
+    if (dispatch and log_t > math.log(1.2 * (r + 1.0))
+            and os.environ.get("PMM_BUILD_EXACT", "") in ("", "0")):
         value, certificate = log_phi_right_series(r, L, log_t)
         if certificate < 1e-12:
             return value
@@ -563,8 +572,23 @@ def exact_log_phi_column(
         done[idx[good]] = True
 
     # ---- certified right-pole series (large t), vectorized
+    #
+    # ITS CERTIFICATE IS NOT RELIABLE AT LARGE r.  Measured 1 August at
+    # L=10, r=1045889, u=14.52: the series reports cert=4.5e-11 and is
+    # actually wrong by 3.7e-4 nats --- the certificate understates the
+    # error by a factor of 8e6.  Contour and the order-2 saddle agree
+    # with each other to 1.4e-5 there and both disagree with the series,
+    # so the series is the outlier.  It affected 90 of 1920 anchor
+    # columns at L=10, all at r near 1e6.
+    #
+    # The certificate presumably bounds the truncation of the series it
+    # sums and misses another error term entirely; until that is
+    # understood the branch cannot be trusted to build a store.
+    # PMM_BUILD_EXACT=1 skips it and integrates instead: slower, and the
+    # store is built once.
+    _EXACT = os.environ.get("PMM_BUILD_EXACT", "") not in ("", "0")
     right = np.flatnonzero(~done & (u > math.log(1.2 * (r + 1.0))))
-    if len(right):
+    if len(right) and not _EXACT:
         vals, cert = right_series_column(r, L, u[right])
         good = cert < 1e-10
         out[right[good]] = vals[good]
