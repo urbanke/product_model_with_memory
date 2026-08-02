@@ -251,10 +251,17 @@ def log_phi_right_series(
     The term ratio is about (r+1+j) / (t (j+1)^L), so the series
     CONVERGES once t exceeds r+1 (fast for L >= 2); this is exactly
     the regime where the vertical contour degenerates (saddle against
-    the right pole).  The second return value is a certificate: a
-    bound on the relative error from truncation, floating-point
-    cancellation inside the coefficient recursion, and cancellation
-    across terms.  Callers accept the value only when it is tiny.
+    the right pole).  CAUTION: that ratio estimate fails near the
+    convergence boundary --- measured at t ~ 2(r+1), L=10: terms 0 and
+    1 have opposite signs and magnitudes within 0.6%, so the sum loses
+    ~5 digits to cross-term cancellation and the certificate must
+    charge the exponent rounding for it (it now does; it originally
+    did not, which is how a 3.7e-4-nat error carried a 4.5e-11
+    certificate).  The second return value is a certificate: a bound
+    on the relative error from truncation, floating-point cancellation
+    inside the coefficient recursion, cancellation across terms, and
+    the rounding of the differential exponents under that
+    cancellation.  Callers accept the value only when it is tiny.
     """
 
     n = L - 1
@@ -262,9 +269,12 @@ def log_phi_right_series(
     zeta_k = zeta(ks, 1.0) if n >= 2 else np.empty(0)
     harm = 0.0                       # H_j
     harm_k = np.zeros(len(ks))       # H_j^{(k)} for k = 2..n
-    total = 0.0        # sum of terms, scaled by e^{-lam0}
+    total = 0.0        # sum of terms, scaled by |term_0|
     total_abs = 0.0    # sum of |terms|, same scale (cancellation)
     lam0 = None
+    log_c0abs = None   # ln|coeff_0|
+    log_prod = 0.0     # sum_{i<j} ln(r+1+i)  (exact-in-small)
+    delta_scale = 0.0  # worst |exponent| assembled differentially
     cert_coeff = 0.0   # worst coefficient-cancellation factor seen
     prev_abs = None
     ratio = 1.0
@@ -272,6 +282,7 @@ def log_phi_right_series(
         a = r + 1.0 + j
         if j > 0:
             harm += 1.0 / j
+            log_prod += math.log(a - 1.0)
             if n >= 2:
                 harm_k += (1.0 / j) ** ks
         # Taylor coefficients of ln h_j (constant term kept separate)
@@ -300,13 +311,34 @@ def log_phi_right_series(
         coeff = p[n]
         if coeff != 0.0:
             cert_coeff = max(cert_coeff, 2.2e-16 * p_abs[n] / abs(coeff))
-        c0 = float(loggamma(a)) - L * float(loggamma(j + 1.0))
-        lam = -a * u + c0 + (math.log(abs(coeff)) if coeff != 0.0
-                             else -math.inf)
         sign = -((-1.0) ** ((j + 1) * L)) * math.copysign(1.0, coeff)
+        # DIFFERENTIAL exponent assembly.  The original built each
+        # term's log scale as lam_j = -a u + lgamma(a) + ln|coeff| ---
+        # two ~1e7-magnitude floats whose per-term rounding (~1e-9
+        # nats ABSOLUTE at r ~ 1e6) is independent across j.  Where
+        # neighbouring terms nearly cancel (t within a few times r+1,
+        # where term_1/term_0 approaches -1) that differential noise
+        # is amplified by total_abs/total, and the certificate charged
+        # it at machine epsilon: measured 2-3 Aug at (r=1045889, L=10,
+        # u=14.52), error 3.7e-4 nats against a certificate of 4.5e-11.
+        # lam_j - lam_0 assembled from SMALL quantities is exact to
+        # ~1e-14; term_0's own absolute rounding shifts all terms
+        # identically and cancels in the final logarithm.
         if lam0 is None:
-            lam0 = lam
-        scaled = math.exp(lam - lam0) if math.isfinite(lam) else 0.0
+            if coeff == 0.0:
+                return -math.inf, math.inf   # degenerate leading term
+            log_c0abs = math.log(abs(coeff))
+            lam0 = -a * u + float(loggamma(a)) + log_c0abs
+            scaled = 1.0
+        elif coeff == 0.0:
+            scaled = 0.0
+        else:
+            lgj = L * float(loggamma(j + 1.0))
+            delta = (-j * u + log_prod - lgj
+                     + math.log(abs(coeff)) - log_c0abs)
+            delta_scale = max(delta_scale,
+                              abs(j * u) + log_prod + lgj)
+            scaled = math.exp(delta)
         total += sign * scaled
         total_abs += scaled
         if prev_abs is not None and prev_abs > 0.0:
@@ -327,6 +359,10 @@ def log_phi_right_series(
         tail / total
         + 2.2e-16 * total_abs / total
         + cert_coeff
+        # rounding of the differential exponents, amplified by the
+        # same cross-term cancellation --- the charge the original
+        # certificate was missing (it assumed exact exponents)
+        + 4.4e-16 * delta_scale * total_abs / total
     )
     return lam0 + math.log(total), certificate
 
@@ -358,6 +394,9 @@ def right_series_column(
     total = np.zeros(m_pts)
     total_abs = np.zeros(m_pts)
     lam0 = np.full(m_pts, np.nan)
+    log_c0abs = np.full(m_pts, np.nan)   # ln|coeff_0| per point
+    log_prod = 0.0                       # sum_{i<j} ln(r+1+i)
+    delta_scale = np.zeros(m_pts)        # worst differential exponent
     cert_coeff = np.zeros(m_pts)
     prev_abs = np.full(m_pts, np.nan)
     ratio = np.ones(m_pts)
@@ -367,6 +406,7 @@ def right_series_column(
         a = r + 1.0 + j
         if j > 0:
             harm += 1.0 / j
+            log_prod += math.log(a - 1.0)
             if n >= 2:
                 harm_k += (1.0 / j) ** ks
         c_hi = (np.array([float(polygamma(k - 1, a)) for k in ks]) / fact[ks]
@@ -394,13 +434,28 @@ def right_series_column(
             cert_coeff,
             np.where(nz, 2.2e-16 * Pa[n] / np.maximum(np.abs(coeff), 1e-300),
                      np.inf))
-        c0 = float(loggamma(a)) - L * float(loggamma(j + 1.0))
-        with np.errstate(divide="ignore"):
-            lam = -a * u + c0 + np.log(np.maximum(np.abs(coeff), 0.0))
         sign = -((-1.0) ** ((j + 1) * L)) * np.sign(coeff)
+        # differential exponent assembly; see log_phi_right_series for
+        # the measured failure this replaces (3.7e-4 nats against a
+        # 4.5e-11 certificate, from per-term rounding of ~1e7-magnitude
+        # exponents amplified by cross-term cancellation)
         if j == 0:
-            lam0 = lam.copy()
-        scaled = np.where(np.isfinite(lam), np.exp(lam - lam0), 0.0)
+            with np.errstate(divide="ignore"):
+                log_c0abs = np.log(np.maximum(np.abs(coeff), 0.0))
+            lam0 = -a * u + float(loggamma(a)) + log_c0abs
+            dead |= coeff == 0.0          # degenerate leading term
+            scaled = np.where(coeff != 0.0, 1.0, 0.0)
+        else:
+            lgj = L * float(loggamma(j + 1.0))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                delta = (-j * u + log_prod - lgj
+                         + np.log(np.maximum(np.abs(coeff), 0.0))
+                         - log_c0abs)
+            scaled = np.where((coeff != 0.0) & np.isfinite(delta),
+                              np.exp(np.where(np.isfinite(delta),
+                                              delta, 0.0)), 0.0)
+            delta_scale = np.maximum(delta_scale,
+                                     np.abs(j * u) + log_prod + lgj)
         act = ~done & ~dead
         total = np.where(act, total + sign * scaled, total)
         total_abs = np.where(act, total_abs + scaled, total_abs)
@@ -420,7 +475,11 @@ def right_series_column(
                         prev_abs * ratio_eff / (1.0 - ratio_eff), np.inf)
         cert = (tail / np.maximum(total, 1e-300)
                 + 2.2e-16 * total_abs / np.maximum(total, 1e-300)
-                + cert_coeff)
+                + cert_coeff
+                # differential-exponent rounding under cancellation ---
+                # the charge the original certificate was missing
+                + 4.4e-16 * delta_scale * total_abs
+                / np.maximum(total, 1e-300))
         vals = np.where(total > 0.0, lam0 + np.log(np.maximum(total, 1e-300)),
                         np.nan)
     cert = np.where(dead | (total <= 0.0), np.inf, cert)

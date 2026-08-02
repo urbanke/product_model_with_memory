@@ -2503,9 +2503,8 @@ check_store --all, re-freeze.
 
 ### 6. Open questions, updated
 
-- **Right-series certificate** (unchanged from morning §5): still
-  unexplained, still live in the read path at 1e-10. Now also the
-  INFERRED cause of §2. Most important open correctness item.
+- **Right-series certificate**: RESOLVED late 2 Aug --- see the next
+  log entry.
 - **Kernel curvature arithmetic**: superseded in Python, still present
   in `_kernel.c`. Remove or fix; until then PMM_SCAN_LEGACY must stay
   off in production.
@@ -2523,3 +2522,54 @@ check_store --all, re-freeze.
   numbers.
 - Repo root has junk zero-byte files (`--degrees`, `--levels`, `--out`,
   `0.50%,`, `8.31%` etc.) from a mangled shell command. Delete freely.
+
+## 2026-08-02 (late) --- right-series certificate explained, fixed, verified
+
+The morning file's most important open item (§5: certificate reports
+4.5e-11 where the truth is 3.7e-4) is closed.  The full chain, each
+step MEASURED at (r=1045889, L=10, u=14.52):
+
+1. The residue series FORMULA is correct: summing the first five
+   residues in 60-digit arithmetic (mpmath) reproduces contour to
+   9e-10 nats.
+2. The regime is cancelling, not convergent-fast: terms j=0 and j=1
+   have opposite signs and magnitudes within 0.6% (the docstring's
+   (r+1+j)/(t (j+1)^L) ratio estimate does not hold near t ~ r+1),
+   so the sum is ~1e-5 of the terms --- 5 digits lost.
+3. The float64 coefficient recursion is CLEAN: p[n] matches the
+   60-digit Taylor coefficients to ~1e-16, majorant p_abs/|p| ~ 1.
+4. The error entered in the EXPONENT ASSEMBLY: lam_j = -a u +
+   lgamma(a) + ln|coeff| differences ~1.5e7-magnitude floats, giving
+   ~1e-9 nats of INDEPENDENT per-term rounding; amplified by
+   total_abs/total ~ 2e5 -> the observed 3.7e-4.  The certificate
+   charged that amplification at 2.2e-16 (exact-exponent assumption):
+   understatement factor ~5e6 --- the mystery number.
+
+Fix (mellin.py, both log_phi_right_series and right_series_column):
+differential exponent assembly --- lam_j - lam_0 computed from small
+quantities (-j u + sum ln(r+1+i) - L lgamma(j+1) + coefficient ratio),
+so per-term differential rounding is ~1e-14; term_0's absolute
+rounding shifts all terms identically and cancels in the final log.
+The certificate now also charges the differential-exponent rounding
+under cancellation.
+
+Verified against independent contour (PMM_BUILD_EXACT=1) over
+r in {1e3, 1e6, 1e8} x L in {2,5,10,33} x t/(r+1) in {1.5,2,5,50}:
+point of record improves 3.7e-4 -> 2.1e-9 nats (cert 2.1e-8, honest);
+36 accepted points within 3x cert plus representation floor; the
+boundary/L=33 regime now carries loud certificates or refuses, which
+the 1e-10 acceptance threshold correctly rejects (contour serves it).
+
+KNOWN FLOOR, not a defect: the returned ln phi is assembled from
+intermediates of magnitude ~r u, so its absolute error floor is
+~eps * r * u (~1e-6 nats at r=1e8).  Contour carries the same floor.
+Three orders below anything the 1e-4-bits requirement can feel.
+
+Also this session (cleanup): dead evaluators removed
+(log_q_lambda_laplace / _grid / compute_log_q_by_partition, zero
+callers); [phase] checkpoint lines gated behind PMM_TIMING=1;
+build_anchor_store removes its level locks; VERIFY.md expectations
+rewritten to the 1e-4 rule; v3 pooled resume pickles (5.9 GB), stale
+locks and universal_tables.py.bak deleted; compiled kernel .so
+binaries untracked and gitignored; probe_exact frozen read-only.
+
