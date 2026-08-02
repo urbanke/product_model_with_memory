@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import math
 import operator
+import os
 from collections import Counter
+from functools import lru_cache
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
@@ -20,15 +22,39 @@ from numpy.polynomial.laguerre import laggauss
 from numpy.typing import NDArray
 from scipy.optimize import brentq
 
+from product_model_with_memory.kernel import solve_peak as _KERNEL
+
 
 
 FloatArray = NDArray[np.float64]
 QMethod = Literal["auto", "closed_l1", "grid", "laplace"]
 
 
+@lru_cache(maxsize=1 << 19)
+def _multiplicities_of_tuple(parts: tuple) -> tuple[tuple[int, int], ...]:
+    """The body of :func:`partition_multiplicities` for an already
+    hashable argument.  A profile's multiplicities are the same at every
+    level, and the evaluation walks the levels of a profile one at a
+    time: measured at 931,796 calls for 304,826 scans on the enwik8
+    subword stream (31 July), 8% of the run recomputing a constant."""
+
+    try:
+        parts = tuple(operator.index(part) for part in parts)
+    except TypeError as exc:
+        raise ValueError("partition entries must be integers") from exc
+    if any(part <= 0 for part in parts):
+        raise ValueError("partition entries must be positive integers")
+    return tuple(sorted(Counter(parts).items()))
+
+
 def partition_multiplicities(partition: Iterable[int]) -> tuple[tuple[int, int], ...]:
     """Return ``(r, c_r)`` pairs for a positive integer partition."""
 
+    if type(partition) is tuple:
+        try:
+            return _multiplicities_of_tuple(partition)
+        except TypeError:
+            pass                      # unhashable entries: generic path
     try:
         parts = tuple(operator.index(part) for part in partition)
     except TypeError as exc:
@@ -347,12 +373,38 @@ def log_q_lambda_scan(
     s = len(partition)
     u_grid = tables.u_grid
 
-    # Vectorized log-integrand (without the -lgamma(N) prefactor).
-    psi_grid = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
     left_constant = 0.0  # sum of count * L * lgamma(r + 1): analytic left value
     for part, count in multiplicity_pairs:
-        psi_grid = psi_grid + count * tables.log_phi[(L, part)]
         left_constant += count * L * math.lgamma(part + 1)
+
+    if os.environ.get("PMM_SCAN", "sparse") != "full":
+        # Windowed evaluation (complexity notes, T2(1)).  The grid
+        # exists only to locate peaks, and on the subword stream the
+        # atlas found exactly one significant peak in all 318
+        # profile-levels measured, drifting at most 13 grid steps
+        # between levels (31 July).  Sweeping 30,608 points to find it
+        # is the cost this avoids: the coarse pass touches G/32 and the
+        # fine windows a few hundred more, so assembly falls from
+        # O(G k) to O((G/32 + w) k).
+        phi0 = tables.log_phi[(L, 0)]
+
+        def eval_psi(idx):
+            out = N * u_grid[idx] + (d - s) * phi0[idx]
+            for part, count in multiplicity_pairs:
+                out = out + count * tables.log_phi[(L, part)][idx]
+            return out
+
+        return _scan_sparse(
+            eval_psi, d=d, L=L, N=N, s=s, partition=tuple(partition),
+            multiplicity_pairs=multiplicity_pairs, tables=tables,
+            left_constant=left_constant,
+            significance_gap=significance_gap,
+        )
+
+    # Vectorized log-integrand (without the -lgamma(N) prefactor).
+    psi_grid = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
+    for part, count in multiplicity_pairs:
+        psi_grid = psi_grid + count * tables.log_phi[(L, part)]
 
     return _scan_from_psi(
         d=d, L=L, N=N, s=s, partition=tuple(partition),
@@ -360,6 +412,21 @@ def log_q_lambda_scan(
         psi_grid=psi_grid, left_constant=left_constant,
         significance_gap=significance_gap,
     )
+
+
+_LGAMMA_MEMO: dict[int, float] = {}
+
+
+def _lg(r: int) -> float:
+    """lgamma(r + 1), memoized.  A family with k distinct counts rebuilt
+    3k of these per member; measured at ~145k calls for one level of one
+    real profile, and they are the same numbers every time."""
+
+    v = _LGAMMA_MEMO.get(r)
+    if v is None:
+        v = math.lgamma(r + 1.0)
+        _LGAMMA_MEMO[r] = v
+    return v
 
 
 def _parts_cache(L: int, multiplicity_pairs, tables) -> tuple | None:
@@ -377,9 +444,9 @@ def _parts_cache(L: int, multiplicity_pairs, tables) -> tuple | None:
         rows_s = np.array([ro[r + 2] for r in r_parts])
     except KeyError:
         return None
-    lg = np.array([math.lgamma(r + 1) for r in r_parts])
-    lg1 = np.array([math.lgamma(r + 2) for r in r_parts])
-    lg2 = np.array([math.lgamma(r + 3) for r in r_parts])
+    lg = np.array([_lg(r) for r in r_parts])
+    lg1 = np.array([_lg(r + 1) for r in r_parts])
+    lg2 = np.array([_lg(r + 2) for r in r_parts])
     return rows_r, rows_n, rows_s, L * lg, L * lg1, L * lg2
 
 
@@ -440,10 +507,9 @@ def _scan_from_psi(
                 break
             lower -= 25.0
         if fd_left(lower) > 0.0:
-            saddle = float(brentq(fd_left, lower, u0, xtol=1e-11, rtol=1e-11))
-            curv = fd_left.curvature(saddle)
-            if math.isfinite(curv) and curv < 0.0:
-                psi_val = fd_left.psi(saddle)
+            got = _solve_peak(fd_left, lower, u0)
+            if got is not None:
+                saddle, curv, psi_val = got
                 # replace the flat left-tail estimate with the refined peak
                 contributions[-1] = _logaddexp_scalar(
                     psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)),
@@ -465,23 +531,33 @@ def _scan_from_psi(
         i for i in np.nonzero(interior)[0]
         if psi_grid[i] >= peak_value - significance_gap
     ]
+    if os.environ.get("PMM_SCAN_LEGACY", "") in ("", "0"):
+        c_, l_, n_ = _integrate_grid_peaks(
+            psi_grid, u_grid, candidate_indices,
+            d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
+            tables=tables, cache=cache)
+        contributions.extend(c_)
+        peak_locations.extend(l_)
+        notes.extend(n_)
+        candidate_indices = []
     for i in candidate_indices:
         lo, hi = float(u_grid[i - 1]), float(u_grid[i + 1])
         fd = _local_derivative(
             d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
             tables=tables, u_lo=lo, u_hi=hi, cache=cache)
-        d_lo, d_hi = fd(lo), fd(hi)
-        if d_lo > 0.0 > d_hi:
-            saddle = float(brentq(fd, lo, hi, xtol=1e-11, rtol=1e-11))
-            curv = fd.curvature(saddle)
-            if math.isfinite(curv) and curv < 0.0:
-                psi_val = fd.psi(saddle)
-                contributions.append(
-                    psi_val + 0.5 * math.log(2.0 * math.pi / (-curv))
-                )
-                peak_locations.append(saddle)
-                notes.append(f"saddle at u={saddle:.4f}")
-                continue
+        # The bracketed solve stays: seeding it from a neighbouring
+        # member's saddle was tried and measured SLOWER, and its
+        # tolerance is load-bearing rather than cosmetic (T2 in the
+        # complexity notes).
+        got = _solve_peak(fd, lo, hi)
+        if got is not None:
+            saddle, curv, psi_val = got
+            contributions.append(
+                psi_val + 0.5 * math.log(2.0 * math.pi / (-curv))
+            )
+            peak_locations.append(saddle)
+            notes.append(f"saddle at u={saddle:.4f}")
+            continue
         # fallback: local trapezoid over the surrounding grid patch
         window = slice(max(0, i - 200), min(u_grid.size, i + 201))
         contributions.append(
@@ -538,14 +614,25 @@ def _scan_sparse(
     idx_c = np.arange(0, G, STRIDE)
     if idx_c[-1] != G - 1:
         idx_c = np.append(idx_c, G - 1)
-    psi_c = eval_psi(idx_c)
+    # a strided slice is a VIEW; an index array is a gather, and the
+    # gather cost every part is what made the first version of this
+    # path slower than the full sweep it replaces (31 July)
+    psi_c = eval_psi(slice(0, G, STRIDE))
+    if idx_c[-1] == G - 1 and len(psi_c) < len(idx_c):
+        psi_c = np.append(psi_c, eval_psi(slice(G - 1, G)))
     peak_c = float(np.max(psi_c))
 
-    # candidate coarse local maxima within the (generous) gap
-    cand = [i for i in range(len(idx_c))
-            if (i == 0 or psi_c[i] >= psi_c[i - 1])
-            and (i == len(idx_c) - 1 or psi_c[i] >= psi_c[i + 1])
-            and psi_c[i] >= peak_c - significance_gap - COARSE_MARGIN]
+    # candidate coarse local maxima within the (generous) gap.
+    # Vectorized: the Python loop this replaces ran over every coarse
+    # point of every profile-level (1.96 million iterations for 150
+    # profiles) and was 36% of the windowed path, more than the grid
+    # work it was there to avoid (31 July).
+    nc = len(psi_c)
+    is_max = np.ones(nc, dtype=bool)
+    is_max[1:] &= psi_c[1:] >= psi_c[:-1]
+    is_max[:-1] &= psi_c[:-1] >= psi_c[1:]
+    is_max &= psi_c >= peak_c - significance_gap - COARSE_MARGIN
+    cand = np.nonzero(is_max)[0].tolist()
     # merged fine windows around candidates
     ranges = []
     for i in cand:
@@ -557,29 +644,53 @@ def _scan_sparse(
             ranges.append((lo, hi))
 
     # fine evaluation per window, expanding while a maximum touches a
-    # window edge (a peak may sit just outside)
+    # window edge (a peak may sit just outside).  In the node-integration
+    # scheme the window must also contain the peak's mass, so it grows
+    # until the edges are _PEAK_WINDOW_DROP nats below the window peak.
+    legacy = os.environ.get("PMM_SCAN_LEGACY", "") not in ("", "0")
     fine: list[tuple[int, np.ndarray]] = []
     for lo, hi in ranges:
-        for _ in range(30):
-            vals = eval_psi(np.arange(lo, hi))
+        for _ in range(200):
+            vals = eval_psi(slice(lo, hi))
             grew = False
-            if np.argmax(vals) == 0 and lo > 0:
+            pk = float(np.max(vals))
+            need_left = (np.argmax(vals) == 0
+                         or (not legacy
+                             and vals[0] > pk - _PEAK_WINDOW_DROP))
+            need_right = (np.argmax(vals) == len(vals) - 1
+                          or (not legacy
+                              and vals[-1] > pk - _PEAK_WINDOW_DROP))
+            if need_left and lo > 0:
                 lo = max(0, lo - WING)
                 grew = True
-            if np.argmax(vals) == len(vals) - 1 and hi < G:
+            if need_right and hi < G:
                 hi = min(G, hi + WING)
                 grew = True
             if not grew:
                 break
         fine.append((lo, vals))
+    if not legacy:
+        # growth may have run neighbouring windows into one another;
+        # merge them so no peak's mass is integrated twice
+        spans = []
+        for lo, vals in sorted(fine, key=lambda t: t[0]):
+            hi = lo + len(vals)
+            if spans and lo <= spans[-1][1]:
+                spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
+            else:
+                spans.append((lo, hi))
+        if len(spans) != len(fine):
+            fine = [(lo, eval_psi(slice(lo, hi))) for lo, hi in spans]
 
     peak_value = max(float(np.max(v)) for _, v in fine)
 
-    def derivative(u: float) -> float:
-        return N - _weighted_rho_sum(
-            d=d, s=s, L=L,
-            multiplicity_pairs=multiplicity_pairs, tables=tables, u=u,
-        )
+    # The refinement uses the SAME bracket-local vectorized derivative
+    # as the full sweep (_local_derivative).  The first version of this
+    # path called the scalar table lookup per part per evaluation and
+    # was measured SLOWER than the full sweep it was meant to replace,
+    # because refinement, not the grid, dominates once the profile is
+    # sparse (31 July).
+    cache = _parts_cache(L, multiplicity_pairs, tables)
 
     contributions: list[float] = []
     peak_locations: list[float] = []
@@ -590,24 +701,19 @@ def _scan_sparse(
     left_tail = N * u0 + left_constant - math.log(N)
     contributions.append(left_tail)
     peak_locations.append(u0)
-    if derivative(u0) < 0.0:
+    fd_left = _local_derivative(
+        d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
+        tables=tables, u_lo=u0 - 1.0, u_hi=u0, cache=cache)
+    if fd_left(u0) < 0.0:
         lower = u0 - 10.0
         for _ in range(200):
-            if derivative(lower) > 0.0:
+            if fd_left(lower) > 0.0:
                 break
             lower -= 25.0
-        if derivative(lower) > 0.0:
-            saddle = float(brentq(derivative, lower, u0,
-                                  xtol=1e-11, rtol=1e-11))
-            curv = -_weighted_rho_prime_sum(
-                d=d, s=s, L=L,
-                multiplicity_pairs=multiplicity_pairs, tables=tables,
-                u=saddle)
-            if math.isfinite(curv) and curv < 0.0:
-                psi_val = _log_q_integrand_without_gamma(
-                    d=d, L=L, N=N, s=s,
-                    multiplicity_pairs=multiplicity_pairs, tables=tables,
-                    u=saddle)
+        if fd_left(lower) > 0.0:
+            got = _solve_peak(fd_left, lower, u0)
+            if got is not None:
+                saddle, curv, psi_val = got
                 contributions[-1] = _logaddexp_scalar(
                     psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)),
                     left_tail)
@@ -617,31 +723,42 @@ def _scan_sparse(
     # interior local maxima inside the fine windows
     for lo, vals in fine:
         n_v = len(vals)
-        for j in range(1, n_v - 1):
+        if n_v < 3:
+            continue
+        interior = np.zeros(n_v, dtype=bool)
+        interior[1:-1] = (
+            (vals[1:-1] >= vals[:-2])
+            & (vals[1:-1] >= vals[2:])
+            & np.isfinite(vals[1:-1])
+            & (vals[1:-1] >= peak_value - significance_gap)
+        )
+        if not legacy:
+            c_, l_, n_ = _integrate_grid_peaks(
+                vals, u_grid[lo:lo + n_v],
+                np.nonzero(interior)[0],
+                d=d, s=s, L=L, N=N,
+                multiplicity_pairs=multiplicity_pairs,
+                tables=tables, cache=cache)
+            contributions.extend(c_)
+            peak_locations.extend(l_)
+            notes.extend(n_)
+            continue
+        for j in np.nonzero(interior)[0]:
+            j = int(j)
             gi = lo + j
-            if not (vals[j] >= vals[j - 1] and vals[j] >= vals[j + 1]
-                    and np.isfinite(vals[j])
-                    and vals[j] >= peak_value - significance_gap):
-                continue
             lo_u, hi_u = float(u_grid[gi - 1]), float(u_grid[gi + 1])
-            d_lo, d_hi = derivative(lo_u), derivative(hi_u)
-            if d_lo > 0.0 > d_hi:
-                saddle = float(brentq(derivative, lo_u, hi_u,
-                                      xtol=1e-11, rtol=1e-11))
-                curv = -_weighted_rho_prime_sum(
-                    d=d, s=s, L=L,
-                    multiplicity_pairs=multiplicity_pairs, tables=tables,
-                    u=saddle)
-                if math.isfinite(curv) and curv < 0.0:
-                    psi_val = _log_q_integrand_without_gamma(
-                        d=d, L=L, N=N, s=s,
-                        multiplicity_pairs=multiplicity_pairs,
-                        tables=tables, u=saddle)
-                    contributions.append(
-                        psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)))
-                    peak_locations.append(saddle)
-                    notes.append(f"saddle at u={saddle:.4f}")
-                    continue
+            fd = _local_derivative(
+                d=d, s=s, L=L, N=N,
+                multiplicity_pairs=multiplicity_pairs, tables=tables,
+                u_lo=lo_u, u_hi=hi_u, cache=cache)
+            got = _solve_peak(fd, lo_u, hi_u)
+            if got is not None:
+                saddle, curv, psi_val = got
+                contributions.append(
+                    psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)))
+                peak_locations.append(saddle)
+                notes.append(f"saddle at u={saddle:.4f}")
+                continue
             # fallback: trapezoid over the surrounding fine patch
             wlo = max(0, j - 200)
             whi = min(n_v, j + 201)
@@ -706,11 +823,15 @@ def log_q_lambda_scan_family(
     _validate_tables_for_partition(
         tables=tables, L=L, partition=base, extra_orders=2
     )
+    # The augmentations' orders are the base's plus the three that the
+    # moved part introduces, so re-deriving needed_r_values over the
+    # whole profile once per member is pure overhead --- measured at
+    # ~9% of a family's evaluation when k is in the hundreds.
     for c in cs:
-        _validate_tables_for_partition(
-            tables=tables, L=L, partition=augmented_partition(base, c),
-            extra_orders=2,
-        )
+        missing = [c + o for o in range(4)
+                   if (L, c + o) not in tables.log_phi]
+        if missing:
+            raise ValueError(f"moment table is missing r values: {missing}")
 
     import os
 
@@ -722,7 +843,7 @@ def log_q_lambda_scan_family(
     for part, count in multiplicity_pairs:
         left_constant += count * L * math.lgamma(part + 1)
 
-    mode = os.environ.get("PMM_SCAN", "full")
+    mode = os.environ.get("PMM_SCAN", "sparse")
     if mode == "full":
         psi_base = N * u_grid + (d - s) * tables.log_phi[(L, 0)]
         for part, count in multiplicity_pairs:
@@ -1070,6 +1191,94 @@ def compute_log_q_by_partition(
     return log_q
 
 
+# Method choice for interior peaks (see _integrate_grid_peaks).
+_PEAK_NARROW_FACTOR = 2.0     # width below this many grid steps = NARROW
+_PEAK_WINDOW_DROP = 45.0      # trapezoid window: psi drop below peak, nats
+
+
+def _integrate_grid_peaks(psi, u, cands, *, d, s, L, N,
+                          multiplicity_pairs, tables, cache):
+    """Integrate the interior peaks of a gridded log-integrand.
+
+    Method choice per peak is decided by a NODE-BASED curvature: the
+    second difference of psi at the three grid nodes around the peak.
+    Node values carry no interpolation error, so this estimate is
+    cancellation-free.  The rho-based curvature (rho + rho^2 -
+    raw_second) is never used on the grid: it subtracts near-equal
+    exponentials whose exponents carry the O(h^2) error of linear
+    interpolation between nodes, and at large counts the result is
+    noise --- MEASURED 2 Aug at profile (1e6, 250k, ...), L=33:
+    -5.494e3 against a true -38.6, with sign flips between
+    neighbouring evaluation points, costing 4.3 nats per affected
+    level and flipping methods at random between stores.
+
+      * peak resolved by the grid (width >= _PEAK_NARROW_FACTOR grid
+        steps): trapezoid over a window extended until psi has dropped
+        _PEAK_WINDOW_DROP nats below the peak.  Adjudicated against
+        dense quadrature (2 Aug): the node trapezoid matched to 0.02
+        nats where the rho-based Laplace was 4.3 nats off.
+      * narrower than that: bracketed solve + Laplace with the node
+        curvature, and the note says NARROW --- the grid cannot resolve
+        such a peak, and the value should not be treated as reference-
+        grade without master-grid refinement.
+
+    Windows of nearby peaks are merged and integrated once, so no mass
+    is double-counted.  Set PMM_SCAN_LEGACY=1 to restore the previous
+    behaviour for A/B comparison.
+    """
+
+    contribs, locs, notes = [], [], []
+    if not len(cands):
+        return contribs, locs, notes
+    G = u.size
+    h = float(u[1] - u[0]) if G > 1 else 1.0
+    windows = []
+    for i in cands:
+        i = int(i)
+        top = float(psi[i])
+        below = np.nonzero(psi[:i] <= top - _PEAK_WINDOW_DROP)[0]
+        lo = int(below[-1]) if below.size else 0
+        above = np.nonzero(psi[i + 1:] <= top - _PEAK_WINDOW_DROP)[0]
+        hi = int(above[0]) + i + 1 if above.size else G - 1
+        if windows and lo <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], hi))
+        else:
+            windows.append((lo, hi))
+    for lo, hi in windows:
+        seg = psi[lo:hi + 1]
+        i = lo + int(np.argmax(seg))
+        j = min(max(i, 1), G - 2)
+        c2 = float((psi[j - 1] - 2.0 * psi[j] + psi[j + 1]) / (h * h))
+        width = (1.0 / math.sqrt(-c2)) if c2 < 0.0 else math.inf
+        if width >= _PEAK_NARROW_FACTOR * h and hi - lo >= 2:
+            contribs.append(_log_trapezoid_integral(seg, u[lo:hi + 1]))
+            locs.append(float(u[i]))
+            notes.append(f"grid trapezoid (w={width:.3f}) at "
+                         f"u={float(u[i]):.4f}")
+            continue
+        # NARROW: refine the root; curvature from the nodes (least-bad)
+        b_lo, b_hi = float(u[max(i - 1, 0)]), float(u[min(i + 1, G - 1)])
+        fd = _local_derivative(
+            d=d, s=s, L=L, N=N, multiplicity_pairs=multiplicity_pairs,
+            tables=tables, u_lo=b_lo, u_hi=b_hi, cache=cache)
+        got = _solve_peak(fd, b_lo, b_hi)
+        if got is not None:
+            saddle, curv, psi_val = got
+            if c2 < 0.0:
+                curv = c2
+            contribs.append(
+                psi_val + 0.5 * math.log(2.0 * math.pi / (-curv)))
+            locs.append(saddle)
+            notes.append(f"NARROW peak (w={width:.3f}) Laplace at "
+                         f"u={saddle:.4f}")
+        else:
+            contribs.append(_log_trapezoid_integral(seg, u[lo:hi + 1]))
+            locs.append(float(u[i]))
+            notes.append(f"NARROW peak (w={width:.3f}) grid trapezoid "
+                         f"at u={float(u[i]):.4f} --- unresolved")
+    return contribs, locs, notes
+
+
 def _local_derivative(
     *,
     d: int,
@@ -1102,13 +1311,13 @@ def _local_derivative(
     j1 = min(len(u_grid) - 1, int(np.searchsorted(u_grid, u_hi)) + 1)
     if j1 <= j0:
         j1 = min(len(u_grid) - 1, j0 + 1)
-    local_u = u_grid[j0:j1 + 1]
+    local_u = np.ascontiguousarray(u_grid[j0:j1 + 1])
     if tables.matrix is not None and cache is not None:
         rows_r, rows_n, rows_s, left_r, left_n, left_s = cache
         M = tables.matrix
-        Phi_r = M[rows_r, j0:j1 + 1]
-        Phi_n = M[rows_n, j0:j1 + 1]
-        Phi_s = M[rows_s, j0:j1 + 1]
+        Phi_r = np.ascontiguousarray(M[rows_r, j0:j1 + 1])
+        Phi_n = np.ascontiguousarray(M[rows_n, j0:j1 + 1])
+        Phi_s = np.ascontiguousarray(M[rows_s, j0:j1 + 1])
     else:
         Phi_r = np.stack([tables.log_phi[(L, int(r))][j0:j1 + 1]
                           for r in r_parts])
@@ -1116,6 +1325,9 @@ def _local_derivative(
                           for r in r_parts])
         Phi_s = np.stack([tables.log_phi[(L, int(r) + 2)][j0:j1 + 1]
                           for r in r_parts])
+        Phi_r = np.ascontiguousarray(Phi_r)
+        Phi_n = np.ascontiguousarray(Phi_n)
+        Phi_s = np.ascontiguousarray(Phi_s)
         left_r = L * np.array([math.lgamma(r + 1) for r in r_parts])
         left_n = L * np.array([math.lgamma(r + 2) for r in r_parts])
         left_s = L * np.array([math.lgamma(r + 3) for r in r_parts])
@@ -1175,7 +1387,72 @@ def _local_derivative(
 
     derivative.curvature = curvature
     derivative.psi = psi
+    if _KERNEL is not None:
+        # The pointers are built ONCE per bracket rather than per call:
+        # `arr.ctypes.data` costs 1.1 us and ten of them per solve was
+        # 11 of the 17 us the compiled solve took, which is why the
+        # first wiring of the kernel measured slower than the Python it
+        # replaced (31 July).
+        derivative.arrays = (
+            Phi_r.ctypes.data, Phi_n.ctypes.data, Phi_s.ctypes.data,
+            left_r.ctypes.data, left_n.ctypes.data, left_s.ctypes.data,
+            counts.ctypes.data, len(counts),
+            local_u.ctypes.data, len(local_u), float(N),
+            (Phi_r, Phi_n, Phi_s, left_r, left_n, left_s, counts, local_u),
+        )
     return derivative
+
+
+_OUT = np.empty(3, dtype=np.float64)
+_OUT_PTR = (_OUT[0:1].ctypes.data, _OUT[1:2].ctypes.data,
+            _OUT[2:3].ctypes.data)
+_SCRATCH: list = [np.empty(0), 0, 0]   # [array, pointer, length]
+
+
+def _solve_peak(fd, lo: float, hi: float):
+    """``(saddle, curvature, psi)`` for the peak bracketed by
+    ``[lo, hi]``, or None when the bracket holds no sign change or the
+    curvature test rejects the root.
+
+    Runs in the compiled kernel when one could be built, and in Python
+    otherwise; the two do the same arithmetic on the same slices, and
+    the kernel falls back here whenever a point lands right of the
+    provisioned columns."""
+
+    arrays = getattr(fd, "arrays", None)
+    if arrays is not None:
+        (p_r, p_n, p_s, l_r, l_n, l_s, p_c, k,
+         p_u, m, N, _keepalive) = arrays
+        if _SCRATCH[2] < 4 * k:
+            _SCRATCH[0] = np.empty(4 * k, dtype=np.float64)
+            _SCRATCH[1] = _SCRATCH[0].ctypes.data
+            _SCRATCH[2] = 4 * k
+        rc = _KERNEL(p_r, p_n, p_s, l_r, l_n, l_s, p_c, k, p_u, m,
+                     N, float(lo), float(hi), 1e-11, 1e-11,
+                     _SCRATCH[1], _OUT_PTR[0], _OUT_PTR[1], _OUT_PTR[2])
+        if rc == 0:
+            return float(_OUT[0]), float(_OUT[1]), float(_OUT[2])
+        # Any REJECTION is re-decided in Python.  The compiled sums are
+        # not bit-identical to numpy's (BLAS reduction order, SIMD exp),
+        # and both rejection tests are discrete: the bracket sign test
+        # and `curv < 0`.  Far out in the left region the curvature is
+        # numerically zero, so its sign is decided by rounding --- and a
+        # kernel rejection there dropped the only peak of a profile,
+        # turning a 1e-9 disagreement into a hard "left tail only"
+        # failure (1 August).  Accepting only agreed accepts bounds the
+        # divergence to the last bits of a value, never to the presence
+        # or absence of a contribution.
+        # rc == 3: a point fell outside the slice; the Python path
+        # handles that by widening to the generic table lookup
+
+    d_lo, d_hi = fd(lo), fd(hi)
+    if not (d_lo > 0.0 > d_hi):
+        return None
+    saddle = float(brentq(fd, lo, hi, xtol=1e-11, rtol=1e-11))
+    curv = fd.curvature(saddle)
+    if not (math.isfinite(curv) and curv < 0.0):
+        return None
+    return saddle, curv, fd.psi(saddle)
 
 
 def _weighted_rho_sum(

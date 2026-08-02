@@ -94,8 +94,15 @@ full joint alphabet 253,854² ≈ 6.4·10^10 — sparse, but no longer hopeless.
 
 ## Next steps
 
-- Rüdiger to specify the concrete idea for the memory scheme (how to beat the
-  data-starved joint and the share-nothing context partition).
+- Re-verify Stage A under the corrected evaluator (out-dirs `output/v4_*`,
+  compare against PUBLISHED, not v3): `ctree_fullvocab` and `pooled_v1024`
+  first --- they are the two that moved. `state256` already confirmed
+  (3.7198465 vs published 3.719846).
+- Then unblock Stage B (`bash scripts/rerun_paper.sh stage_b`).
+- Freeze the reference store: `chmod -R a-w tables/probe_exact`.
+- Open correctness items: right-series certificate (unexplained, live in
+  read path at 1e-10); kernel curvature arithmetic (bypassed, not removed);
+  NARROW-peak refinement (unimplemented, none observed yet).
 
 ## Log
 
@@ -1574,3 +1581,945 @@ columns lie on the same master grid, differing by an integer offset)
 with a per-point fallback at clamped edges. Net: 5.97s -> 1.73s
 (3.4x) for the same 609 columns; agreement 2.2e-11 nats (fp
 reassociation, ~1e-16 relative). Full battery passes.
+
+## 2026-08-01 morning: POOLED-LAG RUN COMPLETED ON THE CLUSTER
+Job 2179 (node14, 64 cores, fresh store built by the job itself):
+COMPLETED, wall clock 5h25m, CPU efficiency 63%, peak RAM 125 GB of
+200 GB. This is the run that was killed on the cluster days ago for
+its 120 GB cache and could never finish -> Phase-2 number is in.
+NOTE it ran the code as of the pull BEFORE the 31 July afternoon
+speedups (batched evaluation, provisioning). Laptop, running WITH
+those speedups, was at checkpoint 25/32 after 8.4h (resumed at 15).
+Cluster/laptop comparison is therefore machine-dominated, not
+code-dominated: 64 cores finish the whole thing in ~5h while 12
+cores need ~14h more for the remaining 7 checkpoints. Lesson: these
+sequential runs belong on the cluster; the laptop is right for the
+short static experiments.
+DECISION: laptop run killed as redundant (same corpus/settings as
+the completed cluster run); an end-to-end old-vs-new code check is
+cheaper as a 4-checkpoint run when wanted.
+STILL OPEN: ablation runs 3b (V=1024/4096 x kt/layered), 4b
+(full-vocab interior-M, target 9.7826), unigram extra checkpoints.
+NEXT BIG ITEM: eliminate the grid (T2(1)) -- see complexity.tex,
+the sweep exists only to LOCATE peaks; predicting+certifying peak
+positions turns O(G*k) into O(k) per profile.
+
+## 2026-08-01: pooled-lag result written up
+main.tex: new subsection "Pooling the lags: how much of the tail
+survives" with tab:pooled-lags (memoryless 6.6392 | lag2 5.8967 |
+lag3 6.1009 | lag8 6.2095 | lag1 5.2512 | best product 5.2300 |
+best mixture = family 5.1874) and three findings: tail worth 0.064
+b/token over lag1 (1.2%, an order of magnitude less than the 0.31
+that CONTEXT pooling bought); data selects the ADDITIVE rule
+(product trails 0.043, posterior mass 1.0 on one mixture member --
+neighbouring lags too redundant, multiplication double-counts);
+optimum sits ON the grid boundary (a=3.0 steepest decay, m=0.02) so
+a wider decay grid is the cheap follow-up. Roadmap Phase 2 marked
+done with its number. compress.tex results chain updated and flags
+that the combination rule needs its own treatment -- Ruediger has a
+more general scheme in mind (additive/multiplicative as special
+cases); TO BE DEVELOPED, one thing at a time.
+
+## 2026-08-01: byte-level baselines on all three corpora; paper cleanup
+Measured (laptop, 51/121/206 s -- one profile each):
+  text8  1e8 B, 27 values: H0 4.123527, layered 4.123534, red 7e-6
+  enwik8 1e8 B, 205 values: H0 5.080140, layered 5.080163, red 2e-5
+  enwik9 1e9 B, 206 values: H0 5.156490, layered 5.156493, red 3e-6
+Memoryless byte coding of enwik9 = 644.6 MB vs 107.3 MB for the best
+published program -- the floor, as intended. Methodological value:
+redundancy ~1e-5 at all three scales shows the per-state prior costs
+nothing in the DENSE regime, so later gains are attributable to
+memory, not to the prior. Token vs byte on text8: 1.8870 bpc vs
+4.1235 bpc -- the token representation is worth 2.24 bits/char
+before any memory is spent; that is the argument for tokens.
+main.tex: King James validation section (sec 2) REMOVED (it was
+scaffolding); section 3 rewritten as "The three benchmark corpora:
+memoryless baselines" with tab:byte-baseline, the token-level
+paragraph, the n-sweep compressed to one parenthetical sentence
+(2.187 -> 0.039, L* 15 -> 4), and a placeholder for the enwik8/9
+token rows pending the tokenizer. Dangling ref in tab:pairs caption
+repaired. 22 pages, compiles clean.
+
+## 2026-08-01: tokenizer implemented (TOKENIZER.md v3)
+src/product_model_with_memory/tokenizer.py: exactly invertible
+segmentation (letter runs / digit runs / single bytes) with both
+switches (numbers=intern|compositional, case=conditioned|folded).
+Round trip verified on 10 hand-picked inputs incl. all 256 byte
+values, UTF-8 and random bytes, x4 combos, plus text8 3MB x4.
+Decoder is framing-self-sufficient (test withholds the encoder
+vocabulary and still decodes). tests/test_tokenizer.py: 6 tests.
+scripts/token_baseline.py: memoryless cost of every stream, with
+the case stream reported BOTH independently and conditioned on the
+current token (the number the spec argues about).
+scripts/llm_token_baseline.py (NEW, Ruediger s suggestion): same
+measurement over a standard LLM tokenizer via tiktoken -- one
+stream, fixed vocabulary, no escape/spelling/case machinery, and
+directly comparable to LLM perplexity work. Flagged in output and
+in results.json as NOT a benchmark entry: the BPE vocabulary is
+external and data-derived (would have to be shipped and counted,
+~0.5-1 MB) and may have seen Wikipedia.
+
+---
+
+## Parked: one first-order state cannot serve a stream of two languages
+*(31 July 2026 — measured, not yet acted on. `scripts/context_probe.py`,
+outputs in `output/streams/*/context_probe.json`.)*
+
+The question was whether first-order memory means anything on our
+tokenizer, since 63.3% of its symbols on enwik8 are single punctuation
+bytes, so a word's predecessor is usually a space or a bracket.
+
+**It does not, for words.** Predicting a word from the previous *token*
+buys 1.07 bits; from the previous *word* it buys 3.91.  A factor of
+nearly four is lost on exactly the symbols that carry meaning.
+
+**But changing the state map to skip delimiters barely helps overall.**
+Splitting the conditional entropy by what is being predicted, in bits
+per symbol of the stream:
+
+| predicted | state = prev token | state = prev word | change |
+|---|---|---|---|
+| words and numbers (36.7%) | 3.725 | 2.684 | saves 1.041 |
+| punctuation, and whether the next symbol is punctuation | 1.385 | 2.290 | loses 0.905 |
+| total | 5.109 | 4.974 | saves 0.136 |
+
+0.136 bits/symbol is 0.057 bits/character.  The gain on 37% of the
+symbols is nearly cancelled by the loss on the other 63%, because
+markup is a *local sequential* pattern — after `<` comes `/`, after a
+tag name comes `>`, after a word comes a space — and the previous token
+is exactly the right state for it, while the previous word is not.
+
+**The conclusion to come back to:** the stream is two interleaved
+languages, markup and prose, and no single first-order state serves
+both.  Neither map is right.  Candidates, in the spirit of the project
+(generate a family, let the posterior choose): both maps as members of
+one family; a state carrying both the previous token and the previous
+content token; or a context tree over this stream, which would discover
+the distinction by itself.  Not decided — parked deliberately so that
+the first-order section reports the plain model first.
+
+Per-character first-order upper bounds from the same probe (plug-in, so
+optimistic, and most optimistic where the state space is largest —
+trust the bytes row, which is essentially unbiased):
+
+| representation | memoryless | order-1 gain |
+|---|---|---|
+| bytes | 5.0802 | 1.194 |
+| ours, previous token | 3.1282 | 0.805 |
+| ours, previous word | 3.1282 | 0.861 |
+| LLM tokenizer, charged | 2.9552 | 1.242 |
+
+Our representation extracts *less* from one symbol of memory than
+either alternative, per character, under either state map.  Same cause
+as the memoryless gap: both the alphabet and the memory budget are
+spent on markup, which BPE swallowed into its subwords.
+
+## Where the time goes on the subword stream (31 July)
+
+Three measurements on `output/streams/bpe_enwik8`, d = 100,277,
+l_max = 54.  They settle the level-truncation question and re-order the
+optimisation work.
+
+**The current level truncation never fires here.**  `level_window_probe`
+walked every level of 4,000 distinct first-order profiles with
+`PMM_NO_TRUNCATE=1` and counted what each rule would evaluate:
+
+| rule | level evaluations | of a full sweep |
+|---|---|---|
+| full sweep | 216,000 | — |
+| one-sided (`_LevelWindow`, DROP=80, PATIENCE=3) | 212,204 | 98.2% |
+| two-sided (ideal contiguous window around the mode) | 172,586 | 79.9% |
+
+`one_sided` is 54, the whole range, for every profile in the sample.
+The 1.52× wall-clock win recorded for level truncation is a **bytes-only**
+result: at d = 256 the level curves fall fast enough to trip an 80-bit
+drop, and on sparse subword profiles they do not.  The ideal two-sided
+window buys 1.23×, matching the 1.22× measured on text8 bytes.  Two
+independent workloads, same answer; the earlier prediction of 2–3× at
+large d was wrong.
+
+The reason the two agree: per level, the dominant cost is the O(G) scan
+for local maxima over the 30,608-point grid, which does not depend on
+the profile at all.  Weighting levels by k̃ moves the two-sided ratio
+only from 1.23× to 1.35×.
+
+**Only a handful of levels carry the mass, but only for heavy profiles.**
+`peak_atlas --ids`, same stream, 2M tokens:
+
+| profile | N | k̃ | mode level | levels holding all but 1e-12 |
+|---|---|---|---|---|
+| memoryless | 2,000,000 | 803 | 6 | 1 |
+| row0 | 54,369 | 153 | 17 | 5 |
+| row9 | 24,821 | 79 | 7 | 2 |
+| row99 | 2,082 | 26 | 13 | 8 |
+| row999 | 199 | 8 | 18 | 45 |
+| row9999 | 18 | 3 | 22 | 52 |
+
+out of 53, contiguous in every case at every tolerance.  The narrow
+windows sit on the profiles with large k̃, but since per-level cost is
+nearly flat in k̃ the population result above still governs.  Selecting
+profiles by frequency rank over-weights the heavy ones; sampling
+uniformly over distinct profiles over-weights the light ones.  The two
+probes bracket the truth and agree on the conclusion.
+
+**The integrand is unimodal on this stream.**  All 318 profile-levels had
+exactly one significant peak; zero appearances and zero disappearances
+along L.  The second far-left peak that motivated the multimodal scan
+is a heavy-count phenomenon and does not occur here.  The peak drifts
+at most 0.53 in u between levels (13 grid steps) and, across 57,134
+family members, by 7.2e-8 at the median and 4.7e-4 at the 99th
+percentile — a hundredth of a grid step.  A 30,608-point sweep is
+locating something that barely moves.  `_scan_sparse` (`PMM_SCAN`) is
+the existing path for this and is the largest untaken win.
+
+Log-concavity in L holds in 95.4% of 306 checks, worst second
+difference 35.5, so an outward-from-the-mode walk cannot be given a
+rigorous tail bound from concavity; it would need the same empirical
+drop-and-patience guard the current rule uses.
+
+**Time split of the production path** (`state_family_experiment`,
+1M-token prefix, jobs=1, under cProfile, 138.0 s of which 25.5 s was a
+one-time build of 347 missing columns):
+
+| part | seconds | share of steady state |
+|---|---|---|
+| `log_q_lambda_scan` | 72.0 | 64% |
+|   — bracketed solve, derivative, curvature | 40.6 | 36% |
+|   — grid integrand assembly | 31.4 | 28% |
+| `log_phi_matrix` | 39.0 | 35% |
+|   — the 8-point stencil | 18.3 | 16% |
+|   — `series_column` | 10.4 | 9% |
+|   — `_read_column` | 5.8 | 5% |
+
+cProfile charges per call and the call counts are lopsided (3.3M
+`_phis`, 2.7M `derivative`, 16.4M ufunc reductions against 53 calls to
+`log_phi_matrix`), so the scan's share is inflated and provisioning's is
+not.  Provisioning is close to a fixed charge per sweep — it amortises
+over the ~5,750 profiles sharing each level — while the scan scales with
+the corpus, so the scan's share grows with size.
+
+Free in that profile, no compiled code and no numerical risk, because
+memoisation returns the identical object: `partition_multiplicities` is
+called 931,796 times for 304,826 scans, recomputing the same profile's
+multiplicities at every level (9.2 s); `_read_column` re-reads columns
+across levels (32,453 calls, 5.8 s); `series_column` recomputes the same
+left-of-column values (32,976 calls, 10.4 s).  About 20% of steady
+state.
+
+**Compiled kernels.**  A C prototype of the 8-point stencil ran 10.4×
+faster than the numpy version (13.4 ms → 1.31 ms per 120-column level)
+and is **bit-identical** — but only after two fixes, both of which
+change results silently.  `gcc -O3 -march=native` contracts `a*b+c` into
+a fused multiply-add, which rounds once instead of twice; `-ffp-contract=off`
+restores exactness and cost nothing measurable.  And numpy's
+`.sum(axis=1)` reduces eight elements as a pairwise tree, so a
+sequential loop disagrees; matching `((a+b)+(c+d))+((e+f)+(g+h))` fixes
+it.  Numba's analogue of the first is `fastmath`, off by default.
+
+Exactness is available for the stencil because it is only multiplies and
+adds.  It is not available for the scan kernel: numpy's SIMD `exp` and
+libm's `exp` differ by about one ulp, and scipy's `brentq` cannot be
+called from compiled code, so Brent must be rewritten and will converge
+to a slightly different root.  One ulp will not flip the 80-bit
+truncation threshold, but the curvature sign test `curv < 0` is discrete
+and is exactly the test that failed on 218 of 219 members in the Newton
+continuation experiment.  Acceptance must therefore be equality of
+`log2 q` against the current path over every distinct profile of text8
+and enwik8, not a tolerance.
+
+Numba tracks numpy's ABI and lags it, so `pip install numba` may try to
+downgrade numpy; check before committing to that route.
+
+### What the speed work actually bought (1 August)
+
+Measured on `state_family_experiment --ids output/streams/bpe_enwik8
+--top-k 100276 --m-grid 0,100277 --n 1000000 --jobs 12`, the same
+command throughout:
+
+| state | wall | CPU |
+|---|---|---|
+| before | 17.2 s | 144 s |
+| + memoised multiplicities, cached level handles | 17.2 s | 144 s |
+| + windowed scan (`PMM_SCAN`, now the default) | 14.7 s | 115 s |
+| + compiled saddle solve | 13.8 s | 98 s |
+| + compiled stencil | 10.9 s | 66 s |
+
+**1.58× wall, 2.19× CPU.**  The CPU figure is the one that governs a
+big machine; the wall figure is now limited by parallel efficiency, not
+by the kernels: 66 s of CPU over 10.9 s of wall on twelve cores is 6.0×,
+so half the machine is idle.  About 4 s of that is the serial head of
+the run (stream load, state counting, column provisioning in the
+parent) before the first depth is reported.
+
+The compiled path is NOT bit-identical: up to 1.0e-9 bits on sparse
+subword profiles and 1.5e-4 bits on heavy byte profiles, both about
+1.1e-9 relative.  All of it comes from the saddle solve --- the stencil
+kernel is exact --- and the two causes are `np.dot` dispatching to BLAS,
+whose summation order C cannot reproduce, and numpy's SIMD `exp`
+differing from libm's by up to one ulp above length eight.  On a
+bits-per-character figure quoted to four decimals this sits eleven
+orders below the last digit.  `PMM_KERNEL=0` reproduces the old numbers
+exactly and `PMM_SCAN=full` restores the full sweep, so both halves
+remain cross-checkable.
+
+Next, in order of measured size: the parallel efficiency (ctypes
+releases the GIL around every foreign call, so a thread pool would now
+work and would stop copying the level matrix once per worker);
+`series_column`, 9% of steady state recomputing values a denser store
+would hold; and the serial head of the run.
+
+### Final state of the speed work (1 August)
+
+`state_family_experiment --ids output/streams/bpe_enwik8 --top-k 100276
+--m-grid 0,100277 --jobs 12`, the paper's enwik8 first-order cell:
+
+| | wall | CPU |
+|---|---|---|
+| before | 103 s | — |
+| after | 42.3 s | 321 s |
+
+**2.4×**, with 7.9534 bits per token and 2.1135 bits per character
+unchanged.  What produced it, in order of size:
+
+1. the windowed scan on the plain path (`PMM_SCAN`, now default) --- the
+   grid exists only to locate a peak that the atlas shows is unique and
+   drifts thirteen grid steps between levels;
+2. the compiled stencil in `log_phi_matrix` (10.4x on that kernel);
+3. the compiled saddle solve (17-31x on the solve in isolation);
+4. memoised `partition_multiplicities` and cached level file handles;
+5. skipping the certified series far left of a stored column, where
+   the value is exactly its analytic limit (fill 16.0 s -> 10.8 s);
+6. one shared-memory block for the whole run instead of 54 (39 GiB of
+   fresh anonymous pages down to 1.5 GiB, `sys` from 31 s to 18 s).
+
+Three changes were made against plausible-sounding theories and all
+three did nothing measurable: shipping the profiles once instead of per
+level, finer chunking for dynamic load balancing (reverted --- it cost
+7% CPU), and the shared-block reuse above (kept, since it is a strict
+reduction, but it did not move the wall clock).  The scaling fit
+(wall = S + P/j from the 4- and 6-job runs) gives S = 33 s and P = 215 s
+and predicts the 12-job time to within 2%: the run is now about
+two-thirds serial at twelve cores, so further parallel work has little
+left to win.  node14's 64 slower cores would land near 36 s.
+
+**The bug worth remembering.**  The compiled stencil shipped broken for
+several hours.  Inside `_interp_leftovers` a local array named `vals`
+shadowed the parameter holding the stored column, so the edge branch
+interpolated the series values instead of the column --- wrong by up to
+622 nats at about 1% of query points.  Every end-to-end check passed
+throughout, printing 2.1135 each time, because the profiles in those
+runs never read the affected points.  A benchmark that agrees is not
+evidence that a numerical kernel is correct.  `tests/test_interp_kernel.py`
+now compares the two paths value by value (2.9 million values across
+several levels and query grids, exact equality required) and asserts
+that all three regions of the query grid --- stencil interior, series
+tail, clamped window --- are actually exercised, since the defect lived
+in the handoff between them.
+
+The saddle kernel had the treatment from the start, and its only real
+problem was a genuine ambiguity rather than a mistake: far out in the
+left region the curvature is numerically zero, so `curv < 0` is decided
+by rounding, and a kernel rejection there dropped a profile's only peak
+and raised "left tail only".  `_solve_peak` now re-decides every
+rejection in Python, so the compiled path can accelerate an accepted
+peak but never remove one.  Residual disagreement with the Python path
+is 1.0e-9 bits on sparse subword profiles and 1.5e-4 on heavy byte
+profiles, about 1.1e-9 relative, from BLAS reduction order and numpy's
+SIMD `exp`; `PMM_KERNEL=0`, `PMM_SCAN=full` and `PMM_INTERP_KERNEL=0`
+each restore the older path for cross-checking.
+
+The far-left series shortcut is now on by default
+(`SERIES_TAIL_NATS = 40`, `PMM_SERIES_TAIL=inf` to restore the full
+series).  It looked broken when first tried, but that was the shadowing
+bug corrupting the same code path: with the bug fixed it moves no value
+at all across 2.9 million comparisons, and it is worth 48.9 s -> 42.3 s
+on the enwik8 cell.
+
+## Coarsening the state: the family does not help (1 August)
+
+The M-sweep over state maps sigma_M, run on all three subword streams
+with the admissible (vocabulary-id) ordering.  Bits per character,
+vocabulary counted:
+
+| states kept | text8 | enwik8 | enwik9 |
+|---|---|---|---|
+| 0 | 2.1716 | 2.9552 | 2.9775 |
+| 1,024 | 1.9805 | 2.5686 | 2.4670 |
+| 8,192 | 1.8698 | 2.3311 | 2.1686 |
+| 32,768 | 1.8318 | 2.1666 | 1.9323 |
+| all | 1.8298 | 2.1135 | 1.8371 |
+
+Monotone in M on every file, posterior entirely on the full model,
+mixture equal to the best member.  **Coarsening never pays.**  The
+prediction that an interior optimum would appear was wrong, and the
+reason is that the family offers only one alternative to a state's own
+counts --- pooling it with every other unpromoted symbol --- which
+destroys nearly everything the state carries, while giving a rare
+symbol its own state costs the layered estimator very little.
+
+The last step is the informative one: 65,536 states to all 71,161 gains
+0.019 bits per token on enwik8 and 0.010 on text8, against tenths of a
+bit for every earlier doubling.  First order sits at the point where
+extra state stops earning its cost.  That reverses the argument for
+running this before pairs: order one is NOT limited by having too many
+states, so order two is not obviously hopeless --- but it would add
+states in exactly the region where marginal value is lowest, so the
+prediction is that it fails on enwik8 and may succeed on enwik9.
+
+**Admissibility.**  The family as originally coded ranked symbols by
+their frequency in the file being compressed, which the decoder cannot
+reproduce; transmitting the ranking costs ~1.5 Mbit at d = 100,277,
+0.19 bits/character on enwik8, more than the whole first-order gain.
+Member M now keeps the M smallest vocabulary ids, which the tokenizer
+fixes and `fixed_bits` already pays for.  At M = 0 and M = full the two
+rules coincide, so no published number moved (verified: 11.2165 and
+7.9534 under both).  `tests/test_state_order.py` pins this down.
+
+## Where the learning cost actually is (1 August)
+
+`scripts/state_redundancy.py`: per state, model bits minus n_s H_s,
+bucketed by n_s, with the Miller-Madow correction applied to the
+plug-in target.  Bits per token:
+
+| file | model | H corrected | excess | obs/state |
+|---|---|---|---|---|
+| text8 | 9.0983 | 7.3715 | 1.7268 | 543 |
+| enwik8 | 7.9534 | 6.4895 | 1.4639 | 362 |
+| enwik9 | 6.6902 | 6.2118 | 0.4784 | 3,367 |
+
+Share of the total excess by observations in the state:
+
+| observations | text8 | enwik8 | enwik9 |
+|---|---|---|---|
+| 1-29 | 3.6% | 7.5% | 1.1% |
+| 30-99 | 10.1% | 14.9% | 2.6% |
+| 100-999 | 41.3% | 41.8% | 25.6% |
+| 1,000-9,999 | 33.2% | 22.9% | 42.3% |
+| 10,000+ | 11.8% | 12.9% | 28.5% |
+
+Two findings.  The excess falls sharply with data per state --- enwik8
+against enwik9 is nine times the data and a third of the excess, at
+fixed vocabulary and nearly fixed state count.  And the excess is NOT
+in the near-empty states: a state seen once costs 16.614 bits per
+token, exactly log2(100,277), the model correctly paying the uniform
+price when it knows nothing, but such states hold too few tokens to
+matter.  Two thirds sits in states with 100 to 10,000 observations.
+
+**The direction this points.**  A state with a thousand observations
+over a hundred thousand symbols still pays, in effect, to say which
+symbols occur, and pays separately from every other state, although the
+marginal already answers most of the question.  What is missing is a
+graded way for a state to borrow the marginal while keeping its own
+evidence --- a change to the construction (a hierarchical prior, per
+state weights concentrated around the global ones) rather than another
+family over existing pieces.  Note that a per-state independent choice
+between "own counts" and "backoff" does NOT factor cleanly, because
+whether a state joins the pool changes the pool's own profile.
+
+Paper: new Section "Coarsening the state" after "Memory of order one",
+with Tables tab:coarsen, tab:excess, tab:excess-where, and
+Appendix A on the Miller-Madow correction.
+
+## 2026-08-02 --- Morning handover: STOP-WORK notice (superseded the same evening; see next entry)
+
+Kept verbatim for the record; its section 0 conclusion (ladder interpolation too coarse) was measured wrong that evening. The bug fixes in its section 2 stand.
+
+### 0. STOP — the system is NOT ready
+
+**The ladder is not accurate enough. Do not put any of this sweep into
+the paper, and do not run Stage B until the spacing question is redone.**
+
+MEASURED, on `tables/anchors_prod` (8.3% spacing, degree 11), the
+interpolation error in nats:
+
+| level | max error (nats) |
+|---|---|
+| 5 | 5.6e-05 |
+| 10 | 1.2e-04 |
+| 20 | 2.1e-04 |
+| 33 | 1.5e-03 |
+
+MEASURED, the codelength consequence (`scripts/compare_evaluators.py`,
+exact columns vs the ladder, same profiles, no corpus):
+
+| counts | l_max 6 | l_max 33 |
+|---|---|---|
+| <= 5 | 2e-13 | 3e-10 |
+| 300 | — | 9.8e-05 |
+| 1,000 | — | 9.6e-04 |
+| 10,000 | — | **0.52 bits** |
+
+Counts up to 255 are inside the dense floor and served exactly, hence
+1e-10. Everything above it is interpolated, and the error grows fast
+with r. At `l_max=33` the expansion never fires (cutoff 54), so this is
+**purely the ladder**.
+
+Consequences already visible in the sweep: `pooled_v1024` moved by
+**+0.0387 bits/token** (5.1874 -> 5.2261, and the best member changed),
+`ctree_fullvocab` by +8.5e-04. The cache they were compared against is
+**clean** — 200 samples at each of L=5,10,20,33, zero bad — so these are
+the new evaluator's error, not a correction of the old numbers.
+
+#### How the spacing decision went wrong
+
+The sweep that chose 8.3% ran on `anchors_f005`, whose r_max was 1.06e6,
+and reported ~5e-7 nats. `anchors_prod` has r_max = 2e8, so its test
+targets sit near 1e8 where the residual `ln phi - L*lgamma(r+1)` is far
+larger, and the same *relative* spacing gives a far larger *absolute*
+error. The measurement did not transfer to the store that was built, and
+nobody re-ran it after building. **Re-measure on the store you intend to
+ship, never on a proxy.**
+
+#### What has to happen before this is usable
+
+1. Derive the accuracy requirement from the CODELENGTH, not from nats.
+   `compare_evaluators.py` is the right instrument: it needs the delta
+   below ~1e-4 bits on every profile the experiments actually produce.
+2. Re-choose the spacing against that, on the real store, at the r and
+   l_max the experiments use — not on a proxy store with different r_max.
+3. Consider raising the dense floor instead of tightening the spacing.
+   Counts inside the floor are exact, and most counts in a corpus are
+   small; the question is where the crossover is.
+4. Only then re-run the sweep.
+
+Everything below this section was written before this was measured.
+Sections 1 and 4 in particular state that the system reproduces the
+published numbers; that holds only for the nine Stage A runs whose
+counts stay small.
+
+---
+
+State of the moment-table work: what the system is now, what was fixed,
+what is measured, what is guessed, and what is left.
+
+Throughout, **MEASURED** marks a number someone actually observed and
+**INFERRED** marks a claim that has not been checked. That distinction is
+the main lesson of the session that produced this file: several hours
+were lost to explanations offered with the confidence of measurements.
+
+---
+
+### 1. What the evaluator is now
+
+Moment values `ln phi_r^(L)(e^u)` come from three places, with **no
+exact stored column read at any level**:
+
+| region | served by |
+|---|---|
+| `L >= 54` | order-2 saddlepoint expansion + certified series (`log_phi_column`) |
+| `L < 54`, r an anchor | the stored column, bit-identical |
+| `L < 54`, r between anchors | degree-11 barycentric interpolation in `ln(r+1)` across the 12 nearest anchors |
+
+The store is `tables/anchors_prod`: a **designed** grid, 52 levels
+(2..53), 475 columns per level, 2.8 GB.
+
+Grid per level (`scripts/build_anchor_store.py`):
+
+- every integer `0..255` (the dense floor)
+- then `r_k = round(1.083071^k)` up to `r_max = 2e8`
+- then 8 further anchors above `r_max` (the pad)
+- plus 40 non-anchor **targets**, built as interpolation test points and
+  recorded separately in `anchors.json`; they are never used as anchors
+
+Configuration (four variables, all four required):
+
+```
+PMM_UNIVERSAL_TABLES=tables/anchors_prod
+PMM_PHI_LADDER_EVERY=1        # decimation of the store's own grid
+PMM_PHI_LADDER_DEGREE=11
+PMM_PHI_SADDLE_MIN_L=54
+```
+
+`scripts/rerun_paper.sh` exports these itself. Run it from a shell with
+no `PMM_*` set: if the variables are inherited, a stale one silently
+points the run at the cache and it reproduces the published numbers
+while proving nothing.
+
+#### Cost, MEASURED
+
+- complete system vs exact columns on `bpe_text8`: **+2.172e-05
+  bits/token = 1.829827 bits/char**, against a published 1.8298. The
+  digit holds.
+- store: **2.8 GB** against the **86.6 GB** cache.
+- Stage A model runs: **26.5x faster** in total (6297 s -> 238 s);
+  `state256` alone 1998 s -> 28 s.
+
+#### Why the cutoff is 54 and not 46
+
+At cutoff 46 the delta is +2.444e-04 bits/token = 1.829853 bits/char,
+which **rounds to 1.8299** — the published digit moves. Extending the
+store from level 45 to 53 costs ~0.4 GB and takes the delta back to
+1.829827. MEASURED.
+
+---
+
+### 2. Bugs fixed this session
+
+Each is a real defect that existed before this work, with the evidence
+that identified it.
+
+**Concurrent writers corrupted the store silently.** `_append_column`
+recorded each column's offset from `level["size"]`, an in-memory
+counter, while appending in `"ab"` mode. Two processes writing one level
+each kept their own counter, so both wrote real bytes and both recorded
+plausible offsets, but each one's offsets were short by whatever the
+other had written. A column read through a wrong offset is finite,
+smooth, correctly sized real data from elsewhere in the file — every
+existing guard passed it. Fixed: offsets come from the file under an
+exclusive lock, the index is merged rather than clobbered, and **every
+column now carries a CRC verified on read**.
+
+**The right-pole series certificate understates its error by ~8e6.**
+MEASURED at `L=10, r=1045889, u=14.52`: the series reports `cert=4.5e-11`
+and is wrong by **3.7e-4 nats**; contour and saddle agree with each other
+to 1.4e-5 and both disagree with it. It affected **90 of 1920** anchor
+columns at L=10, all at large r. `PMM_BUILD_EXACT=1` disables the branch
+in both the builder and `log_phi_contour` (the reference must not be the
+method under test). **Use it for every store build.**
+
+The certificate itself is still **unexplained** — presumably it bounds
+truncation of the series it sums and misses another term. It remains in
+the read path at a 1e-10 threshold. *This is an open correctness
+question, see §5.*
+
+**The ladder was broken four separate ways**, each found by a five-minute
+run rather than a test: `log_phi` had the hook but `log_phi_matrix` (the
+hot path) did not; provisioning demanded columns for levels the expansion
+serves; decimation deleted the small-r anchors, producing `log2 q = +1321
+bits`; and `r=0` fell below the grid and was silently **extrapolated**,
+producing `log2 q = +91`. All fixed, and extrapolation outside the anchor
+span now raises instead of returning a diverging Lagrange value.
+
+**A designed store could grow.** Pointing an ordinary run at the anchor
+store began rebuilding the whole cache inside it; the only symptom was an
+apparent hang. A store with an `anchors.json` is now **sealed**: appends
+raise, and a missing column raises naming what was asked for. The
+builder also refuses to build into an existing store, which otherwise
+silently did nothing (its columns exist, so none are appended) while
+reporting success.
+
+**`pooled_lag_codelengths` was quadratic in memo size.** Every checkpoint
+did `known_before = set(builder.memo)` — a fresh set of every key, **five
+million** of them — then filtered the whole memo against it to find the
+new entries. Two O(total memo) passes per checkpoint, on an append-only
+memo where the new entries are simply everything past the previous
+length. The allocation spike also kept triggering full generation-2
+collections over a five-million-object heap: a sampled profile showed
+**91% of the process inside `gc_collect_main`**, and gen2 passes took
+**38 s each**. Fixed with an `islice` from the recorded offset, plus
+`gc.freeze()` per checkpoint.
+
+MEASURED, before and after: checkpoints ran 78–2866 s, wildly
+oscillating; checkpoint 28 after the fix took **193 s** (177 s work +
+15 s save) with gen2 at 0.01–0.05 s.
+
+Note this job never benefited from the 26x speedup: its log shows no
+`tables:` lines at all, so it spends no time in the phase that was
+optimised.
+
+---
+
+### 3. Tooling
+
+| script | what it is for |
+|---|---|
+| `build_anchor_store.py` | build a designed store; dry-run by default, `--go` to build |
+| `check_store.py` | verify columns against contour integration; `--self-test` forges known damage and confirms detection |
+| `smoke_ladder.py` | **seconds-long** check of the complete system on the real code path; run before spending a real run |
+| `ladder_accuracy.py` | interpolation error vs spacing and degree, anchors verified before use |
+| `phi_sensitivity.py` | end-to-end cost of the ladder and the expansion, in bits |
+| `rerun_paper.sh` | the whole paper sweep, logged, failures stepped over |
+
+`smoke_ladder.py` exists because five consecutive five-minute runs were
+each spent discovering one bug. It checks: the grid starts at r=0, the
+dense floor survives decimation, r=0/1/2/3 are bit-identical, non-anchors
+interpolate within tolerance, `log_phi_matrix` agrees with `log_phi`, and
+a real codelength comes out with `log2 q <= 0`. **Run it after any change
+to the ladder, the grid, or provisioning.**
+
+`check_store.py --self-test` forges damage twice, once with checksums and
+once with them stripped, because a store written before checksums existed
+has no CRC to fail and detection there rests entirely on the numerics.
+
+---
+
+### 4. What has been run, and what has not
+
+#### Stage A — model runs (`paper/main.tex`)
+
+All 12 complete except `pooled_v1024`, which was still running when this
+was written.
+
+MEASURED, v2 (old cache) vs v3 (complete system):
+
+| run | v2 | v3 | delta |
+|---|---|---|---|
+| state256 | 3.719846 | 3.719848 | +1.3e-06 |
+| state4096 | 6.713180 | 6.713180 | +9.1e-08 |
+| ct16384 | 8.238249 | 8.238249 | +8.9e-09 |
+| spelling (bpc) | 3.431218 | 3.431218 | +1.3e-08 |
+| **ctree_fullvocab** | 10.091905 | 10.092753 | **+8.5e-04** |
+
+`state_fullvocab` gives 9.7826, matching the published figure exactly.
+
+**`ctree_fullvocab` is the one unresolved number.** The shift is ~1.4e-4
+bits/char, about 40x the measured approximation ceiling (2.2e-5
+bits/token), and it is the full-vocabulary run — the largest r values in
+the sweep, exactly where the right-series certificate fails. INFERRED
+that this is the bug having been in the published number, with the new
+value correct. **Not established**: the ceiling was measured at
+V=100,277 and this run is V=300,000 with larger counts, so the ceiling
+here could genuinely be higher. Settling it means a `phi_sensitivity`
+run against a matching stream.
+
+#### Stage B — representation runs (`paper/compress.tex`)
+
+**None of these has been run.** `bash scripts/rerun_paper.sh stage_b`
+
+- `byte_baseline` on text8, enwik8, enwik9
+- `token_baseline` on text8, and enwik8 in four settings
+  (intern/compositional x conditioned/folded)
+- `llm_token_baseline` (cl100k_base) on text8, enwik8
+- then enwik9 for all three — 10x the rest, deliberately last
+
+Published values to compare against: bytes 4.1235 / 5.0802 / 5.1565;
+our tokenizer 2.2483 (text8) and 3.1282 (enwik8, intern+conditioned
+winning); cl100k 2.1716 charged / 2.1095 free (text8), 2.9552 / 2.8931
+(enwik8). The enwik9 tokenizer runs were listed as pending rather than
+published, so they are new work, not verification.
+
+All eight experiment scripts read the moment store, so everything in the
+paper is in scope.
+
+#### Attribution rule
+
+A shift below ~1e-4 bits/char is the new evaluator and expected. Anything
+larger means the right-series bug reached that published number — stop
+and look rather than continuing the sweep.
+
+---
+
+### 5. Open questions
+
+**The right-series certificate.** Why does it report 4.5e-11 when the
+error is 3.7e-4? Until that is understood the branch cannot be trusted,
+and it is still live in the read path at a 1e-10 threshold — only the
+*builder* is bypassed by `PMM_BUILD_EXACT`. This is the most important
+open item, because it is a correctness question, not a performance one.
+
+**`ctree_fullvocab`.** See §4.
+
+**The dense floor is unmeasured.** 256 was chosen by reasoning — small r
+is where the counts are and where `ln phi` is steepest in `ln(r+1)` — not
+by measurement. It is 256 of the 475 columns per level, so it now
+dominates the store size; the spacing does not. Whether it can be 64, or
+needs to be 1024, is a `ladder_accuracy.py` sweep nobody has run.
+
+**The pad is unmeasured too.** 8 anchors above `r_max`, sized so degree
+11 has six on each side. Padding by too little silently degrades accuracy
+near the largest counts by two orders (MEASURED: 5e-9 -> 2.6e-6 nats).
+
+**Spacing has margin nobody has spent.** MEASURED: degree 11 is flat from
+0.5% to 4% spacing (~5e-7 nats worst case) and the end-to-end ladder cost
+is below 1e-6 bits/token even at 8.3%. The current store is 8.3%. Going
+coarser is possible but the floor dominates, so it saves little.
+
+**Degree 7 is unstable.** It shows sporadic blowups two to three orders
+above its own median at the same setting (7.5e-5 at L=15/2%, 2.6e-4 at
+L=22/4%) where degree 11 has none. Do not lower the degree without
+re-measuring.
+
+**Threads, not processes.** `pooled_lag_codelengths` parallelises with
+`ThreadPoolExecutor`, so `--jobs 12` buys much less than in the other
+experiments except where numpy releases the GIL. Read from the code, not
+measured.
+
+---
+
+### 6. Loose ends
+
+- `tables/anchors_prod` has 52 leftover `.lock` files from its build.
+  Inert; the builder should remove them.
+- `rerun_paper.sh` prints one line per run **on completion**, so a long
+  job looks like a hang for hours. It should heartbeat.
+- The resume directory keeps every checkpoint's pickle — 27 files,
+  5.86 GB — instead of pruning. Correct but wasteful.
+- `VERIFY.md`'s expectations section still describes the v1->v2
+  correction and quotes a 1e-3..1e-2 bpc tolerance. Too loose for this
+  round; it wants the 1e-4 rule.
+- `PMM_GC_TRACE=1` and the `[phase]` lines in `pooled_lags.py` are
+  instrumentation added to diagnose the quadratic memo. Keep or remove
+  deliberately.
+- The old cache `tables/universal_v2` (86 GB) is still on disk and still
+  carries the right-series error. Nothing reads it under the new
+  configuration. It is the only comparison point for the v2/v3 table
+  above, so do not delete it until that comparison is finished.
+
+## 2026-08-02 (evening) --- Ladder exonerated; the real defects: evaluator Laplace curvature (fixed) and universal_v2 large-r contamination (open)
+
+Supersedes section 0 of the previous entry. Everything here is
+marked **MEASURED** or **INFERRED**, same discipline as the morning file.
+
+### 0. The stop-work reasoning was wrong — the ladder is fine
+
+The morning file said the ladder's interpolation was too coarse (1.5e-3
+nats at L=33, 0.52 bits at counts of 10,000) and that spacing and floor
+had to be re-chosen. MEASURED today: after fixing the real defect (an
+evaluator bug, §1) and building a trustworthy reference (§3), the ladder
+in its production configuration —
+
+    tables/anchors_prod, factor 8.3% (verified from anchors.json),
+    dense floor 256, degree 11, EVERY=1, expansion at L>=54
+
+— passes the codelength requirement on **all 22 instrument profiles,
+worst |delta| = 5.6e-6 bits (c17M)**, 18x inside the 1e-4 requirement.
+Domain covered: top counts 200..17,005,209 (the largest r any real run
+ever requested, from the universal_v2 indices), d up to 300,000,
+l_max to 53. `output/compare_fixed.jsonl` has the rows.
+
+**Do not rebuild the store. Do not change the spacing.** MEASURED
+margin: read-time decimation every=2 (16.6%) fails exactly one case,
+c17M at +2.4e-4 bits. One octave of margin, no more. The graded c*
+rows now scale cleanly with top count, as truncation should.
+
+Stage B stays blocked, but for a different and smaller reason: Stage A
+should be re-verified under the corrected evaluator first (§4).
+
+### 1. The real defect: Laplace curvature was noise at large counts
+
+The scan integrates each interior peak either by bracketed-solve +
+Laplace or by grid trapezoid. The Laplace curvature was computed as
+`sum(count * (rho + rho^2 - raw_second))` — a difference of near-equal
+exponentials (~1e11 at c1M profiles) whose exponents carry the O(h^2)
+error of linear interpolation between u-grid nodes.
+
+MEASURED (profile `(1e6, 250k, 62.5k, ..., 1)`, d=1024, exact store):
+
+- solver curvature at L=33: **-5.494e3 against a true -38.6**; at
+  neighbouring points +210, +2074, -3572, +3878 — sign flips included.
+- consequence: the Laplace contribution was 4.3 nats (~6 bits) low
+  wherever that branch fired, and whether it fired flipped per level
+  and per store on 1e-7-scale perturbations. Per-level deltas for c1M
+  were bimodal: ~1e-7 bits where both evaluators took the same method,
+  ±2..6 bits where they differed.
+- adjudication: dense quadrature (40,001 points across the peak) agreed
+  with the **trapezoid** to 0.02 nats and with the node-based Laplace
+  to 0.15 nats; peaks there are wide (w = 0.16–0.70 nats vs grid step
+  0.033), so the grid resolves them.
+
+Fix (in `layered.py`, both `_scan_from_psi` and `_scan_sparse`, shared
+helper `_integrate_grid_peaks`):
+
+- method choice per peak from a **node-based curvature** (second
+  difference of psi at grid nodes — cancellation-free);
+- resolved peaks (width >= 2 grid steps) integrate by **trapezoid over
+  a window extended to a 45-nat drop**, windows merged so mass is never
+  double-counted;
+- unresolved peaks fall back to solve + node curvature and the note
+  says **NARROW** — none observed on any instrument profile so far;
+  if NARROW appears in production, that peak needs master-grid
+  refinement before its value is trusted;
+- `PMM_SCAN_LEGACY=1` restores the old behaviour for A/B.
+
+The compiled kernel still contains the old curvature arithmetic; it is
+bypassed for method choice but its root-finding is still used. Cleaning
+that up is open.
+
+MEASURED adjudication of the fix: per-level dense integrals for
+profile (1,1,1) d=4 match the new evaluator to <=1e-8 bits at every
+level; c1M per-level deltas collapse from ±bits to ~1e-7 bits with
+identical methods on both stores.
+
+**Absolute codelengths moved with the fix** (the old Laplace was wrong
+everywhere, mildly): tiny/shallow by 0.015 bits, medium/deep by 2.6e-3.
+The published pipeline used the old evaluator, so published numbers
+inherit these per-profile errors; §4 measures what survives to corpus
+scale.
+
+### 2. universal_v2 is NOT clean at large r
+
+The morning file's premise "the old cache is clean" is false above
+r ~ 1e4. MEASURED (5,431 common columns, probe_exact vs universal_v2):
+smooth error growth ~1e-8 nats below r=100, ~1e-5 at r=1e4, 5e-4 at
+250k, ~2e-3 at 1e6, **1.8e-2 nats at r=17,005,209**, across all levels.
+One large column (r=16,606) is nearly clean (4e-10) — the cache mixes
+build eras. INFERRED (mechanism, unverified): series-era builds carry
+the right-pole certificate bug; the morning "200 samples, zero bad"
+verification ran check_store's contour confirm **without**
+PMM_BUILD_EXACT, so at large r the reference took the same series
+branch and confirmed the bug against itself.
+
+Consequences: the morning v2-vs-v3 attribution table compared against a
+contaminated reference at large counts; `ctree_fullvocab`'s published
+number is doubly suspect (cache error + evaluator error). Nothing was
+written to universal_v2 today and nothing should be, ever.
+
+### 3. New store: tables/probe_exact (the reference instrument)
+
+Built today, on demand, by `compare_evaluators.py` pointed at an empty
+dir with PMM_BUILD_EXACT=1: every column the 22 instrument profiles
+need, computed by contour with the suspect series branch disabled.
+~21 MB + the large-r columns. MEASURED verification: check_store --all
+— every column bit-identical to a fresh contour evaluation; saddle
+screen (independent method) agrees to <1e-2 nats on 209/210 columns per
+level at L>=20.
+
+**TODO (one command, not yet run):** freeze it —
+`chmod -R a-w tables/probe_exact`. Treat it exactly like universal_v2:
+never modified once filled and verified. If a future profile needs
+columns it lacks, unfreeze, extend with PMM_BUILD_EXACT=1, re-run
+check_store --all, re-freeze.
+
+### 4. Published numbers: state of verification under the fixed evaluator
+
+- MEASURED: `state256` re-run end to end (v4, fixed evaluator, ladder
+  store): family mixture **3.7198465** vs published 3.719846. The
+  published digits hold; the old evaluator's v3 value (3.719848) was
+  the one slightly off. Per-profile absolute corrections (~1e-2 bits)
+  wash out at corpus scale here.
+- OPEN: the other Stage A runs, cheapest first, same env as
+  `rerun_paper.sh` exports, out-dirs `output/v4_*`. `ctree_fullvocab`
+  and `pooled_v1024` are the two that moved in the morning sweep and
+  the two that matter; the morning shifts are now expected to be
+  explained by evaluator method flips (INFERRED until the v4 runs land).
+- Attribution rule from the morning file still applies, but compare
+  v4 against **published**, not against v3: v3 carries the old
+  evaluator's errors.
+
+### 5. Instrument changes today
+
+- `scripts/compare_evaluators.py`: per-profile `(profile, l_max, d)` —
+  **d is load-bearing**: at the old d=max(len+1,4) the scan refuses
+  large-N profiles (integrand right edge within 10 nats of peak), which
+  is why the morning version had never actually compared anything above
+  counts of 1e4. 15 realistic rows added (c200..c17M at d=1024,
+  fv/1M at d=300k, l53, d256 control). PMM_BUILD_EXACT forced in both
+  children. `--every/--only/--out` flags. PASS/FAIL vs 1e-4 bits.
+- `scripts/smoke_ladder.py`: new check — large-count profile
+  (3500, 800, 90, 7, 1) at d=1024 through every=1 vs decimated ladder
+  must agree to <1e-3 bits. This is the class every previous smoke
+  missed. Passes in ~5 s.
+- `src/.../layered.py`: §1.
+
+### 6. Open questions, updated
+
+- **Right-series certificate** (unchanged from morning §5): still
+  unexplained, still live in the read path at 1e-10. Now also the
+  INFERRED cause of §2. Most important open correctness item.
+- **Kernel curvature arithmetic**: superseded in Python, still present
+  in `_kernel.c`. Remove or fix; until then PMM_SCAN_LEGACY must stay
+  off in production.
+- **NARROW peaks**: none observed yet; if one appears, master-grid
+  refinement is unimplemented.
+- **Dense floor 256 / pad 8**: both now MEASURED-adequate end to end
+  (c200/c256 rows exact; c17M passes at every=1 with r_max 2e8 slack).
+  Floor dominates store size; shrinking it was not tested and is not
+  worth the risk at 2.8 GB.
+- **check_store thresholds**: CONFIRM at 1e-4 nats and screen at 1e-2
+  are too coarse to catch §2-scale contamination at mid r. Run it with
+  PMM_BUILD_EXACT=1 always (otherwise the reference can reproduce the
+  series bug). A contamination map of universal_v2 (which levels/r are
+  series-era) is open — matters only for archaeology of published v2
+  numbers.
+- Repo root has junk zero-byte files (`--degrees`, `--levels`, `--out`,
+  `0.50%,`, `8.31%` etc.) from a mangled shell command. Delete freely.
