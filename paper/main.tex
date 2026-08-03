@@ -160,11 +160,32 @@ where $w_L(x^{t-1})$ is the posterior over depths
 \eqref{eq:depth-posterior} evaluated at the prefix: each depth is
 weighted by how well it has explained the data so far, and the weights
 move at every step.  The decoder can form these weights, because they
-depend only on what it has already recovered.  A receiver that instead
-kept the depth weights uniform at every step would also be a valid
-code --- but a different one, and a worse one, and its cost could not
-be computed from final counts at all
-(Appendix~\ref{app:factorisation}).
+depend only on what it has already recovered.
+
+The same structure repeats one level down.  At a fixed depth,
+\eqref{eq:mixture} is itself an average --- over the parameter
+$\theta$, with respect to the depth-$L$ prior $\pi_L$ --- and its
+conditional is likewise not the prior average of $\theta_y$ but the
+posterior one,
+\[
+  Q^{(L)}(y \mid x^{t-1})
+  \;=\; \int \theta_y \, \pi_L\bigl(d\theta \mid x^{t-1}\bigr)
+  \;=\; \E\bigl[\theta_y \mid x^{t-1}\bigr],
+  \qquad
+  \pi_L\bigl(d\theta \mid x^{t-1}\bigr)
+  \;\propto\; \prod_{s<t} \theta_{x_s}\; \pi_L(d\theta),
+\]
+the prior reweighted by the data seen so far; at $L = 1$ this
+posterior mean is Laplace's add-one rule, as noted after
+\eqref{eq:mixture}.  So the predictor the decoder actually runs is an
+average over depths of averages over parameters, both weighted by
+posteriors that the decoded prefix determines.  The priors themselves
+--- uniform over depths, $\pi_L$ over $\theta$ --- never appear in any
+single prediction; they enter only through the whole-sequence
+probabilities.  A receiver that instead kept the depth weights uniform
+at every step would also be a valid code --- but a different one, and
+a worse one, and its cost could not be computed from final counts at
+all (Appendix~\ref{app:factorisation}).
 
 The posterior-weighted receiver, by contrast, never has to be run step
 by step: the per-step ratios telescope, so its total cost collapses to
