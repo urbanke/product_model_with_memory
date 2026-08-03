@@ -642,8 +642,8 @@ learn its own distribution, not by how many states there are.
 Table~\ref{tab:firstorder} is the reference point for the
 constructions of the next sections.
 
-\section{Pairs}
-\label{sec:pairs}
+\section{Families of state maps}
+\label{sec:states}
 
 \emph{Representation.  From here to
 Section~\ref{sec:comparison} the symbol is a \texttt{text8} word:
@@ -656,122 +656,8 @@ Tables~\ref{tab:memoryless} and~\ref{tab:firstorder}: a different
 alphabet over a different file.  What the sections below establish is
 the behaviour of the constructions, not a benchmark position.}
 
-The first memory experiment applies the same machinery to sliding-window
-pairs.  We describe exactly what \texttt{scripts/pair\_experiment.py}
-computes.
-
-\paragraph{Vocabulary sequence.}
-To scale from laptop to cluster we reduce the vocabulary to the $K$ most
-frequent tokens plus a single $\langle\mathrm{unk}\rangle$ bucket
-($V=K+1$ symbols; the structure of the order-one partition of
-\cite{layered2026}, Section~5.4).  All quantities below refer to the
-\emph{reduced} token stream $x_1,\dots,x_n$; the pair alphabet is
-$d=V^2$, and $L_{\max}=\operatorname{round}(2\cstar\ln d)$ as always.  The
-targets are the empirical entropies of the same reduced stream: the unigram
-entropy $\hat H_1$ and the conditional entropy
-$\hat H(x_{t+1}\,|\,x_t)=\hat H_{\text{pair}}-\hat H_{\text{first}}$, both
-in-sample.
-
-\paragraph{Estimate.}
-The joint distribution of pairs is estimated \emph{in-sample}
-(plug-in): the entire multiset of $n-1$ sliding pairs, with count profile
-$\lambda$, informs the estimate, and the log-loss is evaluated on the same
-sequence.  The estimate is the depth-averaged mixture's posterior mean.
-For a pair currently at count $c$ (including $c=0$ for unobserved pairs),
-\begin{equation}
-\label{eq:predictive}
-  \hat p(c) \;=\; \sum_{L=1}^{L_{\max}} w_L\, p_L(c),
-  \qquad
-  w_L \;=\; \frac{q_L(\lambda)}{\sum_{L'} q_{L'}(\lambda)},
-  \qquad
-  p_L(c) \;=\; \frac{q_L(\lambda + e_c)}{q_L(\lambda)},
-\end{equation}
-where $\lambda+e_c$ moves one symbol from count class $c$ to $c+1$.  The
-ratio $p_L(c)$ is not evaluated by two independent profile computations;
-at a saddle $u^\star$ of the outer integral the posterior mean of a
-coordinate with count $c$ is
-\[
-  p_L(c) \;\approx\; \frac{\rho_L(c, u^\star)}{N},
-  \qquad
-  \rho_L(c,u) = e^{u}\,\frac{\phi^{(L)}_{c+1}(e^u)}{\phi^{(L)}_{c}(e^u)},
-\]
-with $\phi^{(L)}_r$ the layer-recursion moment functions of
-\cite{layered2026}, Appendix~B.  The saddle equation
-$\sum_i \rho_L(c_i,u^\star)=N$ makes the class-weighted sum of these
-predictive masses normalize \emph{exactly} at saddle order; when the
-integrand has several significant peaks (deep layers with heavy counts)
-the peaks are combined with their scan weights.  $p_L(1)$ is exact add-one
-at $L=1$.  A final numerical renormalization absorbs the residual
-$O(1/N)$-level error, which the program reports as a diagnostic
-(validated against exact ratio computations to $<2\%$ per depth in the
-test suite; the aggregate normalization error is far smaller).
-
-\paragraph{Conditionals and score.}
-Conditional probabilities come from row normalization,
-$\hat p(b\,|\,a) = \hat p\bigl(c_{ab}\bigr) / \sum_{b'} \hat
-p\bigl(c_{ab'}\bigr)$, with unobserved successors carrying the class-$0$
-mass; the row sums reduce to per-row count histograms.  The score is the
-in-sample conditional log-loss
-\[
-  \ell \;=\; -\frac{1}{n-1}\sum_{t=2}^{n} \log_2 \hat p(x_t \,|\, x_{t-1})
-  \;=\; -\frac{1}{n-1}\sum_{a,b} m_{ab}\, \log_2 \hat p(b\,|\,a),
-\]
-compared like-for-like with the in-sample $\hat H(x_{t+1}|x_t)$; the gap
-$\ell - \hat H(x_{t+1}|x_t)$ is the estimator's smoothing-plus-discovery
-cost.  This plug-in scheme is a diagnostic, not a code: fully sequential
-(decodable) variants --- the per-state construction of
-\cite{layered2026}~Section~5.4, and the causal joint-conditional predictor
-with checkpointed refreshes --- are deferred to a later stage.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{rrrrrrrr}
-\toprule
-$K$ & $d=V^2$ & $L_{\max}$ & pairs obs. & $\hat H_1$ & $\hat H(x'|x)$ & $\ell$ (plug-in) & gap \\
-\midrule
-    63 & $2^{12}$ & 39 &      3{,}762 & 3.224 & 2.733 & 2.7334 & 0.00001 \\
-   255 & $2^{16}$ & 52 &     45{,}076 & 4.423 & 3.709 & 3.7098 & 0.00055 \\
- 1{,}023 & $2^{20}$ & 66 &    307{,}076 & 6.063 & 4.979 & 4.9878 & 0.00850 \\
- 4{,}095 & $2^{24}$ & 79 & 1{,}172{,}941 & 8.051 & 6.338 & 6.3951 & 0.05747 \\
-16{,}383 & $2^{28}$ & 92 & 2{,}578{,}046 & 9.702 & 7.154 & 7.3104 & 0.15624 \\
-\bottomrule
-\end{tabular}
-\caption{Pair experiment on full \texttt{text8} ($n = 17{,}005{,}207$
-  tokens, $n-1$ sliding pairs), vocabulary reduced to the top $K$ tokens
-  plus $\langle\mathrm{unk}\rangle$.  Empirical (in-sample) unigram and
-  conditional entropies of the reduced stream in bits/token, the plug-in
-  conditional log-loss $\ell$ of the depth-averaged joint estimate, and
-  the gap $\ell-\hat H(x'|x)$.  At the first two rungs the pair alphabet
-  is densely observed ($\approx 4{,}150$ and $260$ samples per possible
-  pair) and the plug-in estimate sits essentially on the ceiling, with the
-  joint posterior a point mass at $L=7$ resp.\ $L=6$
-  ($\approx 0.5$--$0.8\,\ln d$); the sparsely observed regime begins at
-  $K = 1{,}023$ ($\le 16$ samples per possible pair, $71\%$ of the pair
-  alphabet unseen), where the gap opens but remains small:
-  $0.0085$ bits/token, i.e.\ $0.17\%$ of the conditional entropy, with
-  the joint posterior again a point mass ($L=8$).  The sequence of gaps
-  ($1.3\cdot10^{-5} \to 5.5\cdot10^{-4} \to 8.5\cdot10^{-3} \to
-  5.7\cdot10^{-2} \to 1.56\cdot10^{-1}$) measures the discovery cost that
-  made the earlier full-vocabulary attempt impractical; its growth
-  factors from one row to the next decrease ($\times 42 \to \times 15
-  \to \times 6.8 \to \times 2.7$).  Even at $K=16{,}383$, with $99\%$ of
-  the $2^{28}$ pair alphabet unseen and $6.6$ samples per observed pair,
-  the gap is $2.2\%$ of the conditional entropy.  The joint posterior
-  remains a point mass throughout, at depths $L = 7, 6, 8, 10, 15$ that
-  grow as the pair distribution becomes sparse relative to its alphabet
-  --- the mirror image of the drift reported in
-  Section~\ref{sec:text8}, where the posterior moved to shallow depths
-  as \texttt{text8}'s alphabet filled up.  Predictive normalization
-  diagnostics: $10^{-13}$--$10^{-6}$ in all rows.}
-\label{tab:pairs}
-\end{table}
-
-\section{Families of state maps}
-\label{sec:states}
-
-The pair experiment is the first step of a more general program, which we
-record here because it fixes the design principle for everything that
-follows.
+This section records the general program that fixes the design
+principle for everything that follows.
 
 A memory model is a \emph{state map} $\sigma$ compressing the past into a
 state, $s_t=\sigma(x^{t-1})$, followed by the estimation machinery on
@@ -816,7 +702,7 @@ $\sigma$ for all sources, but one prior whose mass is spread over all the
 state maps the family contains.
 
 Concrete instances of the family, in increasing order of generality:
-(i) the top-$K$ sequence of Section~\ref{sec:pairs}, i.e.\ the last token
+(i) the top-$K$ sequence of Appendix~\ref{sec:pairs}, i.e.\ the last token
 bucketed by frequency, a first coarse compression of the past into a
 state; (ii) variable-length suffixes of the past, i.e.\ context trees,
 where averaging over the family recovers the structure of context-tree
@@ -837,7 +723,7 @@ what the constructions above approximate.
 Orthogonal to the choice of states is the question of \emph{coupling}:
 whether the per-state conditionals are estimated independently (the
 share-nothing construction of \cite{layered2026}, Section~5.4) or jointly,
-as in Section~\ref{sec:pairs}, where the prior on the joint pair
+as in Appendix~\ref{sec:pairs}, where the prior on the joint pair
 distribution lets every row's smoothing be informed by the count
 statistics of all rows.  The two axes --- what the states are, and whether
 they share statistical strength --- should be varied separately; the
@@ -1009,7 +895,7 @@ $M_1$ & $M_2$ & states obs. & bits/token & posterior \\
 \end{table}
 
 \paragraph{Scaling sequence.}
-As with the pair experiment, the same code is run at a sequence of
+As with the pair diagnostic (Appendix~\ref{sec:pairs}), the same code is run at a sequence of
 scales: (1) $V=64$, $n=10^6$ (small test run); (2) $V=256$, full
 \texttt{text8} (laptop); (3) $V=1{,}024$ and $V=4{,}096$, full corpus
 (laptop, overnight), where the fine members are sparsely observed;
@@ -1998,7 +1884,7 @@ increasing generality:
   $R$.  Two limits apply.  First, pooling needs per-step predictive
   distributions and per-step normalization, so its implementation
   requires the sequential machinery deferred in
-  Section~\ref{sec:pairs}.  Second, pairwise probabilities cannot
+  Appendix~\ref{sec:pairs}.  Second, pairwise probabilities cannot
   detect \emph{synergy}: for a source in which $x_t$ is a function of
   $(x_{t-1}, x_{t-2})$ jointly but independent of each alone, every
   pairwise conditional is flat and no pooling, however weighted, can
@@ -2264,6 +2150,124 @@ anywhere here.  Where the assignment is sub-normalised the reported
 codelength is an over-estimate, which is the safe direction; the
 measured deviations carry both signs and do not accumulate
 systematically.
+
+\section{The joint-pair diagnostic}
+\label{sec:pairs}
+
+This appendix records the first memory experiment: an in-sample
+diagnostic of the depth-averaged \emph{joint} estimator on
+sliding-window pairs.  It is referenced from
+Section~\ref{sec:states} as the measured evidence for what coupling
+the rows of a conditional through one joint prior buys.  The symbol is
+the \texttt{text8} word alphabet defined at the start of
+Section~\ref{sec:states}.  We describe exactly what \texttt{scripts/pair\_experiment.py}
+computes.
+
+\paragraph{Vocabulary sequence.}
+To scale from laptop to cluster we reduce the vocabulary to the $K$ most
+frequent tokens plus a single $\langle\mathrm{unk}\rangle$ bucket
+($V=K+1$ symbols; the structure of the order-one partition of
+\cite{layered2026}, Section~5.4).  All quantities below refer to the
+\emph{reduced} token stream $x_1,\dots,x_n$; the pair alphabet is
+$d=V^2$, and $L_{\max}=\operatorname{round}(2\cstar\ln d)$ as always.  The
+targets are the empirical entropies of the same reduced stream: the unigram
+entropy $\hat H_1$ and the conditional entropy
+$\hat H(x_{t+1}\,|\,x_t)=\hat H_{\text{pair}}-\hat H_{\text{first}}$, both
+in-sample.
+
+\paragraph{Estimate.}
+The joint distribution of pairs is estimated \emph{in-sample}
+(plug-in): the entire multiset of $n-1$ sliding pairs, with count profile
+$\lambda$, informs the estimate, and the log-loss is evaluated on the same
+sequence.  The estimate is the depth-averaged mixture's posterior mean.
+For a pair currently at count $c$ (including $c=0$ for unobserved pairs),
+\begin{equation}
+\label{eq:predictive}
+  \hat p(c) \;=\; \sum_{L=1}^{L_{\max}} w_L\, p_L(c),
+  \qquad
+  w_L \;=\; \frac{q_L(\lambda)}{\sum_{L'} q_{L'}(\lambda)},
+  \qquad
+  p_L(c) \;=\; \frac{q_L(\lambda + e_c)}{q_L(\lambda)},
+\end{equation}
+where $\lambda+e_c$ moves one symbol from count class $c$ to $c+1$.  The
+ratio $p_L(c)$ is not evaluated by two independent profile computations;
+at a saddle $u^\star$ of the outer integral the posterior mean of a
+coordinate with count $c$ is
+\[
+  p_L(c) \;\approx\; \frac{\rho_L(c, u^\star)}{N},
+  \qquad
+  \rho_L(c,u) = e^{u}\,\frac{\phi^{(L)}_{c+1}(e^u)}{\phi^{(L)}_{c}(e^u)},
+\]
+with $\phi^{(L)}_r$ the layer-recursion moment functions of
+\cite{layered2026}, Appendix~B.  The saddle equation
+$\sum_i \rho_L(c_i,u^\star)=N$ makes the class-weighted sum of these
+predictive masses normalize \emph{exactly} at saddle order; when the
+integrand has several significant peaks (deep layers with heavy counts)
+the peaks are combined with their scan weights.  $p_L(1)$ is exact add-one
+at $L=1$.  A final numerical renormalization absorbs the residual
+$O(1/N)$-level error, which the program reports as a diagnostic
+(validated against exact ratio computations to $<2\%$ per depth in the
+test suite; the aggregate normalization error is far smaller).
+
+\paragraph{Conditionals and score.}
+Conditional probabilities come from row normalization,
+$\hat p(b\,|\,a) = \hat p\bigl(c_{ab}\bigr) / \sum_{b'} \hat
+p\bigl(c_{ab'}\bigr)$, with unobserved successors carrying the class-$0$
+mass; the row sums reduce to per-row count histograms.  The score is the
+in-sample conditional log-loss
+\[
+  \ell \;=\; -\frac{1}{n-1}\sum_{t=2}^{n} \log_2 \hat p(x_t \,|\, x_{t-1})
+  \;=\; -\frac{1}{n-1}\sum_{a,b} m_{ab}\, \log_2 \hat p(b\,|\,a),
+\]
+compared like-for-like with the in-sample $\hat H(x_{t+1}|x_t)$; the gap
+$\ell - \hat H(x_{t+1}|x_t)$ is the estimator's smoothing-plus-discovery
+cost.  This plug-in scheme is a diagnostic, not a code: fully sequential
+(decodable) variants --- the per-state construction of
+\cite{layered2026}~Section~5.4, and the causal joint-conditional predictor
+with checkpointed refreshes --- are deferred to a later stage.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{rrrrrrrr}
+\toprule
+$K$ & $d=V^2$ & $L_{\max}$ & pairs obs. & $\hat H_1$ & $\hat H(x'|x)$ & $\ell$ (plug-in) & gap \\
+\midrule
+    63 & $2^{12}$ & 39 &      3{,}762 & 3.224 & 2.733 & 2.7334 & 0.00001 \\
+   255 & $2^{16}$ & 52 &     45{,}076 & 4.423 & 3.709 & 3.7098 & 0.00055 \\
+ 1{,}023 & $2^{20}$ & 66 &    307{,}076 & 6.063 & 4.979 & 4.9878 & 0.00850 \\
+ 4{,}095 & $2^{24}$ & 79 & 1{,}172{,}941 & 8.051 & 6.338 & 6.3951 & 0.05747 \\
+16{,}383 & $2^{28}$ & 92 & 2{,}578{,}046 & 9.702 & 7.154 & 7.3104 & 0.15624 \\
+\bottomrule
+\end{tabular}
+\caption{Pair experiment on full \texttt{text8} ($n = 17{,}005{,}207$
+  tokens, $n-1$ sliding pairs), vocabulary reduced to the top $K$ tokens
+  plus $\langle\mathrm{unk}\rangle$.  Empirical (in-sample) unigram and
+  conditional entropies of the reduced stream in bits/token, the plug-in
+  conditional log-loss $\ell$ of the depth-averaged joint estimate, and
+  the gap $\ell-\hat H(x'|x)$.  At the first two rungs the pair alphabet
+  is densely observed ($\approx 4{,}150$ and $260$ samples per possible
+  pair) and the plug-in estimate sits essentially on the ceiling, with the
+  joint posterior a point mass at $L=7$ resp.\ $L=6$
+  ($\approx 0.5$--$0.8\,\ln d$); the sparsely observed regime begins at
+  $K = 1{,}023$ ($\le 16$ samples per possible pair, $71\%$ of the pair
+  alphabet unseen), where the gap opens but remains small:
+  $0.0085$ bits/token, i.e.\ $0.17\%$ of the conditional entropy, with
+  the joint posterior again a point mass ($L=8$).  The sequence of gaps
+  ($1.3\cdot10^{-5} \to 5.5\cdot10^{-4} \to 8.5\cdot10^{-3} \to
+  5.7\cdot10^{-2} \to 1.56\cdot10^{-1}$) measures the discovery cost that
+  made the earlier full-vocabulary attempt impractical; its growth
+  factors from one row to the next decrease ($\times 42 \to \times 15
+  \to \times 6.8 \to \times 2.7$).  Even at $K=16{,}383$, with $99\%$ of
+  the $2^{28}$ pair alphabet unseen and $6.6$ samples per observed pair,
+  the gap is $2.2\%$ of the conditional entropy.  The joint posterior
+  remains a point mass throughout, at depths $L = 7, 6, 8, 10, 15$ that
+  grow as the pair distribution becomes sparse relative to its alphabet
+  --- the mirror image of the drift reported in
+  Section~\ref{sec:text8}, where the posterior moved to shallow depths
+  as \texttt{text8}'s alphabet filled up.  Predictive normalization
+  diagnostics: $10^{-13}$--$10^{-6}$ in all rows.}
+\label{tab:pairs}
+\end{table}
 
 \section{The moment store, and why it is stored rather than evaluated}
 \label{app:store}
