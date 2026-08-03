@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -129,7 +130,23 @@ def main() -> None:
     ap.add_argument("--top-k", type=int, default=1023)
     ap.add_argument("--checkpoints", type=int, default=32)
     ap.add_argument("--smooth", type=float, default=64.0,
-                    help="pseudo-tokens toward the unigram, per row")
+                    help="pseudo-tokens toward the unigram, per row "
+                         "(counts mode; also the markov2 backoff)")
+    ap.add_argument("--tables", choices=("counts", "layered"),
+                    default="counts",
+                    help="where the probability tables come from: "
+                         "simple count blending, or the layered "
+                         "estimator evaluated on the counts so far")
+    ap.add_argument("--cap", choices=("freq", "id"), default="freq",
+                    help="vocabulary cap: most frequent in this file "
+                         "(internal comparisons) or lowest vocabulary "
+                         "id (decoder-reproducible)")
+    ap.add_argument("--order2", choices=("backoff", "layered", "both"),
+                    default="backoff",
+                    help="order-two reference: count backoff, the "
+                         "share-nothing layered estimator per context "
+                         "pair, or both")
+    ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--n", type=int, default=None,
                     help="use only the first n tokens")
     ap.add_argument("--ipf-iters", type=int, default=300)
@@ -141,22 +158,52 @@ def main() -> None:
     ids, meta = load_stream(args.ids)
     if args.n:
         ids = ids[:args.n]
-    x, V, capped = reduce_ids(ids, args.top_k)
-    x = x.astype(np.int64)
+    if args.cap == "id":
+        # lowest vocabulary ids keep their identity: fixed before this
+        # file exists, so the decoder can reproduce the cap
+        x = np.where(ids < args.top_k, ids, args.top_k).astype(np.int64)
+        V = args.top_k + 1
+        capped = int(np.count_nonzero(x == args.top_k))
+    else:
+        x, V, capped = reduce_ids(ids, args.top_k)
+        x = x.astype(np.int64)
     n = x.size
     s = float(args.smooth)
     C = args.checkpoints
     print(f"V={V} n={n:,} capped={capped:,} checkpoints={C} "
-          f"smooth={s:g}", flush=True)
+          f"smooth={s:g} tables={args.tables} cap={args.cap} "
+          f"order2={args.order2}", flush=True)
+
+    builder = None
+    ratio_memo: dict = {}
+    if args.tables == "layered" or args.order2 in ("layered", "both"):
+        for k_, v_ in (("PMM_UNIVERSAL_TABLES", "tables/anchors_prod"),
+                       ("PMM_PHI_LADDER_EVERY", "1"),
+                       ("PMM_PHI_LADDER_DEGREE", "11"),
+                       ("PMM_PHI_SADDLE_MIN_L", "54")):
+            os.environ.setdefault(k_, v_)
+        print(f"  store: {os.environ['PMM_UNIVERSAL_TABLES']}",
+              flush=True)
+        from product_model_with_memory.pooled_lags import (
+            _LayeredPredictiveBuilder, _layered_log_tables,
+            _augmented_profile)
+        from product_model_with_memory.codelength import default_l_max
+        builder = _LayeredPredictiveBuilder(
+            V, default_l_max(V), None, args.jobs, None)
+        globals()["_augmented_profile"] = _augmented_profile
 
     # members
     mix_grid = [(w0, w2) for w0 in (0.02, 0.05)
                 for w2 in (0.05, 0.10, 0.20, 0.30)]
     prod_grid = [(b1, b2) for b1 in (0.75, 1.0)
                  for b2 in (0.25, 0.5, 0.75, 1.0)]
-    names = (["lag1", "markov2", "calibrated"]
-             + [f"mix:{w0:g},{w2:g}" for w0, w2 in mix_grid]
-             + [f"prod:{b1:g},{b2:g}" for b1, b2 in prod_grid])
+    names = ["lag1", "calibrated"]
+    if args.order2 in ("backoff", "both"):
+        names.append("markov2")
+    if args.order2 in ("layered", "both"):
+        names.append("markov2-layered")
+    names += ([f"mix:{w0:g},{w2:g}" for w0, w2 in mix_grid]
+              + [f"prod:{b1:g},{b2:g}" for b1, b2 in prod_grid])
     bits = {k: 0.0 for k in names}
 
     # causal state
@@ -181,9 +228,17 @@ def main() -> None:
             continue
         # ---- freeze tables on the prefix strictly before this block
         tot = int(uni.sum())
-        m = (uni + 1.0) / (tot + V)
-        p1 = smoothed_conditional(N1, m, s)
-        p2 = smoothed_conditional(N2, m, s)
+        if args.tables == "layered":
+            lq0, (T1, T2) = _layered_log_tables(
+                builder, uni.astype(float),
+                [N1.astype(float), N2.astype(float)])
+            m = np.exp2(lq0)
+            p1 = np.exp2(T1)
+            p2 = np.exp2(T2)
+        else:
+            m = (uni + 1.0) / (tot + V)
+            p1 = smoothed_conditional(N1, m, s)
+            p2 = smoothed_conditional(N2, m, s)
         L1, L2, Lm = np.log(p1), np.log(p2), np.log(m)
         # joints built FROM the smoothed conditionals, so every
         # scheme consumes the same estimate; the per-cell eps joint
@@ -222,12 +277,42 @@ def main() -> None:
             r2b = p2[a2, b]
             mb = m[b]
             bits["lag1"] -= np.log2(r1b).sum()
-            # markov2 with backoff to lag1
             cid = a1 * V + a2
             ncb = np.asarray(Ctri[cid, b]).ravel()
-            nc = rowsum[cid]
-            pm2 = (ncb + s * r1b) / (nc + s)
-            bits["markov2"] -= np.log2(pm2).sum()
+            if "markov2" in bits:
+                nc = rowsum[cid]
+                pm2 = (ncb + s * r1b) / (nc + s)
+                bits["markov2"] -= np.log2(pm2).sum()
+            if "markov2-layered" in bits:
+                # share-nothing layered estimator per context pair:
+                # p(b|c) = q(profile_c + one more b) / q(profile_c),
+                # one evaluation per distinct (profile, count) pair,
+                # memoized across blocks and checkpoints
+                uc, inv = np.unique(cid, return_inverse=True)
+                bases = []
+                for u in uc:
+                    d0, d1 = Ctri.indptr[u], Ctri.indptr[u + 1]
+                    bases.append(tuple(sorted(
+                        int(v) for v in Ctri.data[d0:d1])))
+                key = inv * (int(ncb.max()) + 2) + ncb
+                upair, pinv = np.unique(key, return_inverse=True)
+                fams: dict = {}
+                need = []
+                for kk in upair:
+                    bi, cv = int(kk) // (int(ncb.max()) + 2),                              int(kk) % (int(ncb.max()) + 2)
+                    base = bases[bi]
+                    need.append((base, cv))
+                    if (base, cv) not in ratio_memo:
+                        fams.setdefault(base, set()).add(cv)
+                if fams:
+                    builder._ensure_families(
+                        {bb: tuple(sorted(cs)) for bb, cs in fams.items()})
+                    for bb, cs in fams.items():
+                        for cv in cs:
+                            ratio_memo[(bb, cv)] = builder._log2_ratio(
+                                bb, _augmented_profile(bb, cv))
+                lut = np.array([ratio_memo[k2] for k2 in need])
+                bits["markov2-layered"] -= lut[pinv].sum()
             for w0, w2 in mix_grid:
                 w1 = 1.0 - w0 - w2
                 p = w0 * mb + w1 * r1b + w2 * r2b
