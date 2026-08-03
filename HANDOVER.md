@@ -2606,3 +2606,214 @@ Pairs demoted to an appendix, model section rewritten (assignment
 view, consistency identity, posterior-weighted conditional), forecast
 paragraph removed.
 
+## 2026-08-03 (later) --- Layered pairwise fleet in flight; exact order-2 reference added
+
+STATE OF THE RUNS (three machines; results flow via git --- the
+.gitignore now tracks output/*/results.json and nothing else under
+output/):
+
+- Laptop: pairwise_experiment.py --tables layered --order2 both on
+  text8 V=1024, C=32, ~500 s/checkpoint, IN PROGRESS (hours).
+  Output: output/pairwise_layered_v1024.
+- Second Mac (rudiger@iscpc71): same but enwik8, running overnight.
+  Store tables/anchors_prod transferred by tar+http; Stage B
+  verification all green there.  Output:
+  output/pairwise_layered_enwik8.
+- Server (urbanke@lth.epfl.ch): three COUNTS-mode runs
+  (pairwise_v4096, pairwise_enwik8, pairwise_enwik9).  No moment
+  store on the server; counts mode does not need it.
+- Collection, on each machine AFTER its runs finish:
+  git pull --rebase && git add output && git commit -m results &&
+  git push
+
+WHY CHECKPOINTED LAYERED RUNS TAKE HOURS (question settled): the
+markov2-layered member dominates.  A single full pass over the pair
+contexts is itself on the order of ten minutes (hundreds of
+thousands of distinct context-pair profiles, most shared with no
+other context), and the 32 refreshes repeat it at 32 count
+snapshots; frequent contexts change profile every block, so the
+(profile, count) memo does not save them.  Checkable: one checkpoint
+with --order2 backoff should take well under a minute.
+
+NEW MEMBER, markov2-layered-exact (decided today): the layered
+order-2 reference is a mixture, so its EXACT sequential code (tables
+updated after every token) telescopes to one evaluation per context
+pair at the final counts --- about the cost of one checkpoint, no
+staleness.  The gap exact vs checkpointed measures what the C=32
+schedule costs; if it is large, 32 checkpoints are not enough.
+Implemented in scripts/pairwise_experiment.py as --exact
+{off,add,only}: 'add' computes it alongside a full run; 'only'
+computes just this number and MERGES it into an existing
+results.json in --out (recomputes family code and best member;
+asserts coded_positions match).  Paper section "Memory of order two
+from pairwise statistics" updated accordingly (references bullet:
+the order-2 reference comes in two forms; new paragraph on the
+exception and what the gap means).
+
+DEPLOYMENT CAUTION: the edited script sits on the laptop as
+scripts/pairwise_experiment.py.new.  Do NOT replace
+pairwise_experiment.py while any run using it is live --- spawned
+workers re-import the file from disk (this exact failure mode
+crashed the pooled run on 2 Aug).  When the laptop run finishes:
+  mv scripts/pairwise_experiment.py.new scripts/pairwise_experiment.py
+then commit and push; other machines pull only after their own runs
+finish.  Then, per layered run, add the exact number with the SAME
+--ids/--top-k/--n/--cap flags as the original run plus
+  --tables layered --exact only --jobs <cores> --out <same out dir>
+
+NEXT STEPS QUEUE:
+1. Collect the fleet's results.json files via git; assemble the grid.
+2. Run --exact only for pairwise_layered_v1024 (laptop) and
+   pairwise_layered_enwik8 (second Mac).
+3. Write the layered comparison into the paper section (placeholder
+   line "The measured comparison will be reported here...");
+   sanity-check against the count-based numbers recorded in the
+   previous entry.
+4. THEN the step-3 discussion (hierarchy / graded borrowing built
+   into the estimator) BEFORE any implementation.  Constraint from
+   Ruediger: keep the philosophy --- mixtures and algorithms, not
+   learned weights.
+
+Minor open items: the "2.2 bits/char at twenty observations"
+sentence in the order-two section still awaits his choice
+(per-bucket column vs explanatory sentence); the "MAP split contexts
+49" cell in legacy.tex could not be re-derived (likely moot).
+
+
+## 2026-08-03 (later still) --- Scope note: why the pairwise round runs at V=1024 (supersedes anything suggesting otherwise)
+
+Agreed with Ruediger; this supersedes anything above that suggests
+otherwise.  Why the pairwise experiment runs at V=1024, stated
+correctly: it is a controlled first round for RANKING the combining
+rules, nothing more.  At small V we can afford every member,
+including the calibrated one (dense V x V IPF) and both memory-2
+references, so the rules can be ranked against a visible ceiling.
+The small alphabet is NOT scientifically necessary, and cost is NOT
+a fundamental barrier to the full vocabulary:
+
+1. The mixture and product members run at full vocabulary in sparse
+   form: predictive rows are "shared background + corrections at
+   observed symbols" (as in the memory-1 experiments, T7); the
+   product of two such rows lives on the union of the supports, so
+   normalization costs the observed entries, not V.  The dense
+   tables in scripts/pairwise_experiment.py are a small-V
+   convenience only.
+2. The scientific payoff is AT the full vocabulary, not away from
+   it: full memory 2 loses there because of the V^3 learning cost,
+   and the pairwise construction exists precisely to avoid that cost
+   while keeping most of the benefit.  So the follow-up that
+   matters, after the rules are ranked at V=1024, is the winning
+   rules at full vocabulary in sparse form, where the question is
+   simply whether pairwise beats lag 1.
+3. Open question for that follow-up: whether the calibrated member
+   can be made sparse (the IPF potentials go dense under the
+   multiplicative updates as implemented).  If not, it may only be
+   testable at moderate alphabet sizes.
+
+Do NOT start the full-vocabulary follow-up yet; finish the queue in
+the previous entry first (collect the fleet's results, add the exact
+memory-2 numbers, write the layered comparison into the paper).
+
+Also this session: scripts/assemble_pairwise_grid.py added
+(read-only grid assembler over output/pairwise_*/results.json;
+imports nothing a running job uses; verified against
+pairwise_v1024, which reproduces the entry's numbers exactly).
+Measured laptop state at the time: no output/pairwise_layered_v1024
+directory yet, so the live layered run had written nothing to disk.
+Noted for later: in pairwise_smoke_layered, markov2-layered (3.0744)
+is WORSE than plain markov2 (3.0238) --- C=8 staleness at V=64 or
+something real; the exact member will say.
+
+## 2026-08-03 (evening) --- Appendix E added: three Bayesian routes to long memory
+
+New appendix "Three routes to long memory, in the same calculus"
+(app:routes) written into paper/main.tex, per Ruediger's request,
+distilling the design discussion: Route 1 hierarchy (CTW with our
+layered estimator per node; collapses to one exchangeable evaluation
+per node, no sequential walk), Route 2 retrieval (Bayesian copy
+pointer, forward recursion, needs the checkpointed walk; only route
+cheap at full vocabulary), Route 3 switching (mixture over sequences
+of family members; drop-in for the uniform family average).  Each
+with mechanism, fit, cost growth, evidence.  Bibliography extended
+(ctw95, memoizer, ppmstar, steinruecken, paq, switching, volf).
+Compiles clean (pdflatex, 0 errors, refs resolve; now 18 pages).
+NOTE: the 0.044 bits/token lag-tail figure cited under Route 2 is
+quoted from the pooled-lag run --- verify against
+output/pooled_lags_v4096 before submission.  Discussion of these
+routes with Ruediger is pending (he will read and return with
+questions); no implementation started, per the step-4 constraint.
+
+Appendix E rewritten sequence-first after discussion with Ruediger:
+each route now opens with "Prediction at position t" (what is
+predicted, from which past counts), then "The codelength" (the
+closed-form trick where one exists --- CTW's two telescopes --- or
+the sequential walk where none does), then fit/cost/evidence.  CTW
+prediction now presented as graded backoff with posterior blending
+weights along the D+1 path nodes.  Compiles clean; main.tex and
+main.pdf committed to the laptop.
+
+## 2026-08-03 (late) --- CTW next step agreed: ctree D=3 at V=1024; context counts measured
+
+Appendix E discussion led to reviving the context-tree line (the
+implementation in src/product_model_with_memory/context_tree.py IS
+Route 1 with layered leaves; tests incl. brute-force enumeration).
+MEASURED on the reduced text8 stream (V=1024, n=17,005,207):
+depth 1: 1,024 contexts; depth 2: 307,076 (124,287 singletons,
+35,775 with >=20 obs); depth 3: 1,966,048 (1,258,381 singletons,
+72,512 with >=20 obs).  Consistency: 1+1024+307,076 = 308,101 =
+the ctree_v1024_d2 run's reported context count.  Cost estimate for
+D=3 by context-count scaling: ~2-4 h on 20 laptop cores.
+QUEUED (after the layered pairwise run frees the laptop and the
+pairwise_experiment.py.new swap is done):
+  caffeinate -i .venv/bin/python scripts/context_tree_experiment.py \
+    --corpus data/text8 --top-k 1023 --depth 3 --jobs 20 \
+    --out output/ctree_v1024_d3
+Sanity on arrival: depth-0/1/2 baselines must reproduce
+6.0636/5.0564/5.1309; then compare family vs 4.9507 and the MAP
+leaf histogram vs 57 split contexts (does memory saturate at two?).
+Ruediger's framing: V=1024 runs are behavioral (ranking), not a
+compression scheme for the file; real-scheme claims live at full
+vocabulary.
+
+Appendix D (app:store) rewritten at Ruediger's request: it now
+describes the system as built and verified --- the anchor store
+(dense floor to 255, anchors at 8.3% spacing to 2e8, degree-11
+interpolation in ln(r+1), expansion at L>=54), the measured trust
+chain (probe_exact contour reference, 1e-4-bits requirement, worst
+5.6e-6 over the 22 instrument profiles, one-octave margin), and the
+saddle-rejection measurement kept in condensed form.  The old text
+still called the storage problem open; numbers taken from the
+2026-08-02 entries.
+
+EFFICIENCY NOTE (Ruediger, from Activity Monitor during the layered
+v1024 run): the run is mostly ONE Python process at ~14% of a core,
+with occasional short bursts of ~5 workers at ~40% each; the machine
+sits ~88% idle.  Measured from screenshots 23:18/23:19, checkpoint
+~28.  So the checkpointed sequential evaluator uses roughly a tenth
+of the laptop.  Fine for this run; NOT fine for the constraint-model
+program (Appendix E Route 2), which uses the same machinery.  Before
+those runs: batch per-context evaluations into array ops, keep a
+persistent worker pool busy across the whole checkpoint, transfer
+tables to workers once.  Correctness first, then this.
+
+## 2026-08-04 --- LAYERED PAIRWISE v1024 DONE: calibrated WINS; markov2-layered anomalous
+
+MEASURED (output/pairwise_layered_v1024/results.json, 29,622 s,
+8.2 h wall; laptop, --jobs 12; text8 V=1024, C=32, cap=freq,
+capped=6,658,395):
+  calibrated 5.1983 <- BEST (posterior 1.0)
+  markov2 5.2152, prod:1,0.5 5.2338, lag1 5.3146,
+  markov2-layered 5.4031 <- WORST, below lag1.
+THE RANKING FLIPPED vs counts mode (there: markov2 5.2446 best,
+calibrated 5.2827).  With layered tables the maxent/calibrated
+construction beats the order-2 backoff reference --- direct support
+for the constraint-model route (Appendix E, Route 2).  All members
+improved under layered tables.
+ANOMALY: markov2-layered worse than lag1, same pattern as the
+V=64 smoke (3.0744 vs markov2 3.0238).  Candidate explanation:
+C=32 refreshes too few for the per-pair layered code.  The
+--exact only run (launched next, same flags) computes the exact
+sequential version; a large gap exact-vs-5.4031 convicts the
+checkpoint schedule, a small one convicts the member.
+Next on laptop after exact-only: ctree D=3 V=1024 (queued command
+in the 2026-08-03 (late) entry).

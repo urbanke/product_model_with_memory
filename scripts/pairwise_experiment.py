@@ -24,11 +24,20 @@ comparison isolates the combining rule:
                 reproduces all three pair distributions (paper,
                 appendix on the calibrated pairwise predictor)
 
-Sequential construction: none of these predictors telescopes to a
-one-shot evaluation, so the code is the checkpointed one: cut the
-stream into C blocks, freeze all tables (and the IPF calibration) on
-the data strictly before each block, code the block, refresh.
-Staleness is priced into every row equally.
+Sequential construction: with one exception, none of these predictors
+telescopes to a one-shot evaluation, so the code is the checkpointed
+one: cut the stream into C blocks, freeze all tables (and the IPF
+calibration) on the data strictly before each block, code the block,
+refresh.  Staleness is priced into every row equally.
+
+The exception is the layered order-two reference.  It is a mixture,
+so its exact sequential code (tables updated after EVERY token)
+telescopes to one evaluation per context pair at the final counts.
+--exact add computes this number (markov2-layered-exact) alongside
+the checkpointed members; --exact only computes just it and merges it
+into an existing results.json.  The gap between the exact and the
+checkpointed version measures what the checkpoint schedule costs; if
+it is large, C blocks are too few.
 
 Chow-Liu diagnostic: with lags {1,2} the maximum-MI tree simply picks
 two of the three edges; because MI(x_t, x_{t-1}) = MI(x_{t-1}, x_{t-2})
@@ -115,6 +124,66 @@ def ipf_triangle(P01, P02, P12, psi01, psi02, psi12,
     return psi01, psi02, psi12, iters, float(resid)
 
 
+def exact_order2_bits(builder, Ctri) -> float:
+    """Exact codelength of the order-two layered code: the per-pair
+    mixture updated after every token.  The codelength telescopes, so
+    it is one evaluation per context pair at the FINAL counts,
+    deduplicated over count profiles."""
+
+    from collections import Counter
+    from product_model_with_memory.pooled_lags import _log2sumexp_arr
+
+    mult: Counter = Counter()
+    indptr, data = Ctri.indptr, Ctri.data
+    for u in range(Ctri.shape[0]):
+        d0, d1 = indptr[u], indptr[u + 1]
+        if d1 > d0:
+            mult[tuple(sorted(int(v) for v in data[d0:d1]))] += 1
+    profs = [p for p in mult if p not in builder.memo]
+    print(f"  exact: {len(mult)} distinct profiles, "
+          f"{len(profs)} to evaluate", flush=True)
+    B = 2000
+    for i in range(0, len(profs), B):
+        builder._ensure_families({p: () for p in profs[i:i + B]})
+        print(f"  exact: {min(i + B, len(profs))}/{len(profs)}",
+              flush=True)
+    ll = math.log2(builder.l_max)
+    return -sum(
+        m * (_log2sumexp_arr(builder.memo[p]) - ll)
+        for p, m in mult.items())
+
+
+def merge_exact(out: Path, bits_x: float, coded: int,
+                secs: float) -> None:
+    """Write markov2-layered-exact into an existing results.json (or a
+    fresh one), recomputing the family code and the best member."""
+
+    res_path = out / "results.json"
+    res = json.loads(res_path.read_text()) if res_path.exists() else {}
+    prev = res.get("coded_positions")
+    if prev is not None and prev != coded:
+        raise SystemExit(
+            f"coded positions differ: results.json has {prev}, this "
+            f"stream gives {coded}; same corpus, --n and cap?")
+    per = res.setdefault("member_bits_per_token", {})
+    per["markov2-layered-exact"] = bits_x / coded
+    res["coded_positions"] = coded
+    logq = np.array([-v * coded for v in per.values()])
+    mx = logq.max()
+    fam = -(mx + math.log2(np.exp(
+        (logq - mx) * math.log(2)).sum()) - math.log2(len(per)))
+    post = np.exp((logq - mx) * math.log(2))
+    post /= post.sum()
+    res["family_bits_per_token"] = fam / coded
+    res["posterior_max"] = float(post.max())
+    res["best_member"] = min(per, key=per.get)
+    res["exact_seconds"] = secs
+    out.mkdir(parents=True, exist_ok=True)
+    res_path.write_text(json.dumps(res, indent=2))
+    print(f"markov2-layered-exact: {bits_x / coded:.4f} bits/token")
+    print(f"written: {res_path}")
+
+
 def mutual_information(J: np.ndarray) -> float:
     pa = J.sum(axis=1, keepdims=True)
     pb = J.sum(axis=0, keepdims=True)
@@ -146,6 +215,15 @@ def main() -> None:
                     help="order-two reference: count backoff, the "
                          "share-nothing layered estimator per context "
                          "pair, or both")
+    ap.add_argument("--exact", choices=("off", "add", "only"),
+                    default="off",
+                    help="exact order-two layered reference (tables "
+                         "updated after every token; telescopes to "
+                         "one evaluation per context pair at the "
+                         "final counts): 'add' computes it alongside "
+                         "the checkpointed members, 'only' computes "
+                         "just it and merges it into an existing "
+                         "results.json in --out")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--n", type=int, default=None,
                     help="use only the first n tokens")
@@ -176,7 +254,8 @@ def main() -> None:
 
     builder = None
     ratio_memo: dict = {}
-    if args.tables == "layered" or args.order2 in ("layered", "both"):
+    if (args.tables == "layered" or args.order2 in ("layered", "both")
+            or args.exact != "off"):
         for k_, v_ in (("PMM_UNIVERSAL_TABLES", "tables/anchors_prod"),
                        ("PMM_PHI_LADDER_EVERY", "1"),
                        ("PMM_PHI_LADDER_DEGREE", "11"),
@@ -191,6 +270,16 @@ def main() -> None:
         builder = _LayeredPredictiveBuilder(
             V, default_l_max(V), None, args.jobs, None)
         globals()["_augmented_profile"] = _augmented_profile
+
+    if args.exact == "only":
+        t = np.arange(2, n)
+        Cfin = sparse.coo_matrix(
+            (np.ones(n - 2, dtype=np.int64),
+             (x[t - 1] * V + x[t - 2], x[t])),
+            shape=(V * V, V)).tocsr()
+        bits_x = exact_order2_bits(builder, Cfin)
+        merge_exact(Path(args.out), bits_x, n - 2, time.time() - t0)
+        return
 
     # members
     mix_grid = [(w0, w2) for w0 in (0.02, 0.05)
@@ -351,6 +440,14 @@ def main() -> None:
         print(f"  checkpoint {c + 1}/{C}: coded {coded:,} "
               f"(ipf {sweeps} sweeps, resid {resid:.1e}) "
               f"({time.time() - t0:.0f}s)", flush=True)
+
+    if args.exact == "add":
+        tx = time.time()
+        bits["markov2-layered-exact"] = exact_order2_bits(builder, Ctri)
+        names.append("markov2-layered-exact")
+        print(f"  exact order-2 layered: "
+              f"{bits['markov2-layered-exact'] / coded:.4f} bits/token "
+              f"({time.time() - tx:.0f}s)", flush=True)
 
     per_tok = {k: v / coded for k, v in bits.items()}
     logq = np.array([-bits[k] for k in names])      # log2 q per member
