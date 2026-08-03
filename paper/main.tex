@@ -40,12 +40,30 @@ repository.
 \section{The model}
 \label{sec:setup}
 
-We use the layered product-simplex model of~\cite{layered2026}.  It is
-built in three steps: a prior on the simplex, a Bayesian mixture over
-sequences, and an average over depths.
+Throughout, the data are a fixed file: a sequence
+$x^n = (x_1, \dots, x_n)$ of $n$ tokens from an alphabet of size $d$,
+with counts $m_i = \#\{t : x_t = i\}$.  Nothing is assumed about where
+the file came from.
 
-\emph{The prior.}  Fix an alphabet of size $d$ and a depth $L \ge 1$.
-Draw $L$ points $\theta^{(1)}, \dots, \theta^{(L)}$ of the $d$-simplex
+\paragraph{A code is a probability assignment.}  A lossless code and a
+probability assignment are the same object seen from two sides.  If
+$Q$ gives every length-$n$ sequence a nonnegative probability and
+these sum to one, then arithmetic coding turns $Q$ into a code that
+spends $-\log_2 Q(x^n)$ bits on the file $x^n$, up to $O(1/n)$; and
+any code's lengths define such a $Q$.  Choosing a model therefore
+means choosing $Q$: a rule, fixed in advance and known to the decoder,
+that spreads one unit of probability over all $d^n$ candidate files.
+A rule is good if it concentrates its probability on files like the
+ones we actually meet.  Every number reported in this paper is
+$-\tfrac1n \log_2 Q(x^n)$ for some such rule, evaluated on the actual
+file.
+
+The rule used throughout is the layered product-simplex construction
+of~\cite{layered2026}.  It is built in three steps: a weighting over
+the simplex, an assignment at each depth, and an average over depths.
+
+\emph{A weighting over the simplex.}  Fix a depth $L \ge 1$.  Draw $L$
+points $\theta^{(1)}, \dots, \theta^{(L)}$ of the $d$-simplex
 independently and uniformly, and form the coordinatewise product,
 renormalized:
 \begin{equation}
@@ -55,36 +73,33 @@ renormalized:
        {\sum_{j=1}^{d} \prod_{\ell=1}^{L} \theta^{(\ell)}_j},
   \qquad i = 1, \dots, d.
 \end{equation}
-The law of the resulting random vector $\theta$ is the depth-$L$ prior
-$\pi_L$ on the simplex.  At $L=1$ it is the uniform prior; as $L$
-grows, the product concentrates the mass of $\pi_L$ on increasingly
-sparse, low-entropy vectors.  The depth thus parametrizes a family of
-priors ranging from ``all $d$ symbols comparably likely'' to ``a few
-symbols carry almost all the mass''.
+The distribution of the resulting vector $\theta$ is a measure
+$\pi_L$ on the simplex --- our choice of weighting, not a statement
+about the data.  At $L=1$ it is uniform; as $L$ grows it concentrates
+on increasingly sparse, low-entropy vectors.  The depth thus
+parametrizes a family of weightings ranging from ``all $d$ symbols
+comparably likely'' to ``a few symbols carry almost all the mass''.
 
-\emph{The mixture over sequences.}  The data are sequences, not single
-observations.  Given $\theta$, tokens are drawn i.i.d.\ from $\theta$:
-each $x_t$ takes the value $i$ with probability $\theta_i$.  The
-depth-$L$ predictor assigns to \emph{every} finite sequence
-$x^t = (x_1, \dots, x_t)$, of any length, the probability
+\emph{The assignment at depth $L$.}  A point $\theta$ of the simplex
+assigns to a string the product $\prod_{s \le t} \theta_{x_s}$ ---
+the probability that a memoryless source with parameters $\theta$
+would give it.  The file is not assumed to come from any such source;
+the product is a building block and nothing more.  The depth-$L$
+assignment is its average under the weighting $\pi_L$, defined for
+\emph{every} finite string at once:
 \begin{equation}
 \label{eq:mixture}
   Q^{(L)}(x^t)
   \;=\;
-  \int \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)
+  \int \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta).
 \end{equation}
---- one formula for all lengths; restricted to the $d^t$ sequences of
-any one length $t$ it is a normalized probability assignment.  Its
-conditionals
-$Q^{(L)}(x_{t+1} = i \,|\, x^t)$ are the posterior means
-$\E[\theta_i \,|\, x^t]$; at $L = 1$ this conditional is exactly
-Laplace's add-one rule $(m_i + 1)/(t + d)$, with $m_i$ the number of
-occurrences of $i$ in $x^t$.  Because the data are i.i.d.\ given
-$\theta$, the mixture \eqref{eq:mixture} is exchangeable: it depends on
-$x^t$ only through the counts $m_1, \dots, m_d$.
+Restricted to the $d^t$ strings of any one length this sums to one
+(sum the product over strings inside the integral), so it is a
+probability assignment at every length.  And since the product
+depends on the string only through its counts, so does $Q^{(L)}$: the
+assignment is \emph{exchangeable}.
 
-\emph{The average over depths.}  The
-depth-averaged predictor
+\emph{The average over depths.}  The depth-averaged assignment
 \begin{equation}
 \label{eq:depth-average}
   Q^{\mathrm{avg}}(x^t)
@@ -95,16 +110,104 @@ depth-averaged predictor
   \quad
   \cstar=\frac{1}{1-\gamma}\approx 2.365,
 \end{equation}
-requires no depth selection, and is again defined on every finite
-sequence at once.
+commits to no single depth, and is again defined on every finite
+string at once.
+
+\paragraph{Why this is a sequential code.}  A decoder reconstructs
+the file one symbol at a time, so at step $t$ it needs the
+probability of each candidate next symbol, computed from the symbols
+it has already recovered.  Three facts govern this, and they are
+worth separating, because two of them hold and the plausible third is
+false.
+
+\emph{First: the values at different lengths fit together.}  For any
+prefix $x^t$ and symbol $y$,
+\begin{equation}
+\label{eq:consistency}
+  \sum_{y} Q\bigl(x^{t}y\bigr) \;=\; Q\bigl(x^{t}\bigr),
+\end{equation}
+for $Q = Q^{(L)}$ and hence for $Q = Q^{\mathrm{avg}}$.  At a fixed
+depth this is one line: summing $\theta_y$ over $y$ inside the
+integral \eqref{eq:mixture} gives $1$.  The average inherits it
+because \eqref{eq:consistency} is a sum, and sums pass through the
+average over depths unchanged.  So the conditional
+\begin{equation*}
+  Q(y \mid x^{t}) \;=\; \frac{Q(x^{t}y)}{Q(x^{t})}
+\end{equation*}
+is a genuine probability distribution over $y$ at every step, and
+both its ingredients depend only on symbols already decoded.
+
+\emph{Second: what the conditional is.}  At a fixed depth, writing
+the ratio out,
+\begin{equation}
+\label{eq:posterior-mean}
+  Q^{(L)}(y \mid x^{t})
+  \;=\;
+  \frac{\displaystyle\int \theta_y \,
+        \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)}
+       {\displaystyle\int
+        \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)}
+\end{equation}
+--- an average of $\theta_y$ over the simplex in which each candidate
+$\theta$ is weighted by $\prod_{s\le t}\theta_{x_s}$, the probability
+it assigned to the prefix.  A $\theta$ that has explained the data
+well counts for more; the weighting $\pi_L$ alone decides nothing
+once data have arrived.  (In Bayesian language,
+\eqref{eq:posterior-mean} is the posterior mean of $\theta_y$.)  At
+$L=1$ the integrals are explicit and \eqref{eq:posterior-mean} is
+Laplace's rule $(m_y + 1)/(t + d)$, with $m_y$ the number of
+occurrences of $y$ in $x^t$.
+
+For the depth average, define the weight that the prefix has earned
+for depth $L$,
+\begin{equation}
+\label{eq:depth-posterior}
+  w_L(x^t) \;=\;
+  \frac{Q^{(L)}(x^t)}{\sum_{L'=1}^{L_{\max}} Q^{(L')}(x^t)},
+\end{equation}
+the analogue over depths of the reweighting over $\theta$ above.
+Expanding the ratio,
+\begin{equation*}
+  Q^{\mathrm{avg}}(y \mid x^{t})
+  \;=\; \sum_{L=1}^{L_{\max}} w_L(x^{t})\, Q^{(L)}(y \mid x^{t}).
+\end{equation*}
+The prediction the decoder runs is therefore an average over depths
+of averages over parameters, and at both levels the weights are
+earned from the decoded prefix; the uniform $1/L_{\max}$ and the
+weighting $\pi_L$ never appear in any single prediction.
+
+\emph{Third, the false one: the conditional of the average is not
+the uniform average of the conditionals.}  A ratio is not a sum, and
+averages do not commute with ratios; the correct weights are
+\eqref{eq:depth-posterior} and they move at every step.  A receiver
+that instead kept the depth weights uniform at every step would also
+be a valid code --- but a different one, and a worse one, and its
+cost could not be computed from final counts at all
+(Appendix~\ref{app:factorisation}).
+
+\emph{One evaluation at the final counts.}  The posterior-weighted
+receiver never has to be run step by step: consecutive ratios
+telescope, so its total cost is $-\log_2 Q^{\mathrm{avg}}(x^n)$,
+one evaluation at the end of the file.  By exchangeability this
+depends on $x^n$ only through its count profile $\lambda$ (the
+multiset of nonzero counts):
+$-\log_2 Q^{\mathrm{avg}}(x^n) =
+-\log_2\bigl[\tfrac1{L_{\max}}\sum_L q_\lambda(L)\bigr]$, where
+$q_\lambda(L)$ is evaluated by the layer recursion and saddlepoint
+method of Appendix~B of~\cite{layered2026}, ported to this repository
+(\texttt{src/product\_model\_with\_memory/layered.py}, with the
+batched table builder of \texttt{fast\_tables.py} validated against
+the original).  The uniform weights $1/L_{\max}$ in this final
+expression are the up-front weights on whole-sequence probabilities;
+every step's earned weight has cancelled against the member
+probability it was built from.  Appendix~\ref{app:factorisation}
+proves the same statement per state for the models with memory,
+where it carries the whole construction.
 
 \paragraph{The two quantities we report.}
-Throughout, a corpus prefix $x^n = (x_1,\dots,x_n)$ is a token sequence
-over a fixed alphabet of size $d$, with counts
-$m_i = \#\{t : x_t = i\}$.
 
-\emph{Empirical entropy.}  The empirical unigram entropy of the prefix is
-the entropy of its type (relative-frequency) distribution,
+\emph{Empirical entropy.}  The empirical unigram entropy of the file
+is the entropy of its relative frequencies,
 \begin{equation}
 \label{eq:empirical-entropy}
   \hat H_n \;=\; -\sum_{i\,:\,m_i>0} \frac{m_i}{n}\,
@@ -113,128 +216,42 @@ the entropy of its type (relative-frequency) distribution,
 \end{equation}
 This number is computed from the file itself, so it is a benchmark,
 not the length of any code.  It is a floor in the following sense.  A
-coder that uses one fixed probability assignment $p$ for the whole
-prefix spends $-\tfrac1n\sum_t \log_2 p(x_t)$ bits per token, and this
-is smallest exactly when $p_i = m_i/n$, the frequencies of the prefix
-itself, where it equals $\hat H_n$.  So no fixed assignment can beat
-$\hat H_n$ on this prefix.  But no decoder can \emph{achieve} it
-either: decoding requires the same probabilities the encoder used, and
-the decoder cannot know the frequencies of data it has not yet
-received.  A real scheme closes this gap in one of two ways.  Either
-send the frequencies first and then code the data under them, paying
-for their description; or use at each step only probabilities
-computable from the symbols already decoded, paying instead through
-the early predictions, which are made from few observations.  Every
-codelength reported in this paper is of the second kind.  The excess
+coder that uses one fixed probability assignment $p$ per symbol for
+the whole file spends $-\tfrac1n\sum_t \log_2 p(x_t)$ bits per token,
+and this is smallest exactly when $p_i = m_i/n$, the frequencies of
+the file itself, where it equals $\hat H_n$.  So no fixed
+per-symbol assignment can beat $\hat H_n$.  But no decoder can
+\emph{achieve} it either: the decoder cannot know the frequencies of
+data it has not yet received.  A real scheme closes this gap in one
+of two ways.  Either send the frequencies first and then code the
+data under them, paying for their description; or use at each step
+only probabilities computable from the symbols already decoded ---
+as every scheme in this paper does --- paying instead through the
+early predictions, which are made from few observations.  The excess
 over $\hat H_n$ is the price of that gap: the cost of learning the
 distribution while coding under it.
 
-\emph{Loss of an estimator.}  An estimator is a probability assignment
-$Q$ on sequences (nonnegative, summing to one over $\mathcal X_d^n$).  Its
-loss on the prefix is the per-token codelength
+\emph{Loss and redundancy.}  The loss of an assignment $Q$ on the
+file is its per-token codelength
 \begin{equation}
 \label{eq:codelength}
   \ell_n(Q) \;=\; -\tfrac{1}{n}\log_2 Q(x^n)
   \;=\; -\tfrac{1}{n}\sum_{t=1}^{n}
         \log_2 Q\bigl(x_t \,\big|\, x^{t-1}\bigr),
 \end{equation}
-the two forms being equal by the chain rule.  The second form is the
-one a decoder runs, and it rests on two facts about the averaged
-predictor that deserve to be stated separately, because one of them
-survives the averaging and the other does not.
+the two forms equal by the chain rule, and realizable as an actual
+arithmetic code by the preceding paragraphs.  The \emph{redundancy}
+we tabulate is $\ell_n(Q) - \hat H_n$: the part of the codelength
+paid for \emph{learning} the distribution rather than describing the
+data under a known one.
 
-\emph{First fact: the values of $Q$ at different lengths fit
-together.}  The conditional in \eqref{eq:codelength} is the ratio
-$Q(x^{t-1}y)/Q(x^{t-1})$, which evaluates $Q$ on strings of two
-different lengths.  For this ratio to be the conditional of a single
-probability law, the value on the shorter string must equal the total
-probability of its continuations:
-\begin{equation}
-\label{eq:consistency}
-  \sum_{y} Q\bigl(x^{t}y\bigr) \;=\; Q\bigl(x^{t}\bigr).
-\end{equation}
-This holds at each fixed depth because $\sum_y \theta_y = 1$ inside
-the integral \eqref{eq:mixture}; and it holds for the average
-\eqref{eq:depth-average} because \eqref{eq:consistency} is a
-\emph{sum}, and summing over continuations passes through the average
-over depths unchanged.  So $Q^{\mathrm{avg}}$ is one function on all
-finite strings, the ratio is legitimate, and both of its ingredients
-depend only on symbols the decoder has already recovered.  By the
-Kraft inequality the resulting arithmetic code has length
-$-\log_2 Q(x^n)$ up to $O(1/n)$, so $\ell_n(Q)$ is realizable, not
-merely a score.  The \emph{redundancy} we tabulate is
-$\ell_n(Q) - \hat H_n$: the part of the codelength paid for
-\emph{learning} the distribution rather than describing the data under
-a known one.
-
-\emph{Second fact: the conditional does not survive the averaging.}
-A ratio is not a sum, and averages do not commute with ratios: the
-conditional of the average is \emph{not} the uniform average of the
-per-depth conditionals.  Expanding the ratio,
-\[
-  Q^{\mathrm{avg}}(y \mid x^{t-1})
-  \;=\; \sum_{L=1}^{L_{\max}} w_L(x^{t-1})\, Q^{(L)}(y \mid x^{t-1}),
-\]
-where $w_L(x^{t-1})$ is the posterior over depths
-\eqref{eq:depth-posterior} evaluated at the prefix: each depth is
-weighted by how well it has explained the data so far, and the weights
-move at every step.  The decoder can form these weights, because they
-depend only on what it has already recovered.
-
-The same structure repeats one level down.  At a fixed depth,
-\eqref{eq:mixture} is itself an average --- over the parameter
-$\theta$, with respect to the depth-$L$ prior $\pi_L$ --- and its
-conditional is likewise not the prior average of $\theta_y$ but the
-posterior one,
-\[
-  Q^{(L)}(y \mid x^{t-1})
-  \;=\; \int \theta_y \, \pi_L\bigl(d\theta \mid x^{t-1}\bigr)
-  \;=\; \E\bigl[\theta_y \mid x^{t-1}\bigr],
-  \qquad
-  \pi_L\bigl(d\theta \mid x^{t-1}\bigr)
-  \;\propto\; \prod_{s<t} \theta_{x_s}\; \pi_L(d\theta),
-\]
-the prior reweighted by the data seen so far; at $L = 1$ this
-posterior mean is Laplace's add-one rule, as noted after
-\eqref{eq:mixture}.  So the predictor the decoder actually runs is an
-average over depths of averages over parameters, both weighted by
-posteriors that the decoded prefix determines.  The priors themselves
---- uniform over depths, $\pi_L$ over $\theta$ --- never appear in any
-single prediction; they enter only through the whole-sequence
-probabilities.  A receiver that instead kept the depth weights uniform
-at every step would also be a valid code --- but a different one, and
-a worse one, and its cost could not be computed from final counts at
-all (Appendix~\ref{app:factorisation}).
-
-The posterior-weighted receiver, by contrast, never has to be run step
-by step: the per-step ratios telescope, so its total cost collapses to
-one evaluation of $Q^{\mathrm{avg}}$ at the final counts.  The mixture
-is exchangeable --- $Q(x^n)$ depends on $x^n$ only through its count
-profile $\lambda$, the multiset of nonzero counts --- and
-$-\log_2 Q^{\mathrm{avg}}(x^n) =
--\log_2\bigl[\tfrac1{L_{\max}}\sum_L q_\lambda(L)\bigr]$, where
-$q_\lambda(L)$ is evaluated by the layer recursion and saddlepoint
-method of Appendix~B of~\cite{layered2026}, ported to this repository
-(\texttt{src/product\_model\_with\_memory/layered.py}, with the
-batched table builder of \texttt{fast\_tables.py} validated against
-the original).  The uniform weights $1/L_{\max}$ in this final
-expression are the \emph{prior} weights on whole-sequence
-probabilities; every step's posterior weight has cancelled against the
-member probability it was built from.
-Appendix~\ref{app:factorisation} proves the same statement per state
-for the models with memory, where it carries the whole construction.
-
-\emph{Depth posterior.}  Because \eqref{eq:depth-average} is a uniform
-mixture over depths, the data induce a posterior over $L$,
-\begin{equation}
-\label{eq:depth-posterior}
-  w_L(x^n) \;=\; \frac{Q^{(L)}(x^n)}{\sum_{L'=1}^{L_{\max}} Q^{(L')}(x^n)},
-\end{equation}
-which we report through its mode $L^\star = \arg\max_L w_L(x^n)$.  The
-mode plays no role in any codelength --- the loss is always that of the
-full average \eqref{eq:depth-average} --- but it is an interpretable
-diagnostic: it names the single depth that best explains the data, and
-its position (relative to $\ln d$) locates the source on the
+\emph{Depth diagnostic.}  We also report the mode
+$L^\star = \arg\max_L w_L(x^n)$ of the depth weights
+\eqref{eq:depth-posterior} at the final counts.  The mode plays no
+role in any codelength --- the loss is always that of the full
+average \eqref{eq:depth-average} --- but it is an interpretable
+diagnostic: it names the single depth that best explains the data,
+and its position (relative to $\ln d$) locates the source on the
 complexity spectrum of \cite{layered2026}.
 
 \section{Sources and representations}
