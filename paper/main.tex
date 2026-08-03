@@ -63,38 +63,40 @@ priors ranging from ``all $d$ symbols comparably likely'' to ``a few
 symbols carry almost all the mass''.
 
 \emph{The mixture over sequences.}  The data are sequences, not single
-observations.  Given $\theta$, a sequence
-$x^\Nseq = (x_1, \dots, x_\Nseq)$ of $\Nseq$ tokens is drawn
-i.i.d.\ from $\theta$: each $x_t$ takes the value $i$ with probability
-$\theta_i$.  The depth-$L$ predictor is the Bayesian mixture
+observations.  Given $\theta$, tokens are drawn i.i.d.\ from $\theta$:
+each $x_t$ takes the value $i$ with probability $\theta_i$.  The
+depth-$L$ predictor assigns to \emph{every} finite sequence
+$x^t = (x_1, \dots, x_t)$, of any length, the probability
 \begin{equation}
 \label{eq:mixture}
-  Q^{(L)}_\Nseq(x^\Nseq)
+  Q^{(L)}(x^t)
   \;=\;
-  \int \prod_{t=1}^{\Nseq} \theta_{x_t} \; \pi_L(d\theta),
+  \int \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)
 \end{equation}
-a normalized probability assignment on all $d^\Nseq$ sequences of
-length $\Nseq$.  Its conditionals
+--- one formula for all lengths; restricted to the $d^t$ sequences of
+any one length $t$ it is a normalized probability assignment.  Its
+conditionals
 $Q^{(L)}(x_{t+1} = i \,|\, x^t)$ are the posterior means
 $\E[\theta_i \,|\, x^t]$; at $L = 1$ this conditional is exactly
 Laplace's add-one rule $(m_i + 1)/(t + d)$, with $m_i$ the number of
 occurrences of $i$ in $x^t$.  Because the data are i.i.d.\ given
 $\theta$, the mixture \eqref{eq:mixture} is exchangeable: it depends on
-$x^\Nseq$ only through the counts $m_1, \dots, m_d$.
+$x^t$ only through the counts $m_1, \dots, m_d$.
 
 \emph{The average over depths.}  The
 depth-averaged predictor
 \begin{equation}
 \label{eq:depth-average}
-  Q^{\mathrm{avg}}_\Nseq(x^\Nseq)
+  Q^{\mathrm{avg}}(x^t)
   \;=\;
-  \frac{1}{L_{\max}}\sum_{L=1}^{L_{\max}} Q^{(L)}_\Nseq(x^\Nseq),
+  \frac{1}{L_{\max}}\sum_{L=1}^{L_{\max}} Q^{(L)}(x^t),
   \qquad
   L_{\max}=\operatorname{round}(2\cstar\ln d),
   \quad
   \cstar=\frac{1}{1-\gamma}\approx 2.365,
 \end{equation}
-requires no depth selection.
+requires no depth selection, and is again defined on every finite
+sequence at once.
 
 \paragraph{The two quantities we report.}
 Throughout, a corpus prefix $x^n = (x_1,\dots,x_n)$ is a token sequence
@@ -137,21 +139,38 @@ loss on the prefix is the per-token codelength
         \log_2 Q\bigl(x_t \,\big|\, x^{t-1}\bigr),
 \end{equation}
 the two forms being equal by the chain rule.  The second form is the
-one a decoder runs, and it needs an argument, because a factorization
-on paper is not yet a code: at step $t$ the decoder must be able to
-\emph{compute} the conditional $Q(x_t \mid x^{t-1})$.  Here it can.
-$Q$ is a fixed assignment on sequences that encoder and decoder both
-carry, so the conditional is a ratio, $Q(x^{t-1}y)/Q(x^{t-1})$, of two
-quantities that depend only on symbols already decoded.  By the Kraft
-inequality the resulting arithmetic code has length $-\log_2 Q(x^n)$
-up to $O(1/n)$, so $\ell_n(Q)$ is realizable, not merely a score.  The
-\emph{redundancy} we tabulate is $\ell_n(Q) - \hat H_n$: the part of
-the codelength paid for \emph{learning} the distribution rather than
-describing the data under a known one.
+one a decoder runs, and it rests on two facts about the averaged
+predictor that deserve to be stated separately, because one of them
+survives the averaging and the other does not.
 
-For the depth average \eqref{eq:depth-average} it is worth writing out
-what that conditional actually is, because it is \emph{not} the
-uniform average of the per-depth predictions.  Expanding the ratio,
+\emph{First fact: the values of $Q$ at different lengths fit
+together.}  The conditional in \eqref{eq:codelength} is the ratio
+$Q(x^{t-1}y)/Q(x^{t-1})$, which evaluates $Q$ on strings of two
+different lengths.  For this ratio to be the conditional of a single
+probability law, the value on the shorter string must equal the total
+probability of its continuations:
+\begin{equation}
+\label{eq:consistency}
+  \sum_{y} Q\bigl(x^{t}y\bigr) \;=\; Q\bigl(x^{t}\bigr).
+\end{equation}
+This holds at each fixed depth because $\sum_y \theta_y = 1$ inside
+the integral \eqref{eq:mixture}; and it holds for the average
+\eqref{eq:depth-average} because \eqref{eq:consistency} is a
+\emph{sum}, and summing over continuations passes through the average
+over depths unchanged.  So $Q^{\mathrm{avg}}$ is one function on all
+finite strings, the ratio is legitimate, and both of its ingredients
+depend only on symbols the decoder has already recovered.  By the
+Kraft inequality the resulting arithmetic code has length
+$-\log_2 Q(x^n)$ up to $O(1/n)$, so $\ell_n(Q)$ is realizable, not
+merely a score.  The \emph{redundancy} we tabulate is
+$\ell_n(Q) - \hat H_n$: the part of the codelength paid for
+\emph{learning} the distribution rather than describing the data under
+a known one.
+
+\emph{Second fact: the conditional does not survive the averaging.}
+A ratio is not a sum, and averages do not commute with ratios: the
+conditional of the average is \emph{not} the uniform average of the
+per-depth conditionals.  Expanding the ratio,
 \[
   Q^{\mathrm{avg}}(y \mid x^{t-1})
   \;=\; \sum_{L=1}^{L_{\max}} w_L(x^{t-1})\, Q^{(L)}(y \mid x^{t-1}),
