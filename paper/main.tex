@@ -642,6 +642,71 @@ learn its own distribution, not by how many states there are.
 Table~\ref{tab:firstorder} is the reference point for the
 constructions of the next sections.
 
+\section{Memory of order two from pairwise statistics}
+\label{sec:pairwise}
+
+Section~\ref{sec:ordertwo} located the failure of order-two states on
+\texttt{text8} and \texttt{enwik8}: not the ceiling but the learning
+cost of one successor distribution per context pair.  This section
+asks how much of the order-two ceiling can be reached while learning
+only \emph{pairwise} objects.  The predictor sees
+$(x_{t-1}, x_{t-2})$ and is built from the three pair distributions
+$p(x_t, x_{t-1})$, $p(x_t, x_{t-2})$ and $p(x_{t-1}, x_{t-2})$, of
+which the third is, by stationarity, the same table as the first.
+That is roughly $3V^2$ numbers against the $V^3$ scale of order-two
+states: a lower ceiling, bought at an order-one learning cost.
+
+The pairwise tables do not determine the conditional
+$p(x_t \mid x_{t-1}, x_{t-2})$; a combining rule must be chosen, and
+the choice is the experiment.  All rules below consume the same
+smoothed tables (each row shrunk toward the running unigram
+distribution), so the comparison isolates the rule
+(\texttt{scripts/pairwise\_experiment.py}):
+
+\begin{itemize}
+\item \emph{Mixture}: $w_0\, m(y) + w_1\, \hat p(y \mid x_{t-1})
+  + w_2\, \hat p(y \mid x_{t-2})$ over a grid of weights, $m$ the
+  unigram distribution.
+\item \emph{Product}: $m(y) \prod_{\delta \in \{1,2\}}
+  \bigl[\hat p(y \mid x_{t-\delta})/m(y)\bigr]^{\beta_\delta}$,
+  normalized, over a grid of exponents.  The point
+  $\beta_1 = \beta_2 = 1$ is not a tuning choice: it is the exact
+  conditional of the maximum-entropy joint consistent with the two
+  target pairs alone, and it is exact precisely when the two lags are
+  conditionally independent given the target
+  (Appendix~\ref{app:calibration}).
+\item \emph{Calibrated product}: the conditional of the
+  maximum-entropy joint consistent with all \emph{three} pair
+  distributions.  It still factorizes over the lags, but its two
+  factors are calibrated jointly, through the third table, so that
+  redundancy between the lags is discounted automatically;
+  Appendix~\ref{app:calibration} derives it and the fitting
+  procedure.
+\item \emph{References}: the lag-one predictor alone, and order-two
+  states with backoff to lag one, the $V^3$-scale construction this
+  section tries to approximate.
+\end{itemize}
+
+None of these predictors is exchangeable over any partition of the
+positions, so the one-evaluation route of
+Section~\ref{sec:firstorder} is closed.  The code is instead the
+checkpointed one, as for the pooled lags: the stream is cut into $C$
+equal blocks, every table and the calibration are computed from the
+data strictly before the block, the block is coded, and the tables
+are refreshed.  Every row of the comparison carries the same
+staleness cost, so the comparison is internal, and each member is a
+valid sequential code.
+
+With two lags the Chow--Liu alternative (keep the two highest-MI
+edges of the triangle and use the resulting tree) is degenerate:
+$\mathrm{MI}(x_t, x_{t-1})$ and $\mathrm{MI}(x_{t-1}, x_{t-2})$ are
+the same number, so the tree drops the weaker lag entirely and
+reduces to the lag-one predictor.  It is printed as a per-checkpoint
+diagnostic and becomes a real member only when the lag set grows.
+
+The measured comparison will be reported here when the runs
+complete.
+
 \section{Families of state maps}
 \label{sec:states}
 
@@ -2150,6 +2215,94 @@ anywhere here.  Where the assignment is sub-normalised the reported
 codelength is an over-estimate, which is the safe direction; the
 measured deviations carry both signs and do not accumulate
 systematically.
+
+\section{The calibrated pairwise predictor}
+\label{app:calibration}
+
+Let $X_0$ be the target symbol and $X_1, X_2$ the two context
+symbols.  Suppose the pair distributions $p(X_0, X_1)$ and
+$p(X_0, X_2)$ are known.  These do not determine the conditional
+$p(x_0 \mid x_1, x_2)$: many joints share the given pairs and they
+disagree about the conditional.  The standard resolution is maximum
+entropy: among all consistent joints, take the one that adds nothing
+else.  For log-loss this choice is also minimax over the consistent
+set.
+
+\paragraph{Two pairs.}  Both constraints involve $X_0$, so the
+maximum-entropy joint factorizes as
+$p(x_0)\,p(x_1 \mid x_0)\,p(x_2 \mid x_0)$ and its conditional is
+closed-form:
+\begin{equation}
+\label{eq:star}
+  p^\ast(x_0 \mid x_1, x_2)
+  \;\propto\;
+  p(x_0)\,
+  \frac{p(x_0 \mid x_1)}{p(x_0)}\,
+  \frac{p(x_0 \mid x_2)}{p(x_0)}.
+\end{equation}
+This is the product rule of Section~\ref{sec:pairwise} at
+$\beta_1 = \beta_2 = 1$.  It is exact if and only if $X_1$ and $X_2$
+are conditionally independent \emph{given} $X_0$; marginal
+independence of the context symbols is neither necessary nor
+sufficient.  When the context symbols carry overlapping information
+about the target, \eqref{eq:star} multiplies the same evidence twice.
+
+\paragraph{Three pairs.}  Suppose additionally $p(X_1, X_2)$ is
+known.  The maximum-entropy joint is now a pairwise field
+\begin{equation*}
+  p^\ast(x_0, x_1, x_2)
+  \;\propto\;
+  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2)\,\psi_{12}(x_1, x_2),
+\end{equation*}
+with the potentials determined by the requirement that all three pair
+margins of $p^\ast$ equal the given tables.  Two facts follow.
+First, since $x_1$ and $x_2$ are observed at prediction time, the
+factor $\psi_{12}$ is a constant and cancels: the conditional still
+factorizes over the lags,
+\begin{equation}
+\label{eq:calibrated}
+  p^\ast(x_0 \mid x_1, x_2)
+  \;\propto\;
+  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2).
+\end{equation}
+Second, the potentials are no longer the pairwise ratios of
+\eqref{eq:star}: they solve a coupled system in which the third
+table participates, and the constraint has a direct reading.  The
+margin conditions state that the product \eqref{eq:calibrated},
+averaged over how the two context symbols actually co-occur (that
+is, over $p(x_2 \mid x_1)$), reproduces each pairwise conditional;
+in \eqref{eq:star} the same average is taken as if the context
+symbols co-occurred only through $X_0$.  Redundancy between the lags
+is thereby discounted in the fitted factors themselves.
+
+The extreme case is instructive.  If $X_2$ is a copy of $X_1$, the
+star rule \eqref{eq:star} squares the evidence, while the calibrated
+conditional \eqref{eq:calibrated} collapses to
+$p(x_0 \mid x_1)$ exactly: the duplicate lag is priced at zero.  If
+instead the lags are conditionally independent given the target, the
+$\psi_{12}$ constraint is inactive and \eqref{eq:calibrated} reduces
+to \eqref{eq:star}.  Between the extremes it interpolates, which is
+the role the tempering exponents $\beta_\delta < 1$ play by hand,
+with one scalar where the calibration uses a full table.
+
+\paragraph{Computation.}  The potentials are fitted by iterative
+proportional fitting: cycle through the three pairs, each time
+rescaling one potential multiplicatively so that its pair margin of
+the current model matches the given table.  The $V^3$ joint is never
+materialized; each pair margin of the triangle model is one
+$V \times V$ matrix product (for example the $(0,1)$ margin is
+$\psi_{01} \odot (\psi_{02}\,\psi_{12}^{\top})$), so a sweep costs
+three matrix products.  The procedure converges to the
+maximum-entropy solution for strictly positive tables; the smoothed
+estimates used in Section~\ref{sec:pairwise} are strictly positive
+by construction.  In the sequential code the fit is warm-started
+from the previous checkpoint, and the residual margin error is
+reported as a diagnostic.  The implementation was checked against a
+dense enumeration at small $V$: the fitted margins match to
+$10^{-14}$, the conditional \eqref{eq:calibrated} matches the
+conditional of the fitted joint exactly, and the copy-lag case
+reproduces $p(x_0 \mid x_1)$ to $10^{-11}$ while the star rule errs
+by $0.36$ in total variation.
 
 \section{The joint-pair diagnostic}
 \label{sec:pairs}
