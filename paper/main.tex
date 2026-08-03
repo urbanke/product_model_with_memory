@@ -120,22 +120,22 @@ for $Q^{(L)}$ over $L$ with weights $1/L_{\max}$.  Consequently
 is a probability distribution over $y$ at every step, and both
 numerator and denominator depend only on symbols already decoded.
 
-\emph{The conditional.}  At a fixed depth,
+\emph{The conditional.}  At a fixed depth, the ratio
+$Q^{(L)}(x^t y)/Q^{(L)}(x^t)$ can be written as an integral against a
+new measure on the simplex:
 \begin{equation}
 \label{eq:posterior-mean}
   Q^{(L)}(y \mid x^{t})
+  \;=\; \int \theta_y \; \rho_t(d\theta),
+  \qquad
+  \rho_t(d\theta)
   \;=\;
-  \frac{\displaystyle\int \theta_y
-        \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)}
+  \frac{\prod_{s=1}^{t} \theta_{x_s}\; \pi_L(d\theta)}
        {\displaystyle\int
-        \prod_{s=1}^{t} \theta_{x_s} \; \pi_L(d\theta)},
+        \prod_{s=1}^{t} \tilde\theta_{x_s}\; \pi_L(d\tilde\theta)}.
 \end{equation}
-where both integrals are over the vector $\theta$ with respect to
-$\pi_L$ and the numerator carries one extra factor $\theta_y$.  This
-is a weighted average of the coordinate $\theta_y$: each $\theta$
-enters with weight proportional to $\prod_{s\le t}\theta_{x_s}$, the
-probability that this $\theta$ gave to the prefix.  At $L = 1$ the
-integrals are explicit and \eqref{eq:posterior-mean} equals
+At $L = 1$ the integrals
+are explicit and \eqref{eq:posterior-mean} equals
 $(m_y + 1)/(t + d)$, Laplace's rule, with $m_y$ the number of
 occurrences of $y$ in $x^t$.
 
