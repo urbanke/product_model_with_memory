@@ -2573,3 +2573,36 @@ rewritten to the 1e-4 rule; v3 pooled resume pickles (5.9 GB), stale
 locks and universal_tables.py.bak deleted; compiled kernel .so
 binaries untracked and gitignored; probe_exact frozen read-only.
 
+## 2026-08-03 --- Pairwise order-two: first run of the new program
+
+New experiment (scripts/pairwise_experiment.py, paper section "Memory
+of order two from pairwise statistics" + appendix "The calibrated
+pairwise predictor"): predict x_t from (x_{t-1}, x_{t-2}) using only
+the three pairwise tables, combiners compared inside one checkpointed
+sequential code (C=32, count-smoothed tables, no moment store).
+
+MEASURED (text8, V=1024, 19.4M tokens, bits/token on the reduced
+stream): star product beta=1 5.3917 (LOSES to lag1 5.3393 --- double
+counting), best mixture 5.2976, calibrated product 5.2827 (no free
+parameters), best tempered product 5.2746, markov2-with-backoff
+5.2446.  Pairwise recovers ~2/3 of the order-two gain at ~3V^2/V^3 of
+the parameter scale.  KEY LEAD: markov2 wins here (share-nothing
+order-2 loses in Table order-two) because of its backoff to the
+lag-1 row --- graded borrowing, the mechanism the excess analysis
+said was missing.  Hierarchy is the next thread.
+
+Debug history (smoke, V=64): IPF cycled on inconsistent estimated
+margins (fixed: Sinkhorn projection of each pair table to common
+unigram margins); calibrated then overfit because its joints were
+effectively unsmoothed (fixed: joints built from the SAME smoothed
+conditionals all schemes use).  After both fixes calibrated tied
+markov2 on the smoke stream.  IPF core verified against dense
+enumeration at small V (margins 1e-14; copy-lag extreme reproduces
+p(x0|x1) to 1e-11 where the star errs by 0.36).
+
+Also this session: paper foundations verified under the corrected
+evaluator (4 fourth-decimal cells), order-two got its own section,
+Pairs demoted to an appendix, model section rewritten (assignment
+view, consistency identity, posterior-weighted conditional), forecast
+paragraph removed.
+
