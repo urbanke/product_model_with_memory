@@ -16,6 +16,11 @@ slurm-*.out
 ._*
 paper/*.pdf
 tables/
-output/
+# output/ stays untracked EXCEPT the small results.json files,
+# so results flow between machines through git
+output/*
+!output/*/
+output/*/*
+!output/*/results.json
 # compiled kernel binaries: built on demand per machine by kernel.py
 src/product_model_with_memory/*.so

@@ -1,0 +1,65 @@
+{
+  "stream": "output/streams/bpe_enwik9",
+  "rows": [
+    {
+      "M1": 100277,
+      "M2": 0,
+      "states": 74730,
+      "obs_per_state": 669.0753111200321,
+      "plugin_bits_per_token": 6.50984615196162,
+      "corrected_bits_per_token": 6.592762239498026,
+      "forecast_bits_per_token": 7.57264989372487,
+      "plugin_bits_per_character": 0.3317004465783887,
+      "corrected_bits_per_character": 0.33584625078937685,
+      "forecast_bits_per_character": 0.3848406315409437
+    },
+    {
+      "M1": 100277,
+      "M2": 16,
+      "states": 174601,
+      "obs_per_state": 286.3671914822939,
+      "plugin_bits_per_token": 6.405255387299194,
+      "corrected_bits_per_token": 6.493531923890045,
+      "forecast_bits_per_token": 7.59666804824644,
+      "plugin_bits_per_character": 0.3264709085544489,
+      "corrected_bits_per_character": 0.3308847352074384,
+      "forecast_bits_per_character": 0.38604153921898593
+    },
+    {
+      "M1": 100277,
+      "M2": 64,
+      "states": 311973,
+      "obs_per_state": 160.2702733890433,
+      "plugin_bits_per_token": 6.259598692412932,
+      "corrected_bits_per_token": 6.352865410361172,
+      "forecast_bits_per_token": 7.629226419959284,
+      "plugin_bits_per_character": 0.31918807410144917,
+      "corrected_bits_per_character": 0.3238514098123278,
+      "forecast_bits_per_character": 0.3876694577395114
+    },
+    {
+      "M1": 100277,
+      "M2": 256,
+      "states": 567652,
+      "obs_per_state": 88.08213130580003,
+      "plugin_bits_per_token": 6.031103766240025,
+      "corrected_bits_per_token": 6.134485969725978,
+      "forecast_bits_per_token": 7.700942117773245,
+      "plugin_bits_per_character": 0.3077633282497937,
+      "corrected_bits_per_character": 0.312932438217327,
+      "forecast_bits_per_character": 0.391255242486778
+    },
+    {
+      "M1": 100277,
+      "M2": 1024,
+      "states": 1355431,
+      "obs_per_state": 36.88863394743074,
+      "plugin_bits_per_token": 5.507945129296466,
+      "corrected_bits_per_token": 5.637295123209612,
+      "forecast_bits_per_token": 7.9366676282780375,
+      "plugin_bits_per_character": 0.2816053974489331,
+      "corrected_bits_per_character": 0.2880728968858904,
+      "forecast_bits_per_character": 0.4030415175405666
+    }
+  ]
+}

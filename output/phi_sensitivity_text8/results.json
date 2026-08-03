@@ -1,0 +1,130 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 29.524092197418213,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 34.32808971405029,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "wave_0.0001",
+      "seconds": 37.26301598548889,
+      "bits_per_token": 9.079162059530525,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_wave_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "wave",
+      "delta": -0.019171758755271995
+    },
+    {
+      "tag": "wave_0.001",
+      "seconds": 6.325677156448364,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(1, 1, 1): log2 q = 50.807 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_text8/fail_wave_0.001.log",
+      "eps": 0.001,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "wave_0.01",
+      "seconds": 6.166661739349365,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 64.5867 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_text8/fail_wave_0.01.log",
+      "eps": 0.01,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 32.45993399620056,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "bias_0.0001",
+      "seconds": 31.549254894256592,
+      "bits_per_token": 9.072927410778162,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_bias_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "bias",
+      "delta": -0.02540640750763501
+    },
+    {
+      "tag": "bias_0.001",
+      "seconds": 6.060653924942017,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(2, 1, 1, 1, 1): log2 q = 46.9665 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_text8/fail_bias_0.001.log",
+      "eps": 0.001,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "bias_0.01",
+      "seconds": 5.81598973274231,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(4, 4, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 17.1548 > 0 is impossible for a sequence",
+      "log": "output/phi_sensitivity_text8/fail_bias_0.01.log",
+      "eps": 0.01,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "saddle_L54",
+      "seconds": 8.30657172203064,
+      "bits_per_token": 10.68716494777916,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_saddle_L54/results.json",
+      "model": "saddle",
+      "cutoff": 54,
+      "delta": 0.00037873326159143517,
+      "n_tokens": 1000000
+    },
+    {
+      "tag": "saddle_L43",
+      "seconds": 14.582295179367065,
+      "bits_per_token": 10.692567490257776,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_saddle_L43/results.json",
+      "model": "saddle",
+      "cutoff": 43,
+      "delta": 0.005781275740208258,
+      "n_tokens": 1000000
+    },
+    {
+      "tag": "saddle_L35",
+      "seconds": 19.347532749176025,
+      "bits_per_token": 10.698930712755,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_text8/run_saddle_L35/results.json",
+      "model": "saddle",
+      "cutoff": 35,
+      "delta": 0.0121444982374328,
+      "n_tokens": 1000000
+    }
+  ]
+}

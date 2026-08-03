@@ -1,0 +1,48 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 28.53389310836792,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/prod_endtoend/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 31.71249508857727,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/prod_endtoend/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 32.12331700325012,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/prod_endtoend/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "ladder_every1",
+      "seconds": 45.11631989479065,
+      "bits_per_token": 9.098355541366105,
+      "chars_per_token": null,
+      "results": "output/prod_endtoend/run_ladder_every1/results.json",
+      "model": "ladder",
+      "every": 1,
+      "delta": 2.1723080308788667e-05,
+      "degree": 11
+    }
+  ]
+}

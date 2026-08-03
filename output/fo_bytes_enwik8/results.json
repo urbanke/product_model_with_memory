@@ -1,0 +1,49 @@
+{
+  "corpus": "output/streams/bytes_enwik8",
+  "stream": {
+    "representation": "bytes",
+    "source_file": "data/enwik8",
+    "n_bytes": 100000000,
+    "n_tokens": 100000000,
+    "alphabet": 256,
+    "distinct_used": 205,
+    "bytes_per_token": 1.0,
+    "fixed_bits": 0.0,
+    "notes": "raw bytes; nothing is paid outside the model"
+  },
+  "capped_positions": 0,
+  "top_k": 255,
+  "vocabulary_size": 256,
+  "n_tokens": 100000000,
+  "empirical": {
+    "unigram_bits": 5.080140303348568,
+    "pair_bits": 8.966054014503277,
+    "conditional_bits": 3.885913689221823
+  },
+  "n_coded": 99999999,
+  "l_max": 26,
+  "m_grid": [
+    0,
+    256
+  ],
+  "member_bits_per_token": {
+    "0": 5.080162485810826,
+    "256": 3.887181501186325
+  },
+  "member_states_observed": {
+    "0": 1,
+    "256": 205
+  },
+  "family_bits_per_token": 3.887181511186325,
+  "posterior_over_m": {
+    "0": 0.0,
+    "256": 1.0
+  },
+  "best_member": 256,
+  "seconds": 260.38808703422546,
+  "family_bits_per_character": 3.8871814723145097,
+  "member_bits_per_character": {
+    "0": 5.080162435009201,
+    "256": 3.88718146231451
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "file": "data/enwik8",
+  "bytes": 100000000,
+  "numbers": "intern",
+  "case": "conditioned",
+  "stats": {
+    "segments": 41571649,
+    "letter_runs": 14480868,
+    "digit_runs": 773967,
+    "byte_segments": 26316814,
+    "vocabulary": 333149,
+    "new_words": 288920,
+    "new_numbers": 44229,
+    "mixed_runs": 35388,
+    "bytes_per_segment": 2.4054855269272575,
+    "case_histogram": {
+      "lower": 11159417,
+      "Cap": 3087622,
+      "UPPER": 198441,
+      "mixed": 35388
+    }
+  },
+  "alphabet_size": 333408,
+  "stream_bits": {
+    "S1_tokens": 293569270.2130229,
+    "S2a_word_spellings": 11253095.85681431,
+    "S2b_number_spellings": 1125215.1964807194,
+    "S3_case_independent": 12614068.695027074,
+    "S3_case_conditioned": 6719591.1968018,
+    "S3_states": 146170,
+    "S4_masks": 249797.3017200132,
+    "S4_masks_conditioned": 157189.89894281336,
+    "S4_streams": 48400
+  },
+  "overhead_bits": 80,
+  "total_bits_by_scheme": {
+    "independent_pooled": 318811527.263065,
+    "conditioned_pooled": 312917049.7648397,
+    "conditioned_conditioned": 312824442.3620625
+  },
+  "total_bits": 312824442.3620625,
+  "seconds": 336.39693307876587,
+  "peak_rss_gb": 4.397006848,
+  "bits_per_character": 3.1282444236206253
+}

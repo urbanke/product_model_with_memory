@@ -1,0 +1,221 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "rows": [
+    {
+      "M1": 1024,
+      "M2": 0,
+      "states": 1025,
+      "obs_per_state": 18955.406829268293,
+      "plugin_bits_per_token": 9.505459535101442,
+      "corrected_bits_per_token": 9.539048934552747,
+      "forecast_bits_per_token": 9.998953683874321
+    },
+    {
+      "M1": 1024,
+      "M2": 16,
+      "states": 5516,
+      "obs_per_state": 3522.35170413343,
+      "plugin_bits_per_token": 9.48722956673589,
+      "corrected_bits_per_token": 9.522348701901954,
+      "forecast_bits_per_token": 10.002574307772937
+    },
+    {
+      "M1": 1024,
+      "M2": 64,
+      "states": 20832,
+      "obs_per_state": 932.6657066052227,
+      "plugin_bits_per_token": 9.33528931754161,
+      "corrected_bits_per_token": 9.37991328585903,
+      "forecast_bits_per_token": 9.97148565958549
+    },
+    {
+      "M1": 1024,
+      "M2": 256,
+      "states": 57479,
+      "obs_per_state": 338.0241827450025,
+      "plugin_bits_per_token": 9.007277766701318,
+      "corrected_bits_per_token": 9.080301067126081,
+      "forecast_bits_per_token": 9.95374171601188
+    },
+    {
+      "M1": 1024,
+      "M2": 1024,
+      "states": 134414,
+      "obs_per_state": 144.54812742720253,
+      "plugin_bits_per_token": 8.579852830772692,
+      "corrected_bits_per_token": 8.684480063412058,
+      "forecast_bits_per_token": 9.966322243381768
+    },
+    {
+      "M1": 1024,
+      "M2": 100277,
+      "states": 999941,
+      "obs_per_state": 19.430438395865355,
+      "plugin_bits_per_token": 6.467550861972898,
+      "corrected_bits_per_token": 6.715677165535828,
+      "forecast_bits_per_token": 10.604786514743408
+    },
+    {
+      "M1": 8192,
+      "M2": 0,
+      "states": 8193,
+      "obs_per_state": 2371.450262419138,
+      "plugin_bits_per_token": 8.203646151499488,
+      "corrected_bits_per_token": 8.292099611650574,
+      "forecast_bits_per_token": 9.338915319234534
+    },
+    {
+      "M1": 8192,
+      "M2": 16,
+      "states": 23082,
+      "obs_per_state": 841.7508014903387,
+      "plugin_bits_per_token": 8.179414246872188,
+      "corrected_bits_per_token": 8.269179768284825,
+      "forecast_bits_per_token": 9.349316841827815
+    },
+    {
+      "M1": 8192,
+      "M2": 64,
+      "states": 83829,
+      "obs_per_state": 231.7729186796932,
+      "plugin_bits_per_token": 7.95788532854033,
+      "corrected_bits_per_token": 8.061279542884359,
+      "forecast_bits_per_token": 9.412145799798392
+    },
+    {
+      "M1": 8192,
+      "M2": 256,
+      "states": 223065,
+      "obs_per_state": 87.10148163091476,
+      "plugin_bits_per_token": 7.518952915194625,
+      "corrected_bits_per_token": 7.656171690167962,
+      "forecast_bits_per_token": 9.593512728914686
+    },
+    {
+      "M1": 8192,
+      "M2": 1024,
+      "states": 474374,
+      "obs_per_state": 40.95775063557446,
+      "plugin_bits_per_token": 7.03445697441545,
+      "corrected_bits_per_token": 7.202010316166708,
+      "forecast_bits_per_token": 9.831994494339442
+    },
+    {
+      "M1": 8192,
+      "M2": 100277,
+      "states": 2443898,
+      "obs_per_state": 7.950123941342888,
+      "plugin_bits_per_token": 4.783094567612438,
+      "corrected_bits_per_token": 5.054198390426736,
+      "forecast_bits_per_token": 11.153727671883031
+    },
+    {
+      "M1": 32768,
+      "M2": 0,
+      "states": 32769,
+      "obs_per_state": 592.916842137386,
+      "plugin_bits_per_token": 7.288482304916467,
+      "corrected_bits_per_token": 7.421098841237244,
+      "forecast_bits_per_token": 9.105931759664022
+    },
+    {
+      "M1": 32768,
+      "M2": 16,
+      "states": 56180,
+      "obs_per_state": 345.84001423994306,
+      "plugin_bits_per_token": 7.262289258288689,
+      "corrected_bits_per_token": 7.395856389305014,
+      "forecast_bits_per_token": 9.121336533495555
+    },
+    {
+      "M1": 32768,
+      "M2": 64,
+      "states": 172146,
+      "obs_per_state": 112.86519582215097,
+      "plugin_bits_per_token": 7.003521166386454,
+      "corrected_bits_per_token": 7.150934664787382,
+      "forecast_bits_per_token": 9.259257208017715
+    },
+    {
+      "M1": 32768,
+      "M2": 256,
+      "states": 457465,
+      "obs_per_state": 42.47164701124676,
+      "plugin_bits_per_token": 6.501363020845157,
+      "corrected_bits_per_token": 6.680813609885659,
+      "forecast_bits_per_token": 9.586227443220015
+    },
+    {
+      "M1": 32768,
+      "M2": 1024,
+      "states": 878297,
+      "obs_per_state": 22.121551138168524,
+      "plugin_bits_per_token": 5.99067219998243,
+      "corrected_bits_per_token": 6.194130911232966,
+      "forecast_bits_per_token": 9.93085018556152
+    },
+    {
+      "M1": 32768,
+      "M2": 100277,
+      "states": 3607065,
+      "obs_per_state": 5.386454638327837,
+      "plugin_bits_per_token": 3.794208156768268,
+      "corrected_bits_per_token": 4.061192575019038,
+      "forecast_bits_per_token": 11.558931374455698
+    },
+    {
+      "M1": 100277,
+      "M2": 0,
+      "states": 35767,
+      "obs_per_state": 543.2183856627618,
+      "plugin_bits_per_token": 7.236867277946259,
+      "corrected_bits_per_token": 7.37154843585036,
+      "forecast_bits_per_token": 9.098334041582492
+    },
+    {
+      "M1": 100277,
+      "M2": 16,
+      "states": 59664,
+      "obs_per_state": 325.6451461517833,
+      "plugin_bits_per_token": 7.210743915341824,
+      "corrected_bits_per_token": 7.3463468575413895,
+      "forecast_bits_per_token": 9.11393304201652
+    },
+    {
+      "M1": 100277,
+      "M2": 64,
+      "states": 179826,
+      "obs_per_state": 108.04495456719273,
+      "plugin_bits_per_token": 6.951606639950063,
+      "corrected_bits_per_token": 7.100829216140788,
+      "forecast_bits_per_token": 9.25604512700913
+    },
+    {
+      "M1": 100277,
+      "M2": 256,
+      "states": 475469,
+      "obs_per_state": 40.86342537578685,
+      "plugin_bits_per_token": 6.449379583492628,
+      "corrected_bits_per_token": 6.630140748722509,
+      "forecast_bits_per_token": 9.589761617131964
+    },
+    {
+      "M1": 100277,
+      "M2": 1024,
+      "states": 905746,
+      "obs_per_state": 21.451148555996934,
+      "plugin_bits_per_token": 5.941097894536685,
+      "corrected_bits_per_token": 6.145295726205866,
+      "forecast_bits_per_token": 9.93582855023899
+    },
+    {
+      "M1": 100277,
+      "M2": 100277,
+      "states": 3663366,
+      "obs_per_state": 5.303672087364462,
+      "plugin_bits_per_token": 3.76039609452716,
+      "corrected_bits_per_token": 4.026099786539153,
+      "forecast_bits_per_token": 11.573709176604723
+    }
+  ]
+}

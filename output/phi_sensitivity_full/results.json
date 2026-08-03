@@ -1,0 +1,163 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 28.587141275405884,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 32.03674912452698,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "wave_0.0001",
+      "seconds": 35.35733127593994,
+      "bits_per_token": 9.079162059530525,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_wave_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "wave",
+      "delta": -0.019171758755271995
+    },
+    {
+      "tag": "wave_0.001",
+      "seconds": 6.2107391357421875,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(1, 1, 1): log2 q = 50.807 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_full/fail_wave_0.001.log",
+      "eps": 0.001,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "wave_0.01",
+      "seconds": 6.0294740200042725,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 64.5867 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_full/fail_wave_0.01.log",
+      "eps": 0.01,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 28.902063846588135,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "bias_0.0001",
+      "seconds": 29.221587896347046,
+      "bits_per_token": 9.072927410778162,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_bias_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "bias",
+      "delta": -0.02540640750763501
+    },
+    {
+      "tag": "bias_0.001",
+      "seconds": 5.88134503364563,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(1, 1, 1, 1, 1, 1, 1): log2 q = 28.3556 > 0 is impossible for a sequence probability",
+      "log": "output/phi_sensitivity_full/fail_bias_0.001.log",
+      "eps": 0.001,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "bias_0.01",
+      "seconds": 5.698186874389648,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(5, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 5.17279 > 0 is impossible for a sequence pr",
+      "log": "output/phi_sensitivity_full/fail_bias_0.01.log",
+      "eps": 0.01,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "saddle_L54",
+      "seconds": 32.887696981430054,
+      "bits_per_token": 9.098355524123644,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L54/results.json",
+      "model": "saddle",
+      "cutoff": 54,
+      "delta": 2.1705837847108e-05,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L50",
+      "seconds": 38.56921696662903,
+      "bits_per_token": 9.098454386150754,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L50/results.json",
+      "model": "saddle",
+      "cutoff": 50,
+      "delta": 0.0001205678649576214,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L46",
+      "seconds": 44.159857988357544,
+      "bits_per_token": 9.09857819066708,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L46/results.json",
+      "model": "saddle",
+      "cutoff": 46,
+      "delta": 0.0002443723812834975,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L43",
+      "seconds": 48.67273783683777,
+      "bits_per_token": 9.098693927719694,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L43/results.json",
+      "model": "saddle",
+      "cutoff": 43,
+      "delta": 0.0003601094338971933,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L39",
+      "seconds": 52.55792593955994,
+      "bits_per_token": 9.098892840196102,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L39/results.json",
+      "model": "saddle",
+      "cutoff": 39,
+      "delta": 0.000559021910305546,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L35",
+      "seconds": 59.64650797843933,
+      "bits_per_token": 9.099170618181974,
+      "chars_per_token": null,
+      "results": "output/phi_sensitivity_full/run_saddle_L35/results.json",
+      "model": "saddle",
+      "cutoff": 35,
+      "delta": 0.0008367998961773537,
+      "n_tokens": null
+    }
+  ]
+}

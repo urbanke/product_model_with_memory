@@ -1,0 +1,101 @@
+{
+  "ids": "output/streams/bpe_text8",
+  "top_k": 63,
+  "V": 64,
+  "n_tokens": 300000,
+  "coded_positions": 299998,
+  "checkpoints": 8,
+  "smooth": 64.0,
+  "member_bits_per_token": {
+    "lag1": 3.045398899806369,
+    "calibrated": 3.0317379174715486,
+    "markov2": 3.023829188559396,
+    "markov2-layered": 3.0744329591267787,
+    "mix:0.02,0.05": 3.038833906411673,
+    "mix:0.02,0.1": 3.0371284937754837,
+    "mix:0.02,0.2": 3.0388175034061193,
+    "mix:0.02,0.3": 3.0452414365257288,
+    "mix:0.05,0.05": 3.0404766822426477,
+    "mix:0.05,0.1": 3.039503289364812,
+    "mix:0.05,0.2": 3.042246568569713,
+    "mix:0.05,0.3": 3.049559854018396,
+    "prod:0.75,0.25": 3.0341327683886217,
+    "prod:0.75,0.5": 3.026728197537207,
+    "prod:0.75,0.75": 3.034964899409361,
+    "prod:0.75,1": 3.0582463978329173,
+    "prod:1,0.25": 3.030011616833763,
+    "prod:1,0.5": 3.0298249601413487,
+    "prod:1,0.75": 3.043260989464539,
+    "prod:1,1": 3.070168093865139
+  },
+  "family_bits_per_token": 3.0238435950824223,
+  "posterior_max": 1.0,
+  "best_member": "markov2",
+  "diagnostics": [
+    {
+      "checkpoint": 1,
+      "ipf_sweeps": 1,
+      "ipf_residual_l1": 0.0,
+      "mi_lag1": 0.0,
+      "mi_lag2": 0.0,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 2,
+      "ipf_sweeps": 66,
+      "ipf_residual_l1": 9.093122625687045e-10,
+      "mi_lag1": 0.38258973342936176,
+      "mi_lag2": 0.1788433559829752,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 3,
+      "ipf_sweeps": 58,
+      "ipf_residual_l1": 9.396546566412185e-10,
+      "mi_lag1": 0.3866914576291248,
+      "mi_lag2": 0.18858580161943744,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 4,
+      "ipf_sweeps": 52,
+      "ipf_residual_l1": 9.52334779931442e-10,
+      "mi_lag1": 0.3830158072080574,
+      "mi_lag2": 0.17506916458364286,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 5,
+      "ipf_sweeps": 48,
+      "ipf_residual_l1": 8.783216478952195e-10,
+      "mi_lag1": 0.3886554673701186,
+      "mi_lag2": 0.17256427757023401,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 6,
+      "ipf_sweeps": 47,
+      "ipf_residual_l1": 7.9466157138632e-10,
+      "mi_lag1": 0.3799658685233194,
+      "mi_lag2": 0.1662534942894856,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 7,
+      "ipf_sweeps": 204,
+      "ipf_residual_l1": 9.760138433487402e-10,
+      "mi_lag1": 0.3948342375195941,
+      "mi_lag2": 0.16276479101760977,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 8,
+      "ipf_sweeps": 124,
+      "ipf_residual_l1": 9.66569121635701e-10,
+      "mi_lag1": 0.40318134658687055,
+      "mi_lag2": 0.16842948044136957,
+      "chow_liu": "lag1-chain"
+    }
+  ],
+  "seconds": 77.18961787223816
+}

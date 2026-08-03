@@ -1,0 +1,50 @@
+{
+  "corpus": "output/streams/bpe_text8",
+  "stream": {
+    "representation": "bpe",
+    "source_file": "data/text8",
+    "n_bytes": 100000000,
+    "n_tokens": 19429294,
+    "alphabet": 100277,
+    "distinct_used": 35767,
+    "bytes_per_token": 5.146867405475464,
+    "fixed_bits": 6208152.0,
+    "notes": "cl100k_base; vocabulary CHARGED at 776019 zipped bytes"
+  },
+  "state_order": "id",
+  "state_order_admissible": true,
+  "top_k": 100276,
+  "vocabulary_size": 100277,
+  "n_tokens": 19429294,
+  "empirical": {
+    "unigram_bits": 10.8431718592214,
+    "pair_bits": 18.08003887101992,
+    "conditional_bits": 7.236866917878798
+  },
+  "n_coded": 19429292,
+  "l_max": 54,
+  "unique_profiles": 64143,
+  "grid": [
+    "100277:0",
+    "100277:16",
+    "100277:64"
+  ],
+  "member_bits_per_token": {
+    "100277:0": 9.098334222291992,
+    "100277:16": 9.114032577449962,
+    "100277:64": 9.243614736491066
+  },
+  "member_states_observed": {
+    "100277:0": 35767,
+    "100277:16": 59664,
+    "100277:64": 179826
+  },
+  "posterior": {
+    "100277:0": 1.0,
+    "100277:16": 0.0,
+    "100277:64": 0.0
+  },
+  "family_bits_per_token": 9.098334303867919,
+  "best_member": "100277:0",
+  "seconds": 99.05478978157043
+}

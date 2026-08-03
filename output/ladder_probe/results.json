@@ -1,0 +1,69 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 28.77502202987671,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/ladder_probe/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 31.749633073806763,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/ladder_probe/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 30.032758235931396,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/ladder_probe/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "ladder_every16",
+      "seconds": 53.54479384422302,
+      "bits_per_token": 9.098578211235258,
+      "chars_per_token": null,
+      "results": "output/ladder_probe/run_ladder_every16/results.json",
+      "model": "ladder",
+      "every": 16,
+      "delta": 0.00024439294946176915,
+      "degree": 11
+    },
+    {
+      "tag": "ladder_every64",
+      "seconds": 54.936232805252075,
+      "bits_per_token": 9.098577992133862,
+      "chars_per_token": null,
+      "results": "output/ladder_probe/run_ladder_every64/results.json",
+      "model": "ladder",
+      "every": 64,
+      "delta": 0.0002441738480651878,
+      "degree": 11
+    },
+    {
+      "tag": "ladder_every128",
+      "seconds": 1.9530861377716064,
+      "bits_per_token": null,
+      "failed": "RuntimeError: ladder cannot serve (L=2, r=1063584): the anchor grid spans 0..1030356 and this query is outside it, so interpolating would be extrapolation.  Rebuild the store to cover this r.",
+      "log": "output/ladder_probe/fail_ladder_every128.log",
+      "model": "ladder",
+      "every": 128,
+      "delta": null
+    }
+  ]
+}

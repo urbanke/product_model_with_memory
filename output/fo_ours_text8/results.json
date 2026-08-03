@@ -1,0 +1,49 @@
+{
+  "corpus": "output/streams/ours_text8",
+  "stream": {
+    "representation": "ours",
+    "source_file": "data/text8",
+    "n_bytes": 100000000,
+    "n_tokens": 34010415,
+    "alphabet": 254113,
+    "distinct_used": 135338,
+    "bytes_per_token": 2.9402757949292884,
+    "fixed_bits": 9584945.571956092,
+    "notes": "spellings+case+masks+overhead from output/tok_text8/results.json under scheme independent_pooled"
+  },
+  "capped_positions": 0,
+  "top_k": 254112,
+  "vocabulary_size": 254113,
+  "n_tokens": 34010415,
+  "empirical": {
+    "unigram_bits": 6.311233205995535,
+    "pair_bits": 11.622465683893111,
+    "conditional_bits": 5.311233070390662
+  },
+  "n_coded": 34010414,
+  "l_max": 59,
+  "m_grid": [
+    0,
+    254113
+  ],
+  "member_bits_per_token": {
+    "0": 6.328944926716689,
+    "254113": 5.414398675101098
+  },
+  "member_states_observed": {
+    "0": 1,
+    "254113": 135337
+  },
+  "family_bits_per_token": 5.414398704503857,
+  "posterior_over_m": {
+    "0": 0.0,
+    "254113": 1.0
+  },
+  "best_member": 254113,
+  "seconds": 178.76319885253906,
+  "family_bits_per_character": 1.9373088707319597,
+  "member_bits_per_character": {
+    "0": 2.248349827127903,
+    "254113": 1.9373088607319593
+  }
+}

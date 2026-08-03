@@ -1,0 +1,32 @@
+{
+  "file": "data/enwik8",
+  "bytes": 100000000,
+  "numbers": "compositional",
+  "case": "folded",
+  "stats": {
+    "segments": 42975032,
+    "letter_runs": 14480868,
+    "digit_runs": 0,
+    "byte_segments": 28494164,
+    "vocabulary": 354032,
+    "new_words": 354032,
+    "new_numbers": 0,
+    "mixed_runs": 0,
+    "bytes_per_segment": 2.326932531428947
+  },
+  "alphabet_size": 354291,
+  "stream_bits": {
+    "S1_tokens": 305602520.85461533,
+    "S2a_word_spellings": 14718710.216834338
+  },
+  "overhead_bits": 32,
+  "total_bits_by_scheme": {
+    "folded": 320321263.0714497
+  },
+  "selected_scheme": "folded",
+  "scheme_selection_bits": 0.0,
+  "total_bits": 320321263.0714497,
+  "seconds": 139.3842179775238,
+  "peak_rss_gb": 3.469295616,
+  "bits_per_character": 3.203212630714497
+}

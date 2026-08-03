@@ -1,0 +1,26 @@
+{
+  "corpus": "data/text8",
+  "n_tokens": 17005207,
+  "n_types": 253854,
+  "total_chars": 100000000,
+  "spelling_stream_chars": 2237382,
+  "char_alphabet": 27,
+  "depth": 3,
+  "spelling_bits_per_char": 3.4312176874674116,
+  "fixed_depth_bits_per_char": {
+    "0": 4.283967043369647,
+    "1": 3.8359971301302602,
+    "2": 3.5959465117278606,
+    "3": 3.4540102816976823
+  },
+  "map_leaves_by_depth": {
+    "2": 361,
+    "3": 8126,
+    "1": 1
+  },
+  "spelling_total_bits": 7676934.39836815,
+  "spelling_bits_per_token": 0.4514461010893987,
+  "index_correction_bits": 4244448.358054931,
+  "index_correction_bits_per_token": 0.2495969827391652,
+  "seconds": 9.765147924423218
+}

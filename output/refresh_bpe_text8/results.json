@@ -1,0 +1,28 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "prefix_tokens": 200000,
+  "V": 100277,
+  "l_max": 54,
+  "states": 14942,
+  "coded_positions": 199999,
+  "chunk_counts": [],
+  "schemes": {
+    "final": {
+      "bits": 2349979.582493862,
+      "bits_per_character": 2.282933624781649,
+      "excess_bits_per_character": 0.0
+    },
+    "sequential_posterior": {
+      "bits": 2349979.582493862,
+      "bits_per_character": 2.282933624781649,
+      "excess_bits_per_character": 0.0
+    },
+    "sequential_uniform": {
+      "bits": NaN,
+      "bits_per_character": NaN,
+      "excess_bits_per_character": NaN
+    }
+  },
+  "final_vs_sequential_bits": 0.0,
+  "seconds": 140.57427310943604
+}

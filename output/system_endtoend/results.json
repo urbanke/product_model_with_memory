@@ -1,0 +1,174 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 29.320364236831665,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 33.01049590110779,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "wave_0.0001",
+      "seconds": 36.49306607246399,
+      "bits_per_token": 9.079162059530525,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_wave_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "wave",
+      "delta": -0.019171758755271995
+    },
+    {
+      "tag": "wave_0.001",
+      "seconds": 6.087112903594971,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(2, 2): log2 q = 22.7644 > 0 is impossible for a sequence probability",
+      "log": "output/system_endtoend/fail_wave_0.001.log",
+      "eps": 0.001,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "wave_0.01",
+      "seconds": 5.99019193649292,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 27.7613 > 0 is impossible for a sequence probability",
+      "log": "output/system_endtoend/fail_wave_0.01.log",
+      "eps": 0.01,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 30.586237907409668,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "bias_0.0001",
+      "seconds": 30.983282804489136,
+      "bits_per_token": 9.072927410778162,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_bias_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "bias",
+      "delta": -0.02540640750763501
+    },
+    {
+      "tag": "bias_0.001",
+      "seconds": 5.927579164505005,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(1, 1, 1, 1, 1, 1, 1): log2 q = 28.3556 > 0 is impossible for a sequence probability",
+      "log": "output/system_endtoend/fail_bias_0.001.log",
+      "eps": 0.001,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "bias_0.01",
+      "seconds": 5.770689964294434,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 55.5203 > 0 is impossible for a sequence pr",
+      "log": "output/system_endtoend/fail_bias_0.01.log",
+      "eps": 0.01,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "saddle_L54",
+      "seconds": 38.187427043914795,
+      "bits_per_token": 9.098355524123644,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_saddle_L54/results.json",
+      "model": "saddle",
+      "cutoff": 54,
+      "delta": 2.1705837847108e-05,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L43",
+      "seconds": 52.73609113693237,
+      "bits_per_token": 9.098693927719694,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_saddle_L43/results.json",
+      "model": "saddle",
+      "cutoff": 43,
+      "delta": 0.0003601094338971933,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L35",
+      "seconds": 65.1043713092804,
+      "bits_per_token": 9.099170618181974,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_saddle_L35/results.json",
+      "model": "saddle",
+      "cutoff": 35,
+      "delta": 0.0008367998961773537,
+      "n_tokens": null
+    },
+    {
+      "tag": "ladder_every1",
+      "seconds": 74.28826403617859,
+      "bits_per_token": 9.09857821236668,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_ladder_every1/results.json",
+      "model": "ladder",
+      "every": 1,
+      "delta": 0.0002443940808838363,
+      "degree": 11
+    },
+    {
+      "tag": "ladder_every4",
+      "seconds": 59.989147901535034,
+      "bits_per_token": 9.098578205946572,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_ladder_every4/results.json",
+      "model": "ladder",
+      "every": 4,
+      "delta": 0.00024438766077494734,
+      "degree": 11
+    },
+    {
+      "tag": "ladder_every8",
+      "seconds": 57.43220806121826,
+      "bits_per_token": 9.098578206908774,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_ladder_every8/results.json",
+      "model": "ladder",
+      "every": 8,
+      "delta": 0.00024438862297770925,
+      "degree": 11
+    },
+    {
+      "tag": "ladder_every16",
+      "seconds": 56.788403034210205,
+      "bits_per_token": 9.098578211235258,
+      "chars_per_token": null,
+      "results": "output/system_endtoend/run_ladder_every16/results.json",
+      "model": "ladder",
+      "every": 16,
+      "delta": 0.00024439294946176915,
+      "degree": 11
+    }
+  ]
+}

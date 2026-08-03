@@ -1,0 +1,159 @@
+{
+  "stream": "output/streams/bpe_text8",
+  "script": "scripts/state_family_experiment.py",
+  "baseline_bits_per_token": 9.098333818285797,
+  "rows": [
+    {
+      "tag": "base",
+      "seconds": 29.234928131103516,
+      "bits_per_token": 9.098333818285797,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_base/results.json",
+      "eps": 0.0,
+      "model": "none",
+      "delta": 0.0
+    },
+    {
+      "tag": "wave_1e-06",
+      "seconds": 32.42329001426697,
+      "bits_per_token": 9.098492725923121,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_wave_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "wave",
+      "delta": 0.00015890763732429036
+    },
+    {
+      "tag": "wave_0.0001",
+      "seconds": 35.645689725875854,
+      "bits_per_token": 9.079162059530525,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_wave_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "wave",
+      "delta": -0.019171758755271995
+    },
+    {
+      "tag": "wave_0.001",
+      "seconds": 6.024133205413818,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(1, 1, 1): log2 q = 50.807 > 0 is impossible for a sequence probability",
+      "log": "output/ladder_endtoend/fail_wave_0.001.log",
+      "eps": 0.001,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "wave_0.01",
+      "seconds": 5.834802150726318,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 27.7613 > 0 is impossible for a sequence probability",
+      "log": "output/ladder_endtoend/fail_wave_0.01.log",
+      "eps": 0.01,
+      "model": "wave",
+      "delta": null
+    },
+    {
+      "tag": "bias_1e-06",
+      "seconds": 29.766079902648926,
+      "bits_per_token": 9.098080485396943,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_bias_1e-06/results.json",
+      "eps": 1e-06,
+      "model": "bias",
+      "delta": -0.00025333288885320826
+    },
+    {
+      "tag": "bias_0.0001",
+      "seconds": 30.287449836730957,
+      "bits_per_token": 9.072927410778162,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_bias_0.0001/results.json",
+      "eps": 0.0001,
+      "model": "bias",
+      "delta": -0.02540640750763501
+    },
+    {
+      "tag": "bias_0.001",
+      "seconds": 5.922523021697998,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(3, 2, 1, 1, 1, 1): log2 q = 2.30037 > 0 is impossible for a sequence probability",
+      "log": "output/ladder_endtoend/fail_bias_0.001.log",
+      "eps": 0.001,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "bias_0.01",
+      "seconds": 5.6792237758636475,
+      "bits_per_token": null,
+      "failed": "RuntimeError: L=2, n=(4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1): log2 q = 59.5502 > 0 is impossible for a sequence probability",
+      "log": "output/ladder_endtoend/fail_bias_0.01.log",
+      "eps": 0.01,
+      "model": "bias",
+      "delta": null
+    },
+    {
+      "tag": "saddle_L54",
+      "seconds": 33.46759390830994,
+      "bits_per_token": 9.098355524123644,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_saddle_L54/results.json",
+      "model": "saddle",
+      "cutoff": 54,
+      "delta": 2.1705837847108e-05,
+      "n_tokens": null
+    },
+    {
+      "tag": "saddle_L46",
+      "seconds": 43.51310682296753,
+      "bits_per_token": 9.09857819066708,
+      "chars_per_token": null,
+      "results": "output/ladder_endtoend/run_saddle_L46/results.json",
+      "model": "saddle",
+      "cutoff": 46,
+      "delta": 0.0002443723812834975,
+      "n_tokens": null
+    },
+    {
+      "tag": "ladder_every1",
+      "seconds": 2.457850217819214,
+      "bits_per_token": null,
+      "failed": "RuntimeError: universal table anchors_f005 is SEALED (it has an anchors.json) and must not grow: refusing to append column (L=2, r=420156).  A designed store's contents are a stated function of its grid; appending to it makes it unreproducible.  If this r is genuinely needed, either serve it through",
+      "log": "output/ladder_endtoend/fail_ladder_every1.log",
+      "model": "ladder",
+      "every": 1,
+      "delta": null
+    },
+    {
+      "tag": "ladder_every4",
+      "seconds": 2.3448398113250732,
+      "bits_per_token": null,
+      "failed": "RuntimeError: universal table anchors_f005 is SEALED (it has an anchors.json) and must not grow: refusing to append column (L=2, r=420156).  A designed store's contents are a stated function of its grid; appending to it makes it unreproducible.  If this r is genuinely needed, either serve it through",
+      "log": "output/ladder_endtoend/fail_ladder_every4.log",
+      "model": "ladder",
+      "every": 4,
+      "delta": null
+    },
+    {
+      "tag": "ladder_every8",
+      "seconds": 2.330221652984619,
+      "bits_per_token": null,
+      "failed": "RuntimeError: universal table anchors_f005 is SEALED (it has an anchors.json) and must not grow: refusing to append column (L=2, r=420156).  A designed store's contents are a stated function of its grid; appending to it makes it unreproducible.  If this r is genuinely needed, either serve it through",
+      "log": "output/ladder_endtoend/fail_ladder_every8.log",
+      "model": "ladder",
+      "every": 8,
+      "delta": null
+    },
+    {
+      "tag": "ladder_every16",
+      "seconds": 2.334481954574585,
+      "bits_per_token": null,
+      "failed": "RuntimeError: universal table anchors_f005 is SEALED (it has an anchors.json) and must not grow: refusing to append column (L=3, r=113426).  A designed store's contents are a stated function of its grid; appending to it makes it unreproducible.  If this r is genuinely needed, either serve it through",
+      "log": "output/ladder_endtoend/fail_ladder_every16.log",
+      "model": "ladder",
+      "every": 16,
+      "delta": null
+    }
+  ]
+}

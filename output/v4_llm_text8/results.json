@@ -1,0 +1,18 @@
+{
+  "file": "data/text8",
+  "bytes": 100000000,
+  "encoding": "cl100k_base",
+  "tokens": 19429294,
+  "vocabulary_size": 100277,
+  "distinct_tokens_used": 35767,
+  "bytes_per_token": 5.146867405475464,
+  "order0_entropy_bits_per_token": 10.843171859221396,
+  "codelength_bits_per_token": 10.857249015920498,
+  "redundancy_bits_per_token": 0.014077156699102034,
+  "bits_per_character": 2.1094868316153006,
+  "total_bits": 210948683.16153005,
+  "posterior_mode_depth": 22,
+  "benchmark_status": "NOT a benchmark entry: the BPE vocabulary is external and data-derived, so it would have to be shipped and counted (~0.5-1 MB), and it may have been trained on text overlapping the test file",
+  "seconds": 17.956696033477783,
+  "peak_rss_gb": 1.44662528
+}

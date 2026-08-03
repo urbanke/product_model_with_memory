@@ -1,0 +1,43 @@
+{
+  "file": "data/text8",
+  "bytes": 100000000,
+  "numbers": "intern",
+  "case": "conditioned",
+  "stats": {
+    "segments": 34010414,
+    "letter_runs": 17005207,
+    "digit_runs": 0,
+    "byte_segments": 17005207,
+    "vocabulary": 253854,
+    "new_words": 253854,
+    "new_numbers": 0,
+    "mixed_runs": 0,
+    "bytes_per_segment": 2.9402758813815084,
+    "case_histogram": {
+      "lower": 17005207,
+      "Cap": 0,
+      "UPPER": 0,
+      "mixed": 0
+    }
+  },
+  "alphabet_size": 254113,
+  "stream_bits": {
+    "S1_tokens": 215250040.06535563,
+    "S2a_word_spellings": 9584868.851615882,
+    "S3_case_independent": 29.27366495433465,
+    "S3_case_conditioned": 547068.7752852155,
+    "S3_states": 135336
+  },
+  "overhead_bits": 48,
+  "total_bits_by_scheme": {
+    "independent_pooled": 224834986.19063646,
+    "conditioned_pooled": 225382025.69225672,
+    "conditioned_conditioned": 225382025.69225672
+  },
+  "selected_scheme": "independent_pooled",
+  "scheme_selection_bits": 1.584962500721156,
+  "total_bits": 224834987.77559894,
+  "seconds": 27.46989369392395,
+  "peak_rss_gb": 3.877404672,
+  "bits_per_character": 2.2483498777559894
+}
