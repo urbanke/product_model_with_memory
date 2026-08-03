@@ -72,6 +72,27 @@ def smoothed_joint(counts: np.ndarray, eps: float = 1e-3) -> np.ndarray:
     return (counts + eps) / (counts.sum() + eps * counts.size)
 
 
+def project_margins(J: np.ndarray, m: np.ndarray,
+                    iters: int = 500, tol: float = 1e-13) -> np.ndarray:
+    """Sinkhorn projection: rescale J so BOTH its margins equal m.
+
+    The three estimated pair tables come from slightly different
+    position ranges and smoothing, so their singleton margins disagree
+    at the 1e-3 level.  IPF over inconsistent margins does not
+    converge (it cycles), which was visible as the sweep cap being hit
+    at every checkpoint with a stalled residual.  Projecting each
+    table to one common set of margins first makes the triangle
+    constraints mutually consistent, and IPF then converges."""
+
+    J = J.copy()
+    for _ in range(iters):
+        J *= (m / J.sum(axis=1))[:, None]
+        J *= (m / J.sum(axis=0))[None, :]
+        if np.abs(J.sum(axis=1) - m).sum() < tol:
+            break
+    return J
+
+
 def ipf_triangle(P01, P02, P12, psi01, psi02, psi12,
                  iters: int, tol: float):
     """Fit psi01(x0,x1) psi02(x0,x2) psi12(x1,x2) to the three pair
@@ -164,11 +185,19 @@ def main() -> None:
         p1 = smoothed_conditional(N1, m, s)
         p2 = smoothed_conditional(N2, m, s)
         L1, L2, Lm = np.log(p1), np.log(p2), np.log(m)
-        J1 = smoothed_joint(N1)
-        J2 = smoothed_joint(N2)
+        # joints built FROM the smoothed conditionals, so every
+        # scheme consumes the same estimate; the per-cell eps joint
+        # was effectively unsmoothed (eps V^2 ~ 4 pseudo-tokens
+        # against the conditionals' s V) and the calibrated fit
+        # overfitted rare pairs, scoring below lag1 --- which its
+        # strong-discount limit forbids
+        J1 = m[:, None] * p1
+        J2 = m[:, None] * p2
         # roles: P01[x0,x1] joint of (target, lag1); P12 is the same
         # table with roles (x_{t-1}, x_{t-2}); P02 from the lag-2 pairs
-        P01, P02, P12 = J1.T.copy(), J2.T.copy(), J1.T.copy()
+        P01 = project_margins(J1.T, m)
+        P02 = project_margins(J2.T, m)
+        P12 = P01                       # same table, roles shifted
         psi01, psi02, psi12, sweeps, resid = ipf_triangle(
             P01, P02, P12, psi01, psi02, psi12,
             args.ipf_iters, args.ipf_tol)
