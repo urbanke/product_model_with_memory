@@ -3,290 +3,297 @@
   "top_k": 1023,
   "V": 1024,
   "n_tokens": 273662103,
+  "phase_seconds": {
+    "tables": 57.3,
+    "ipf": 2653.5,
+    "score": 2760.5,
+    "layered": 0.0,
+    "reveal": 24.3
+  },
   "coded_positions": 273662101,
   "checkpoints": 32,
   "smooth": 64.0,
   "member_bits_per_token": {
-    "lag1": 4.377736400900535,
-    "calibrated": NaN,
-    "markov2": 3.736038679852173,
-    "mix:0.02,0.05": 4.344120675277353,
-    "mix:0.02,0.1": 4.327711242357481,
-    "mix:0.02,0.2": 4.31882283193242,
-    "mix:0.02,0.3": 4.328821935815175,
-    "mix:0.05,0.05": 4.36199861300628,
-    "mix:0.05,0.1": 4.346601861761729,
-    "mix:0.05,0.2": 4.339498221796349,
-    "mix:0.05,0.3": 4.351440162133976,
-    "prod:0.75,0.25": 4.147826518482327,
-    "prod:0.75,0.5": 4.002268429918739,
-    "prod:0.75,0.75": 3.9610533492247573,
-    "prod:0.75,1": 4.000402833683459,
-    "prod:1,0.25": 4.093509942580819,
-    "prod:1,0.5": 3.9878766481264365,
-    "prod:1,0.75": 3.979503514024243,
-    "prod:1,1": 4.044231768348925
+    "lag1": 4.377736400900542,
+    "calibrated": 4.091962675302323,
+    "markov2": 3.7360386798521867,
+    "mix:0.02,0.05": 4.344120675277355,
+    "mix:0.02,0.1": 4.327711242357486,
+    "mix:0.02,0.2": 4.3188228319324535,
+    "mix:0.02,0.3": 4.3288219358152,
+    "mix:0.05,0.05": 4.361998613006297,
+    "mix:0.05,0.1": 4.346601861761697,
+    "mix:0.05,0.2": 4.339498221796378,
+    "mix:0.05,0.3": 4.351440162133949,
+    "prod:0.75,0.25": 4.147826518482321,
+    "prod:0.75,0.5": 4.002268429918754,
+    "prod:0.75,0.75": 3.9610533492247373,
+    "prod:0.75,1": 4.000402833683455,
+    "prod:1,0.25": 4.093509942580799,
+    "prod:1,0.5": 3.9878766481264356,
+    "prod:1,0.75": 3.9795035140242683,
+    "prod:1,1": 4.044231768348939
   },
-  "family_bits_per_token": NaN,
-  "posterior_max": NaN,
+  "family_bits_per_token": 3.7360386953747144,
+  "posterior_max": 1.0,
   "best_member": "markov2",
   "diagnostics": [
     {
       "checkpoint": 1,
-      "ipf_sweeps": 1,
-      "ipf_residual_l1": 0.0,
       "mi_lag1": 0.0,
       "mi_lag2": 0.0,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 1,
+      "ipf_residual_l1": 0.0
     },
     {
       "checkpoint": 2,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": 0.00020282682069563214,
       "mi_lag1": 1.824691820481089,
       "mi_lag2": 1.1230182641558932,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.007482501592295445
     },
     {
       "checkpoint": 3,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": 0.00010225754023606227,
       "mi_lag1": 1.8350999783214588,
       "mi_lag2": 1.1184068551910298,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.002712315174171663
     },
     {
       "checkpoint": 4,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": 6.120978922848206e-05,
       "mi_lag1": 1.8372851458816444,
       "mi_lag2": 1.1110623794989227,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0015742692169653954
     },
     {
       "checkpoint": 5,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": 4.3773082743587544e-05,
       "mi_lag1": 1.8479506824047665,
       "mi_lag2": 1.1157440937899168,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0010823957545902313
     },
     {
       "checkpoint": 6,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.84449912248173,
       "mi_lag2": 1.110373518289088,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.003509934655578731
     },
     {
       "checkpoint": 7,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.835576948627417,
       "mi_lag2": 1.0997534396280297,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0054168220714231555
     },
     {
       "checkpoint": 8,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.8575988203216407,
       "mi_lag2": 1.1163772758231845,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0007139477722500554
     },
     {
       "checkpoint": 9,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.8730073688881221,
       "mi_lag2": 1.1351823743827563,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.002853662307962958
     },
     {
       "checkpoint": 10,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.8770868665347595,
       "mi_lag2": 1.1392190916980873,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.007983250912701944
     },
     {
       "checkpoint": 11,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.8926558397734419,
       "mi_lag2": 1.1539529466220868,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0006434041024400818
     },
     {
       "checkpoint": 12,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.9072983110973822,
       "mi_lag2": 1.168489762444593,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.003405668680639431
     },
     {
       "checkpoint": 13,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.9218477625147936,
       "mi_lag2": 1.183381129921691,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00037353580491852016
     },
     {
       "checkpoint": 14,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 1.944001963439014,
       "mi_lag2": 1.2061270708925862,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0012415331011549416
     },
     {
       "checkpoint": 15,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.013869771832448,
       "mi_lag2": 1.2771565168037395,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0004746707853808946
     },
     {
       "checkpoint": 16,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.097509344919639,
       "mi_lag2": 1.362843915042243,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.20180928920994534
     },
     {
       "checkpoint": 17,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.2301509758039413,
       "mi_lag2": 1.5032155072431943,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0011680876408003342
     },
     {
       "checkpoint": 18,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.352391273933299,
       "mi_lag2": 1.6346253147777414,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0004227873741523992
     },
     {
       "checkpoint": 19,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.4590451487803655,
       "mi_lag2": 1.7497179314323295,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0004539395929779183
     },
     {
       "checkpoint": 20,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.5357819240844495,
       "mi_lag2": 1.8328140775835111,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0004895697768172994
     },
     {
       "checkpoint": 21,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.5255183779186074,
       "mi_lag2": 1.8209478335201137,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0010681300754323284
     },
     {
       "checkpoint": 22,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.5054534823214425,
       "mi_lag2": 1.7976022513457097,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0003964649990999419
     },
     {
       "checkpoint": 23,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.486331467000643,
       "mi_lag2": 1.7753819077181132,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00048549683619679196
     },
     {
       "checkpoint": 24,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.4715769382952084,
       "mi_lag2": 1.7593084913079813,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.000608175692754139
     },
     {
       "checkpoint": 25,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.459718760795577,
       "mi_lag2": 1.7464907774741691,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.001954241687180955
     },
     {
       "checkpoint": 26,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.450036002773749,
       "mi_lag2": 1.7359491908586926,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0003849060244920983
     },
     {
       "checkpoint": 27,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.440846624913232,
       "mi_lag2": 1.725502018179778,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00019938139733788468
     },
     {
       "checkpoint": 28,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.431146803324474,
       "mi_lag2": 1.7153016181136171,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0012462751315395807
     },
     {
       "checkpoint": 29,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.426316365042844,
       "mi_lag2": 1.710406239306627,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.0003104143870019058
     },
     {
       "checkpoint": 30,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.435984595329114,
       "mi_lag2": 1.7209778821313786,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00016032512007579323
     },
     {
       "checkpoint": 31,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.430444685829975,
       "mi_lag2": 1.7155463651508664,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00011463328178502611
     },
     {
       "checkpoint": 32,
-      "ipf_sweeps": 300,
-      "ipf_residual_l1": NaN,
       "mi_lag1": 2.42663774493155,
       "mi_lag2": 1.7115424865783664,
-      "chow_liu": "lag1-chain"
+      "chow_liu": "lag1-chain",
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 0.00010597748560616833
     }
   ],
-  "seconds": 8083.720851898193
+  "seconds": 2873.591523170471
 }

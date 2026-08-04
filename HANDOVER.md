@@ -3045,3 +3045,59 @@ across checkpoints = floor, falling = convergence.  Fix candidate
 for the next enwik round: raise project_margins iters (or make it a
 flag) and re-measure the floor.  Today's calibrated numbers remain
 valid sequential codes, conservatively fitted.
+
+## 2026-08-04 (evening) --- CTW grid COMPLETE (M4 Max, ~2 min/run); full-vocab integrity settled
+
+MEASURED (second Mac, anchor ladder, corrected evaluator; results
+pulled to laptop and in git):
+  depth ladder V=1024: family 4.9507 (D2) -> 4.9390 (D3) -> 4.9384
+  (D4); added value 0.1057 / 0.0117 / 0.0006 --- geometric collapse,
+  saturation at depth 2-3.
+  alphabet trend (best D): V=1024 gain +0.1180; V=4096 +0.0366
+  (family 6.6766, D3 adds ~0.004); V=16384 +0.0136 (family 8.2382,
+  reproduces July to 4th decimal); FULLVOCAB -0.0011 (family
+  10.0926 LOSES to fixed d1 10.0915) --- depth wrong axis at full V,
+  now confirmed under the corrected system.
+  INTEGRITY: ctree_fullvocab question CLOSED --- correct value
+  10.0926; the published 10.0919 was low by ~7e-4 (old evaluator +
+  contaminated cache).  Update legacy references accordingly.
+  Cross-check: d1@4096 = 6.7132 = verified state4096 number.
+PAPER: sec:ctree rewritten --- two tables (tab:ctree-depth,
+tab:ctree-vocab), integrity notes, closing verdict: the tree is how
+to SPEND memory of a few symbols, not how to acquire more; reach
+must come from constraint models (V^2) and retrieval (V-free).
+
+EDITORIAL RULE (Ruediger, adopt paper-wide): every section must open
+with the scoreboard question --- does this construction move the
+best honest bpc number toward Table 1's published targets --- and
+answer it in comparable units; reduced-stream tables must be labeled
+as the mechanism arena, explicitly not convertible to bpc.
+sec:ctree rewritten to this form (full-fidelity verdict: adaptive
+depth loses 0.0002 bpc at full vocabulary; arena tables demoted to
+instrument status; the ~30k paying contexts flagged as the synergy
+map for the constraint models).  STILL TO CONVERT to this form:
+sec:pairwise and sec:pairwise-layered (their scoreboard line: no
+full-fidelity claim yet by design --- the scope note --- with the
+sparse full-vocab follow-up as the payoff), and a check that every
+other section leads with its bpc consequence.  enwik8/enwik9 ctree
+grids running on the second Mac will extend tab:ctree-vocab to
+three corpora.
+
+## 2026-08-04 (evening, cont.) --- enwik8 counts rerun DONE: calibrated finite at 4.4836
+
+MEASURED (2,464 s under 3-way contention): markov2 4.3096 best
+(reproduces the damaged run's non-calibrated members), calibrated
+4.4836 --- FINITE, mid-pack: behind tempered products (best 4.4222),
+ahead of star/mixes/lag1.  Residual trace: erratic, 8e-4..7e-1
+across checkpoints --- consistent with the margin-inconsistency
+floor, NOT with clean convergence; the calibrated number is a
+conservatively-fitted lower bound.  Paper's layered-round paragraph
+updated accordingly (caveat included).
+NEXT-ROUND FIX (before drawing conclusions about calibrated at
+scale): raise project_margins rounds (make it a flag), re-measure
+the floor on enwik8, rerun.
+IN FLIGHT: enwik9 at checkpoint 29/32; v4096 SLOW --- anderson at
+cap 300 every checkpoint with resid floor ~3e-5, ~2,200 s/checkpoint
+under contention -> overnight job; leave it.  ctree enwik8 grid
+pushed from second Mac (git divergence resolved via pull --rebase);
+enwik9 ctree grid queued there.

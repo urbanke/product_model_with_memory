@@ -645,16 +645,38 @@ constructions of the next sections.
 \section{Adaptive depth: the context-tree family}
 \label{sec:ctree}
 
-The family is the measured instance of the hierarchy route of
-Appendix~\ref{app:routes}: condition each position on its last $k$
-symbols, where $k$ is not fixed but chosen per context by a mixture
-over all prunings of the context tree up to depth $D$, with the prior
-and recursion given there and the layered estimator at every node.
-Because every node's estimator is exchangeable, the codelength is
-computed in closed form; with the table of Appendix~\ref{app:store},
-every run below took about two minutes, so the family has now been
-measured across both axes --- depth at a fixed alphabet, and alphabet
-at the depths that matter.
+The question this section must answer is the paper's standing one:
+does the construction move the best honest number of
+Table~\ref{tab:firstorder} toward the published targets of
+Table~\ref{tab:files}?  For \texttt{text8} the gap is $1.8298$
+against $1.398$ bits per character.  The construction tried here is
+the hierarchy route of Appendix~\ref{app:routes}: condition each
+position on its last $k$ symbols, with $k$ chosen per context by an
+exact mixture over all prunings of the context tree up to depth $D$,
+the layered estimator at every node, and the whole codelength in
+closed form via the table of Appendix~\ref{app:store}.
+
+\paragraph{The verdict at full fidelity.}  At the full vocabulary
+--- the only setting whose numbers are comparable to
+Table~\ref{tab:firstorder} --- the answer is no.  The family over
+all prunings up to depth two codes the \texttt{text8} stream at
+$10.0926$ bits per token against $10.0915$ for its own depth-one
+member alone: adaptive depth \emph{loses} $0.0011$ bits per token
+($0.0002$ bits per character), because the price of describing the
+chosen pruning exceeds what second-symbol memory earns when almost
+every two-symbol context is seen once or twice.  Progress toward the
+published targets from this axis: zero.  (This run also supersedes
+an earlier version of the same number, $10.0919$, computed before
+the evaluator and table repairs described in
+Appendix~\ref{app:store}.)
+
+\paragraph{Why measure it at all, then.}  Because \emph{where} depth
+pays is exactly the information the promising routes need, and that
+is measurable only in a controlled arena.  The remaining tables use
+reduced alphabets --- the top $V$ tokens plus a catch-all --- and
+their bits-per-token figures are honest codelengths \emph{of the
+reduced stream}: internally comparable, deliberately not convertible
+to bits per character of the file.  They are the mechanism study.
 
 \begin{table}[ht]
 \centering
@@ -667,12 +689,10 @@ $D=3$ & $5.0564$ & $4.9390$ & $0.1174$ & $0.0117$ \\
 $D=4$ & $5.0564$ & $4.9384$ & $0.1180$ & $0.0006$ \\
 \bottomrule
 \end{tabular}
-\caption{Depth ladder on the reduced \texttt{text8} stream at
-  $V = 1024$, bits per token.  ``Gain'' is best fixed depth minus
-  family; the last column is the family's improvement over the
-  family one depth shallower.  Each successive depth buys roughly a
-  tenth of the previous one: the memory this axis can reach
-  saturates at two to three symbols.}
+\caption{Depth ladder, reduced \texttt{text8} stream, $V = 1024$,
+  bits per token of the reduced stream (not comparable to
+  Table~\ref{tab:firstorder}).  Each successive depth buys roughly a
+  tenth of the previous one.}
 \label{tab:ctree-depth}
 \end{table}
 
@@ -688,40 +708,32 @@ $16{,}384$ & $2$ & $8.2518$  & $8.2382$  & $+0.0136$ \\
 $253{,}855$ & $2$ & $10.0915$ & $10.0926$ & $-0.0011$ \\
 \bottomrule
 \end{tabular}
-\caption{Alphabet trend, \texttt{text8}, bits per token, corrected
-  evaluator throughout.  The adaptive gain shrinks by roughly a
-  factor of three for every fourfold growth of the alphabet, and at
-  the full vocabulary the family \emph{loses} to fixed depth one:
-  the prior cost of describing the pruning exceeds what depth earns.
-  Consistency checks: the depth-one baseline at $V=4096$ agrees with
-  the independently verified state-family figure ($6.7132$), and the
-  $V=16{,}384$ family reproduces the July cluster run to the fourth
-  decimal.  The full-vocabulary figure supersedes the earlier
-  published $10.0919$, which carried a small error from the
-  since-repaired evaluator and table cache.}
+\caption{Alphabet trend on \texttt{text8}, bits per token of each
+  reduced stream; only the last row is at full fidelity.  The
+  adaptive gain shrinks by roughly a factor of three per fourfold of
+  alphabet and crosses zero at the full vocabulary.  Consistency:
+  the depth-one figure at $V = 4096$ matches the independently
+  verified state-family value; the $V = 16{,}384$ family reproduces
+  the July run to the fourth decimal.}
 \label{tab:ctree-vocab}
 \end{table}
 
-Three conclusions.  First, all of depth's value comes from choosing
-it per context: every \emph{complete} fixed depth beyond one loses,
-at every alphabet, yet the mixture beats the best fixed depth
-wherever the alphabet is small enough.  Second, both axes exhaust
-quickly.  Along depth the gains collapse geometrically
-(Table~\ref{tab:ctree-depth}); along the alphabet they shrink toward
-zero and cross it at the full vocabulary
-(Table~\ref{tab:ctree-vocab}).  The count profiles say why: at large
-$V$, or beyond depth two, almost every context is seen once or
-twice, and a node with two observations cannot pay for its own
-description.  Third, the node estimator remains decisive --- with
-Krichevsky--Trofimov nodes in place of layered ones the family
-affords almost no depth at any size (Section~\ref{sec:ctree}
-ablations at $V=1024$: family $5.0825$, a tenth of the layered
-splits).  Taken together: the tree is the right way to \emph{spend}
-memory of a few symbols, and no way to acquire more.  Longer reach
-must come from the other routes of Appendix~\ref{app:routes} ---
-the constraint models of Section~\ref{sec:pairwise}, whose cost
-grows with $V^2$ rather than $V^{k}$, and retrieval, whose cost does
-not depend on $V$ at all.
+What the arena establishes.  First, all of depth's value is in the
+per-context choice: every complete fixed depth beyond one loses at
+every alphabet, yet the mixture wins wherever the alphabet is small.
+Second, both axes exhaust geometrically
+(Tables~\ref{tab:ctree-depth} and~\ref{tab:ctree-vocab}), and the
+count profiles say why: deep or wide, nearly every context is seen
+once or twice, and two observations cannot pay for a node's
+description.  Third, the roughly thirty thousand contexts where
+depth \emph{does} pay at $V = 1024$ are the map of synergy --- the
+places where two past symbols jointly say what neither says alone
+--- and that map is precisely what the constraint models of
+Section~\ref{sec:pairwise} cannot see and will need.  The tree, in
+this program, is an instrument, not a compressor: memory that
+reaches further at full fidelity must come from constraints (cost
+$V^2$) and retrieval (cost independent of $V$),
+Appendix~\ref{app:routes}.
 
 \section{Memory of order two from pairwise statistics}
 \label{sec:pairwise}
@@ -873,11 +885,20 @@ and $3.7360$ under counts; $4.3017$ under layered tables on
 last.  The layered per-pair reference is far less damaged by the
 checkpoint schedule on \texttt{enwik8} ($4.4194$, against $5.4031$
 on \texttt{text8}); its exact number there is pending.  The
-calibrated member, however, failed numerically on all three of these
-runs --- an overflow in the calibration fitting at large counts,
-under repair --- so the one comparison they were meant to extend,
-calibrated against the rest at scale, is still open.  The $V=4096$
-counts round is running and will be reported here.
+overflow that had destroyed the calibrated member on these files has
+since been repaired, and the first finite number is in: on the
+\texttt{enwik8} counts round the calibrated product scores $4.4836$
+--- behind the best tempered products ($4.4222$) rather than ahead
+of them as on \texttt{text8} under layered tables.  One caveat
+attaches: the fitter's residuals on \texttt{enwik8} stall near
+$10^{-3}$ at every checkpoint, two orders above the \texttt{text8}
+level, indicating that the three pair tables are not yet mutually
+consistent there (the margin-matching step needs more rounds on this
+file's heavier tail).  The calibrated figure is therefore a
+conservatively-fitted lower bound on the construction, and the
+comparison at scale stays provisional until the fit converges.  The
+\texttt{enwik9} and $V=4096$ counts rounds are running and will be
+reported here.
 
 \appendix
 
