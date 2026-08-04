@@ -506,6 +506,7 @@ def depth_averaged_codelength_families(
     progress=None,
     tables_source: str | None = None,
     universal_path: str | Path | None = None,
+    pool_holder=None,
 ) -> dict:
     """Codelengths for FAMILIES of profiles: each family is a base
     profile plus one-observation augmentations (one per count value c;
@@ -518,6 +519,16 @@ def depth_averaged_codelength_families(
     be empty (then every augmentation is the one-symbol profile, known
     in closed form).  Returns ``{key: (base_result_or_None,
     {c: aug_result})}`` with DepthAveragedCodelength values.
+
+    ``pool_holder`` (a WorkerPoolHolder) keeps the worker processes
+    alive ACROSS calls.  Without it, every call pays the full worker
+    start-up (a fresh Python per worker on macOS) and re-pickles every
+    family definition to every worker at every one of the l_max
+    levels; measured 4 Aug 2026 on the pairwise evaluator, that
+    overhead was most of the wall time and showed as 1-3 busy cores
+    out of 12.  With the holder, workers start once, family
+    definitions cross once per call through shared memory, and level
+    tasks carry only keys.
     """
 
     from product_model_with_memory.layered import (
@@ -555,6 +566,7 @@ def depth_averaged_codelength_families(
     base_logs: dict = {k: [] for k in clean}
     aug_logs: dict = {k: {c: [] for c in cs} for k, (b, cs) in clean.items()}
     any_scan = any(base for base, _ in clean.values()) and l_max > 1
+    _tprov = time.time()
     prov = (
         _provision_tables(
             _resolve_tables_source(tables_source), l_max, all_r,
@@ -562,6 +574,7 @@ def depth_averaged_codelength_families(
         )
         if any_scan else None
     )
+    FAMILY_PHASE_SECONDS["provision"] += time.time() - _tprov
 
     # a family stays active while its base does (or, when it has no
     # base, while any augmentation does): the members share an integrand
@@ -642,6 +655,7 @@ def depth_averaged_codelength_families(
             del tables
     else:
         import multiprocessing as mp
+        import pickle
         from multiprocessing import shared_memory
 
         items = sorted(
@@ -651,63 +665,139 @@ def depth_averaged_codelength_families(
         rs = sorted(all_r)
         u_grid = (np.asarray(prov["u_grid"], dtype=np.float64)
                   if prov is not None else np.zeros(1))
-        with mp.Pool(
-            processes=jobs,
-            initializer=_init_eval_worker,
-            initargs=(u_grid, rs, l_max,
-                      str(prov["ut"].path) if prov and prov.get("ut")
-                      else None),
-        ) as pool:
-            for L in range(1, l_max + 1):
-                if L > 1 and not window.any_active():
-                    break
-                active = [kv for kv in items if kv[0] in window]
-                chunks = [c for c in (active[w::jobs] for w in range(jobs))
-                          if c]
-                rs_L = _level_r([kv[0] for kv in active])
-                shm = None
-                try:
+        store_path = (str(prov["ut"].path) if prov and prov.get("ut")
+                      else None)
+
+        def _merge_level(parts, L, keys=None):
+            for part in parts:
+                for key, b_val, a_vals in part:
+                    if b_val is not None:
+                        base_logs[key].append(b_val)
+                    for c, v in a_vals.items():
+                        aug_logs[key][c].append(v)
+                    _observe(key, b_val, a_vals, L)
+            for key in (clean if keys is None else keys):
+                base, cs = clean[key]
+                miss = -math.inf if base else -math.log2(d)
+                if base and len(base_logs[key]) < L:
+                    base_logs[key].append(miss)
+                for c in cs:
+                    if len(aug_logs[key][c]) < L:
+                        aug_logs[key][c].append(miss)
+
+        if pool_holder is not None:
+            # ---- persistent workers: start once, reuse every call
+            pool = pool_holder.get(jobs, u_grid, l_max, store_path,
+                                   _init_eval_worker)
+            pool_holder.call_seq += 1
+            token = pool_holder.call_seq
+            _t = time.time()
+            payload = pickle.dumps(dict(clean),
+                                   protocol=pickle.HIGHEST_PROTOCOL)
+            defs_shm = shared_memory.SharedMemory(
+                create=True, size=max(1, len(payload)))
+            defs_shm.buf[: len(payload)] = payload
+            FAMILY_PHASE_SECONDS["defs"] += time.time() - _t
+            G = len(u_grid)
+            big = (shared_memory.SharedMemory(
+                       create=True, size=max(8, len(rs) * G * 8))
+                   if prov is not None else None)
+            try:
+                for L in range(1, l_max + 1):
+                    if L > 1 and not window.any_active():
+                        break
+                    _t = time.time()
+                    active = [kv for kv in items if kv[0] in window]
+                    npc = 4 * jobs
+                    kchunks = [[kv[0] for kv in active[w::npc]]
+                               for w in range(npc)]
+                    kchunks = [c for c in kchunks if c]
+                    rs_L = _level_r([kv[0] for kv in active])
+                    FAMILY_PHASE_SECONDS["level_py"] += time.time() - _t
                     if L == 1 or prov is None:
-                        args = [(d, L, None, None, chunk) for chunk in chunks]
+                        args = [(token, defs_shm.name, d, L, None, None,
+                                 kc, None) for kc in kchunks]
                     else:
-                        G = len(u_grid)
                         nr = len(rs_L)
-                        shm = shared_memory.SharedMemory(
-                            create=True, size=nr * G * 8)
-                        M = np.ndarray((nr, G), dtype=np.float64,
-                                       buffer=shm.buf)
                         if prov["source"] == "universal":
+                            _t = time.time()
                             bnds = np.linspace(0, nr, jobs + 1).astype(int)
                             pool.starmap(_fill_level_chunk, [
-                                (shm.name, (nr, G), L,
+                                (big.name, (nr, G), L,
                                  int(bnds[w]), int(bnds[w + 1]), rs_L)
                                 for w in range(jobs)
                             ], chunksize=1)
+                            FAMILY_PHASE_SECONDS["fill"] += time.time() - _t
                         else:
+                            M = np.ndarray((nr, G), dtype=np.float64,
+                                           buffer=big.buf)
                             M[:] = _provision_level_rows(prov, L, rs_L)
-                        args = [(d, L, shm.name, (nr, G), chunk, rs_L)
-                                for chunk in chunks]
-                    for part in pool.starmap(
-                            _eval_family_level_chunk, args, chunksize=1):
-                        for key, b_val, a_vals in part:
-                            if b_val is not None:
-                                base_logs[key].append(b_val)
-                            for c, v in a_vals.items():
-                                aug_logs[key][c].append(v)
-                            _observe(key, b_val, a_vals, L)
-                    for key, (base, cs) in clean.items():   # not evaluated
-                        miss = -math.inf if base else -math.log2(d)
-                        if base and len(base_logs[key]) < L:
-                            base_logs[key].append(miss)
-                        for c in cs:
-                            if len(aug_logs[key][c]) < L:
-                                aug_logs[key][c].append(miss)
-                finally:
-                    if shm is not None:
-                        shm.close()
-                        shm.unlink()
-                if progress is not None:
-                    progress(("depth", L, l_max), None)
+                        args = [(token, defs_shm.name, d, L, big.name,
+                                 (nr, G), kc, rs_L) for kc in kchunks]
+                    _t = time.time()
+                    timed = pool.starmap(
+                        _eval_family_level_keys, args, chunksize=1)
+                    FAMILY_PHASE_SECONDS["eval"] += time.time() - _t
+                    parts = [p for p, dt_ in timed]
+                    FAMILY_PHASE_SECONDS["eval_cpu"] += sum(
+                        dt_ for _p, dt_ in timed)
+                    _t = time.time()
+                    _merge_level(parts, L)
+                    FAMILY_PHASE_SECONDS["merge"] += time.time() - _t
+                    if progress is not None:
+                        progress(("depth", L, l_max), None)
+            finally:
+                defs_shm.close()
+                defs_shm.unlink()
+                if big is not None:
+                    big.close()
+                    big.unlink()
+        else:
+            with mp.Pool(
+                processes=jobs,
+                initializer=_init_eval_worker,
+                initargs=(u_grid, rs, l_max, store_path),
+            ) as pool:
+                for L in range(1, l_max + 1):
+                    if L > 1 and not window.any_active():
+                        break
+                    active = [kv for kv in items if kv[0] in window]
+                    chunks = [c for c in (active[w::jobs]
+                                          for w in range(jobs)) if c]
+                    rs_L = _level_r([kv[0] for kv in active])
+                    shm = None
+                    try:
+                        if L == 1 or prov is None:
+                            args = [(d, L, None, None, chunk)
+                                    for chunk in chunks]
+                        else:
+                            G = len(u_grid)
+                            nr = len(rs_L)
+                            shm = shared_memory.SharedMemory(
+                                create=True, size=nr * G * 8)
+                            M = np.ndarray((nr, G), dtype=np.float64,
+                                           buffer=shm.buf)
+                            if prov["source"] == "universal":
+                                bnds = np.linspace(
+                                    0, nr, jobs + 1).astype(int)
+                                pool.starmap(_fill_level_chunk, [
+                                    (shm.name, (nr, G), L,
+                                     int(bnds[w]), int(bnds[w + 1]), rs_L)
+                                    for w in range(jobs)
+                                ], chunksize=1)
+                            else:
+                                M[:] = _provision_level_rows(prov, L, rs_L)
+                            args = [(d, L, shm.name, (nr, G), chunk, rs_L)
+                                    for chunk in chunks]
+                        parts = pool.starmap(
+                            _eval_family_level_chunk, args, chunksize=1)
+                        _merge_level(parts, L)
+                    finally:
+                        if shm is not None:
+                            shm.close()
+                            shm.unlink()
+                    if progress is not None:
+                        progress(("depth", L, l_max), None)
 
     out: dict = {}
     for key, (base, cs) in clean.items():
@@ -719,6 +809,7 @@ def depth_averaged_codelength_families(
         fill = -math.inf if base else -math.log2(d)
 
         def _mk(partition, values, fill=fill):
+            values = [fill if v is None else v for v in values]
             if len(values) < l_max:
                 values = values + [fill] * (l_max - len(values))
             return DepthAveragedCodelength(
@@ -897,6 +988,187 @@ _EVAL_PROFILES = None
 # saves.  Back to one; the knob stays for machines with different core
 # counts.
 _CHUNKS_PER_JOB = int(os.environ.get("PMM_CHUNKS_PER_JOB", "1"))
+
+# Cumulative wall seconds inside depth_averaged_codelength_families
+# (persistent-pool path), for callers that want to report where table
+# time goes: provisioning, sending definitions, per-level store fills,
+# per-level evaluations (includes the dispatch wait), parent merge.
+FAMILY_PHASE_SECONDS = {"provision": 0.0, "defs": 0.0, "fill": 0.0,
+                        "eval": 0.0, "eval_cpu": 0.0, "merge": 0.0,
+                        "level_py": 0.0, "bigjoin": 0.0}
+
+
+class WorkerPoolHolder:
+    """A multiprocessing pool kept alive across evaluation calls.
+
+    Owned by long-lived builders (one pool per run).  The pool is
+    (re)created lazily and torn down only if the evaluation context
+    changes (different jobs, depth range, or store) or on close().
+    Workers are daemonic, so they die with the parent process even if
+    close() is never called."""
+
+    def __init__(self):
+        self.pool = None
+        self.sig = None
+        self.call_seq = 0
+
+    def get(self, jobs, u_grid, l_max, store_path, initializer):
+        import multiprocessing as mp
+
+        sig = (int(jobs), int(l_max), store_path, len(u_grid),
+               float(u_grid[0]) if len(u_grid) else 0.0,
+               float(u_grid[-1]) if len(u_grid) else 0.0)
+        if self.pool is not None and self.sig != sig:
+            self.close()
+        if self.pool is None:
+            self.pool = mp.Pool(
+                processes=jobs,
+                initializer=initializer,
+                initargs=(np.asarray(u_grid, dtype=np.float64), None,
+                          l_max, store_path),
+            )
+            self.sig = sig
+        return self.pool
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.terminate()
+            self.pool.join()
+            self.pool = None
+            self.sig = None
+
+
+_CALL_DEFS = (None, None)        # (token, {key: (base, cs)})
+
+_ROW_CACHE: dict = {}            # (L, r) -> log-phi row (worker-local)
+_ROW_CACHE_CAP = int(os.environ.get("PMM_ROW_CACHE_ROWS", "600"))
+
+
+def _phi_rows(ut, L: int, rs_l):
+    """Moment rows for one level, through the worker's row cache.
+
+    Small families across many chunks keep asking for the same
+    low-count rows; without the cache each (chunk, level) task
+    re-reads them from the store (measured 0.86 ms/row), which
+    multiplied the store reads by the number of chunks.  Rare bulky
+    requests (the giant families) bypass the cache entirely so they
+    cannot evict the hot rows."""
+
+    if len(rs_l) > _ROW_CACHE_CAP // 2:
+        return ut.log_phi_matrix(L, rs_l, _EVAL_UGRID)
+    local = {r: _ROW_CACHE[(L, r)] for r in rs_l if (L, r) in _ROW_CACHE}
+    missing = [r for r in rs_l if r not in local]
+    if missing:
+        Mm = ut.log_phi_matrix(L, missing, _EVAL_UGRID)
+        for i, r in enumerate(missing):
+            local[r] = np.array(Mm[i], copy=True)
+            if len(_ROW_CACHE) >= _ROW_CACHE_CAP:
+                _ROW_CACHE.pop(next(iter(_ROW_CACHE)))
+            _ROW_CACHE[(L, r)] = local[r]
+    return np.stack([local[r] for r in rs_l])
+
+
+def _load_call_defs(token, shm_name):
+    """Worker: the family definitions of the CURRENT call, unpickled
+    from shared memory once per worker per call and cached."""
+
+    global _CALL_DEFS
+    if _CALL_DEFS[0] != token:
+        import pickle
+
+        shm = _attach_shm_untracked(shm_name)
+        try:
+            _CALL_DEFS = (token, pickle.loads(bytes(shm.buf)))
+        finally:
+            shm.close()
+    return _CALL_DEFS[1]
+
+
+def _eval_family_level_keys(token, defs_shm, d, L, shm_name, shape,
+                            keys, rs=None):
+    """Worker: like _eval_family_level_chunk, but the chunk carries
+    only KEYS; definitions come from the per-call shared block.
+    Returns (parts, seconds_this_task_worked) so the parent can sum
+    real worker time against dispatch wall time."""
+
+    t0 = time.time()
+    defs = _load_call_defs(token, defs_shm)
+    chunk = [(k, defs[k]) for k in keys]
+    parts = _eval_family_level_chunk(d, L, shm_name, shape, chunk, rs)
+    return parts, time.time() - t0
+
+
+def _eval_families_levels(token, defs_shm, d, keys, Ls,
+                          use_window=True):
+    """Worker: a chunk of families across levels, reading its own
+    moment rows from the universal store (mmap, read-only).  With
+    use_window, applies the SAME per-family early-stop rule as
+    _LevelWindow --- value fell for LEVEL_PATIENCE consecutive levels
+    AND sits more than the drop threshold below the family's best ---
+    so negligible levels are skipped inside the worker, without any
+    cross-worker barrier.  Returns
+    ([(key, L, base_log2_q, {c: aug_log2_q})...], cpu_wall)."""
+
+    from product_model_with_memory.layered import (
+        ProductMomentTables,
+        augmented_partition,
+        log_q_lambda_scan_family,
+    )
+
+    t0 = time.time()
+    defs = _load_call_defs(token, defs_shm)
+    fams = [(k, defs[k]) for k in keys]
+    enabled = use_window and os.environ.get(
+        "PMM_NO_TRUNCATE", "").lower() not in ("1", "true", "yes")
+    drop = float(os.environ.get("PMM_LEVEL_DROP", LEVEL_DROP_BITS))
+    # per family: [best, last, falling]
+    wstate = {k: [-math.inf, math.inf, 0] for k, _ in fams}
+    ut = _eval_store()
+    out = []
+    active = list(fams)
+    t_read = t_build = t_scan = 0.0
+    for L in Ls:
+        if not active:
+            break
+        rs: set = set()
+        for _k, (base, cs) in active:
+            rs |= set(needed_r_values(base))
+            for c in cs:
+                rs |= set(needed_r_values(augmented_partition(base, c)))
+        rs_l = sorted(rs)
+        _t = time.time()
+        M = _phi_rows(ut, L, rs_l)
+        t_read += time.time() - _t
+        _t = time.time()
+        tables = ProductMomentTables.from_matrix(
+            max_L=_EVAL_LMAX, L=L, r_values=rs_l,
+            u_grid=_EVAL_UGRID, matrix=M)
+        t_build += time.time() - _t
+        _t = time.time()
+        drops = []
+        for key, (base, cs) in active:
+            b_res, a_res = log_q_lambda_scan_family(
+                d=d, L=L, base_partition=base, cs=cs, tables=tables)
+            _check_eval(b_res, L, key)
+            for c in cs:
+                _check_eval(a_res[c], L, key)
+            out.append((key, L, b_res.log2_q,
+                        {c: r.log2_q for c, r in a_res.items()}))
+            if enabled:
+                st = wstate[key]
+                v = b_res.log2_q
+                st[2] = st[2] + 1 if v < st[1] else 0
+                st[1] = v
+                if v > st[0]:
+                    st[0] = v
+                if st[2] >= LEVEL_PATIENCE and st[0] - v > drop:
+                    drops.append(key)
+        t_scan += time.time() - _t
+        if drops:
+            dset = set(drops)
+            active = [f for f in active if f[0] not in dset]
+        del M, tables
+    return out, (time.time() - t0, t_read, t_build, t_scan)
 
 
 def _init_eval_worker(u_grid, rs, l_max: int, store_path=None,

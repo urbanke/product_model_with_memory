@@ -28,3 +28,30 @@ Ruediger's rules. Follow them without being reminded.
 - Small-vocabulary runs (for example V=1024) are behavioral: they rank
   methods in a controlled arena. They are not compression schemes for
   the original file. Real-scheme claims live at the full vocabulary.
+
+## Measurement standards (decided 4 Aug 2026)
+
+- One measure: honest bits per character (= bits per byte) of the
+  original file, complete codes, vocabulary charge included.
+- One tokenization: the LLM tokenizer (the bpe_* streams). Word-level
+  results do not enter the paper.
+- Exact telescoped evaluation whenever the scheme allows it (all
+  mixtures per state). When chunking is unavoidable: GEOMETRIC
+  checkpoint spacing, C = 32 (measured: ~0.03 bits/token residual vs
+  0.17 for equal spacing at V=1024 first order). Always report the
+  schedule next to the number.
+
+## Performance rules (written after 4-5 Aug 2026)
+
+- No plain-Python loop over tokens, pairs, or triples in any
+  evaluator. Inner loops are numpy over whole blocks. Requests to the
+  layered builder are batched: one call per block.
+- Every performance claim is measured on Ruediger's machine, never
+  assumed from the cloud box (2 cores, Linux: parallel behavior does
+  not transfer; correctness does).
+- One change at a time, against a fixed benchmark command, with the
+  decision rule agreed BEFORE the run: beats the standing time or is
+  reverted immediately.
+- Programs report their own utilization (eval vs eval_cpu per
+  checkpoint); Activity Monitor screenshots are corroboration, not
+  the measurement.

@@ -203,6 +203,10 @@ class _LayeredPredictiveBuilder:
         self.jobs = jobs
         self.progress = progress
         self.memo: dict[tuple, FloatArray] = {}
+        # one worker team for the whole run (started lazily; workers
+        # are daemonic and die with the parent)
+        from product_model_with_memory.codelength import WorkerPoolHolder
+        self.pool_holder = WorkerPoolHolder() if jobs and jobs > 1 else None
 
     def _ensure_families(self, fams: dict[tuple, tuple]) -> None:
         """Evaluate whatever is missing, grouped as base + augmented
@@ -231,6 +235,7 @@ class _LayeredPredictiveBuilder:
             cache_dir=self.cache_dir,
             jobs=self.jobs,
             progress=self.progress,
+            pool_holder=self.pool_holder,
         )
         for base, (b_res, a_res) in results.items():
             if b_res is not None:

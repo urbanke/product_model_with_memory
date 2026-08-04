@@ -33,8 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
-import resource
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -49,13 +47,6 @@ MIX_GRID = [(0.02, 0.05), (0.02, 0.1), (0.02, 0.2), (0.02, 0.3),
             (0.05, 0.05), (0.05, 0.1), (0.05, 0.2), (0.05, 0.3)]
 PROD_GRID = [(b1, b2) for b1 in (0.75, 1.0) for b2 in (0.25, 0.5, 0.75, 1.0)]
 NEG = -1e30                      # log2 of an impossible event
-
-
-def cpu_seconds() -> float:
-    """CPU seconds of this process AND finished worker processes."""
-    a = resource.getrusage(resource.RUSAGE_SELF)
-    b = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return a.ru_utime + a.ru_stime + b.ru_utime + b.ru_stime
 
 
 def geo_edges(lo0: int, n: int, C: int, first: int = 2048):
@@ -139,8 +130,7 @@ def main() -> None:
 
     from product_model_with_memory.pooled_lags import (
         _LayeredPredictiveBuilder, _augmented_profile)
-    from product_model_with_memory.codelength import (
-        default_l_max, FAMILY_PHASE_SECONDS)
+    from product_model_with_memory.codelength import default_l_max
     builder = _LayeredPredictiveBuilder(
         V, default_l_max(V), None, args.jobs, None)
     ratio_memo: dict = {}
@@ -475,14 +465,11 @@ def main() -> None:
         list(ex.map(lambda f_: f_(), [r1, r2, r3, r4]))
         phase["reveal"] += time.time() - tR
         if c < 3 or (c + 1) % 8 == 0 or c == args.checkpoints - 1:
-            fs = " ".join(f"{k_}={v_:.0f}s"
-                          for k_, v_ in FAMILY_PHASE_SECONDS.items())
             print(f"  checkpoint {c + 1}/{args.checkpoints}: coded "
                   f"{coded:,} ({time.time() - t0:.0f}s, block "
                   f"{time.time() - tblk:.0f}s; "
                   + " ".join(f"{k_}={v_:.0f}s"
-                             for k_, v_ in phase.items())
-                  + f"; tab[{fs}])",
+                             for k_, v_ in phase.items()) + ")",
                   flush=True)
 
     per = {k: v / coded for k, v in bits.items()}
@@ -494,14 +481,9 @@ def main() -> None:
            "coded_positions": coded, "checkpoints": args.checkpoints,
            "spacing": args.spacing, "smooth": s,
            "phase_seconds": {k_: round(v_, 1) for k_, v_ in phase.items()},
-           "table_phase_seconds": {k_: round(v_, 1)
-                                   for k_, v_ in
-                                   FAMILY_PHASE_SECONDS.items()},
            "member_bits_per_token": per,
            "family_bits_per_token": fam / coded,
            "best_member": min(per, key=per.get),
-           "cores_busy_avg": cpu_seconds() / (time.time() - t0),
-           "cores_available": os.cpu_count(),
            "seconds": time.time() - t0}
     o = Path(args.out)
     o.mkdir(parents=True, exist_ok=True)

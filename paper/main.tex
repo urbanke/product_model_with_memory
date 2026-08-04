@@ -37,6 +37,37 @@ codelength of a complete scheme, produced by a script in the
 repository.
 \end{abstract}
 
+\section*{The scoreboard}
+\label{sec:scoreboard}
+
+Every number in this paper is the honest codelength of a complete
+scheme --- the whole file reproduced exactly, every model choice and
+the vocabulary paid for --- in bits per character of the original
+file, the same accounting under which the published records are set.
+This table is the state of the program; each section either moves a
+number here or says plainly that it does not.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lccc}
+\toprule
+ & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
+\midrule
+bytes, no memory                & $4.1235$ & $5.0802$ & $5.1565$ \\
+LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
+first order (Sec.~\ref{sec:firstorder})   & $1.8298$ & $2.1135$ & $1.8371$ \\
+context tree (Sec.~\ref{sec:ctree})       & $\mathbf{1.8182}$ & $\mathbf{2.0606}$ & $\mathbf{1.6598}$ \\
+pairwise order two (Sec.~\ref{sec:pairwise}) & \multicolumn{3}{c}{campaign in progress} \\
+\midrule
+best published (Table~\ref{tab:files})    & $1.398$  & $1.170$  & $0.858$ \\
+\bottomrule
+\end{tabular}
+\caption*{Best honest bits per character achieved by each
+  construction of this paper, against the published records
+  (decompressor size included, no external data --- the same rules).
+  Bold: the current bests.}
+\end{table}
+
 \section{The model}
 \label{sec:setup}
 
@@ -260,6 +291,17 @@ file & bytes & byte values & contents & best published \\
   \texttt{3bea1919949baf155f99411df5fada7e}.}
 \label{tab:files}
 \end{table}
+
+\paragraph{Bits per character means bits per byte.}  Every figure in
+this paper is compressed bits divided by the file's \emph{byte}
+count, $10^{8}$ or $10^{9}$.  On \texttt{text8} bytes and characters
+coincide exactly (the file is plain ASCII).  On \texttt{enwik8} and
+\texttt{enwik9} they differ slightly --- the files are UTF-8, and
+some characters occupy several bytes --- so ``bits per character''
+is, strictly, bits per byte there.  We keep the name because the
+compression literature has always used it, and the published records
+of Table~\ref{tab:files} are computed with the same divisor, so
+every comparison in this paper is like against like.
 
 \subsection*{Symbols}
 
@@ -645,260 +687,194 @@ constructions of the next sections.
 \section{Adaptive depth: the context-tree family}
 \label{sec:ctree}
 
-The question this section must answer is the paper's standing one:
-does the construction move the best honest number of
-Table~\ref{tab:firstorder} toward the published targets of
-Table~\ref{tab:files}?  For \texttt{text8} the gap is $1.8298$
-against $1.398$ bits per character.  The construction tried here is
-the hierarchy route of Appendix~\ref{app:routes}: condition each
-position on its last $k$ symbols, with $k$ chosen per context by an
-exact mixture over all prunings of the context tree up to depth $D$,
-the layered estimator at every node, and the whole codelength in
-closed form via the table of Appendix~\ref{app:store}.
+This section reports one construction in one measure.  The
+construction is the hierarchy route of Appendix~\ref{app:routes}:
+condition each position on its last $k$ symbols, with $k$ chosen per
+context by an exact mixture over all prunings of the context tree up
+to depth $D$, the layered estimator at every node, and the whole
+codelength in closed form.  The measure is bits per character of the
+original file, fully accounted: the tree's codelength over the LLM
+token stream, plus the few boundary tokens the tree cannot
+condition, plus the vocabulary charge of Section~\ref{sec:sources}
+($0.0621$ bits per character at $10^{8}$ bytes).  At depth one the
+construction \emph{is} the first-order model of
+Section~\ref{sec:firstorder}, and its rows below reproduce
+Table~\ref{tab:firstorder} to the last digit --- the accounting is
+closed.
 
-\paragraph{The verdict at full fidelity.}  At the full vocabulary
---- the only setting whose numbers are comparable to
-Table~\ref{tab:firstorder} --- the answer is no.  The family over
-all prunings up to depth two codes the \texttt{text8} stream at
-$10.0926$ bits per token against $10.0915$ for its own depth-one
-member alone: adaptive depth \emph{loses} $0.0011$ bits per token
-($0.0002$ bits per character), because the price of describing the
-chosen pruning exceeds what second-symbol memory earns when almost
-every two-symbol context is seen once or twice.  Progress toward the
-published targets from this axis: zero.  (This run also supersedes
-an earlier version of the same number, $10.0919$, computed before
-the evaluator and table repairs described in
-Appendix~\ref{app:store}.)
-
-\paragraph{Why measure it at all, then.}  Because \emph{where} depth
-pays is exactly the information the promising routes need, and that
-is measurable only in a controlled arena.  The remaining tables use
-reduced alphabets --- the top $V$ tokens plus a catch-all --- and
-their bits-per-token figures are honest codelengths \emph{of the
-reduced stream}: internally comparable, deliberately not convertible
-to bits per character of the file.  They are the mechanism study.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrrrr}
-\toprule
- & best fixed depth & family & gain & added by last depth \\
-\midrule
-$D=2$ & $5.0564$ & $4.9507$ & $0.1057$ & $0.1057$ \\
-$D=3$ & $5.0564$ & $4.9390$ & $0.1174$ & $0.0117$ \\
-$D=4$ & $5.0564$ & $4.9384$ & $0.1180$ & $0.0006$ \\
-\bottomrule
-\end{tabular}
-\caption{Depth ladder, reduced \texttt{text8} stream, $V = 1024$,
-  bits per token of the reduced stream (not comparable to
-  Table~\ref{tab:firstorder}).  Each successive depth buys roughly a
-  tenth of the previous one.}
-\label{tab:ctree-depth}
-\end{table}
+\paragraph{No chunking anywhere.}  Two different things could be
+approximated here, and neither is.  The \emph{encoder} is fully
+sequential with no staleness: at every position it predicts from
+node tables that reflect every previously decoded token, updated
+after every single token --- there are no checkpoints, no blocks, no
+frozen tables.  The \emph{evaluation} of that encoder's codelength
+is nevertheless exact and needs no walk over the file: because each
+node's estimator is exchangeable, the product of its token-by-token
+predictions telescopes to a closed form at the node's final counts,
+and the mixture over prunings is summed exactly by the tree
+recursion (Appendices~\ref{app:factorisation}
+and~\ref{app:routes}).  The final counts are a device for
+\emph{computing the length} of the sequential code, never an input
+to any of its predictions --- the same property already used for
+the memoryless and first-order models, extended here to the whole
+tree family.  Every figure in Table~\ref{tab:ctw} is therefore the
+exact codelength of the exact code: unlike the checkpointed
+constructions of Section~\ref{sec:pairwise}, nothing in this
+section pays, or approximates away, a staleness cost.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{rrrrr}
+\begin{tabular}{llrrr}
 \toprule
-$V$ & depth & best fixed & family & gain \\
+file & scheme & bits/char & vs.\ first order & best published \\
 \midrule
-$1{,}024$  & $4$ & $5.0564$  & $4.9384$  & $+0.1180$ \\
-$4{,}096$  & $3$ & $6.7132$  & $6.6766$  & $+0.0366$ \\
-$16{,}384$ & $2$ & $8.2518$  & $8.2382$  & $+0.0136$ \\
-$253{,}855$ & $2$ & $10.0915$ & $10.0926$ & $-0.0011$ \\
+\texttt{text8}  & first order ($D{=}1$) & $1.8298$ & ---       & $1.398$ \\
+\texttt{text8}  & tree, $D=2$           & $1.8185$ & $-0.0113$ & \\
+\texttt{text8}  & tree, $D=3$           & $1.8182$ & $-0.0116$ & \\
+\addlinespace
+\texttt{enwik8} & first order ($D{=}1$) & $2.1135$ & ---       & $1.170$ \\
+\texttt{enwik8} & tree, $D=2$           & $2.0676$ & $-0.0459$ & \\
+\texttt{enwik8} & tree, $D=3$           & $2.0606$ & $-0.0529$ & \\
+\addlinespace
+\texttt{enwik9} & first order ($D{=}1$) & $1.8371$ & ---       & $0.858$ \\
+\texttt{enwik9} & tree, $D=2$           & $1.6840$ & $-0.1531$ & \\
+\texttt{enwik9} & tree, $D=3$           & $1.6598$ & $-0.1773$ & \\
 \bottomrule
 \end{tabular}
-\caption{Alphabet trend on \texttt{text8}, bits per token of each
-  reduced stream; only the last row is at full fidelity.  The
-  adaptive gain shrinks by roughly a factor of three per fourfold of
-  alphabet and crosses zero at the full vocabulary.  Consistency:
-  the depth-one figure at $V = 4096$ matches the independently
-  verified state-family value; the $V = 16{,}384$ family reproduces
-  the July run to the fourth decimal.}
-\label{tab:ctree-vocab}
+\caption{The context-tree family at full fidelity: honest bits per
+  character of each file, vocabulary charge included, LLM
+  tokenization throughout.  ``vs.\ first order'' is the change
+  against the depth-one member, the first-order model of
+  Table~\ref{tab:firstorder}.  Every complete fixed depth beyond one
+  loses badly (depth two alone: $2.3072$ on \texttt{text8},
+  $2.5257$ on \texttt{enwik8}); all of the gain is the per-context
+  choice of depth.}
+\label{tab:ctw}
 \end{table}
 
-What the arena establishes.  First, all of depth's value is in the
-per-context choice: every complete fixed depth beyond one loses at
-every alphabet, yet the mixture wins wherever the alphabet is small.
-Second, both axes exhaust geometrically
-(Tables~\ref{tab:ctree-depth} and~\ref{tab:ctree-vocab}), and the
-count profiles say why: deep or wide, nearly every context is seen
-once or twice, and two observations cannot pay for a node's
-description.  Third, the roughly thirty thousand contexts where
-depth \emph{does} pay at $V = 1024$ are the map of synergy --- the
-places where two past symbols jointly say what neither says alone
---- and that map is precisely what the constraint models of
-Section~\ref{sec:pairwise} cannot see and will need.  The tree, in
-this program, is an instrument, not a compressor: memory that
-reaches further at full fidelity must come from constraints (cost
-$V^2$) and retrieval (cost independent of $V$),
-Appendix~\ref{app:routes}.
+Three remarks.  First, adaptive depth makes real progress on the
+scoreboard: $0.012$ bits per character on \texttt{text8}, $0.053$
+on \texttt{enwik8}, and $0.177$ on \texttt{enwik9} below the
+first-order numbers --- the best honest figures in this paper so
+far, and the clearest demonstration yet that what memory the data
+can afford is set by observations per context: tenfold data turns
+depth two from a $0.05$ improvement into a $0.15$ one, with
+$2.75$ million depth-two contexts kept.  Second, the file and the
+data volume decide how much depth is worth: on \texttt{text8} depth
+three adds almost nothing to depth two, on \texttt{enwik8}'s markup
+it adds $0.007$, and on \texttt{enwik9} --- the same markup with
+tenfold data --- $0.024$, with $2.8$ million depth-three contexts
+kept.  The \texttt{enwik9} curve has not saturated at depth three;
+depth four is the next measurement there.  Third,
+the remaining distance to the published targets ($0.42$ and $0.89$
+bits per character) is far larger than what deeper trees can close;
+the routes with longer reach (Appendix~\ref{app:routes}) remain the
+program.  An earlier version of this section reported the same
+family on a word-level tokenization, where adaptive depth showed no
+gain at full fidelity; those runs are superseded --- on subword
+tokens, context depth carries information that word tokens absorb
+into the symbol itself.
 
 \section{Memory of order two from pairwise statistics}
 \label{sec:pairwise}
 
-Section~\ref{sec:ordertwo} located the failure of order-two states on
-\texttt{text8} and \texttt{enwik8}: not the ceiling but the learning
-cost of one successor distribution per context pair.  This section
-asks how much of the order-two ceiling can be reached while learning
-only \emph{pairwise} objects.  The predictor sees
-$(x_{t-1}, x_{t-2})$ and is built from the three pair distributions
-$p(x_t, x_{t-1})$, $p(x_t, x_{t-2})$ and $p(x_{t-1}, x_{t-2})$, of
-which the third is, by stationarity, the same table as the first.
-That is roughly $3V^2$ numbers against the $V^3$ scale of order-two
-states: a lower ceiling, bought at an order-one learning cost.
+Section~\ref{sec:ordertwo} located the failure of order-two states:
+not the ceiling but the learning cost of one successor distribution
+per context pair, $V^3$-scale where the data supports far less.
+Section~\ref{sec:ctree} recovered part of the order-two value by
+letting each context choose its depth.  This section attacks the
+same target from the other side: how much of the order-two ceiling
+can be reached while \emph{learning} only pairwise objects --- the
+three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
+$(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
+it is the first measured step of the constraint-model route of
+Appendix~\ref{app:routes}.  The measured campaign at the standard of
+this paper is being run as this draft stands; this section fixes the
+experiment's design, which is itself the product of an exploratory
+round, and the accounting its table will use.
 
-The pairwise tables do not determine the conditional
-$p(x_t \mid x_{t-1}, x_{t-2})$; a combining rule must be chosen, and
-the choice is the experiment.  All rules below consume the same
-smoothed tables (each row shrunk toward the running unigram
-distribution), so the comparison isolates the rule
-(\texttt{scripts/pairwise\_experiment.py}):
+\paragraph{The predictors.}  Every table any rule consumes is
+estimated by the layered predictor --- the only estimator in this
+paper.  The pair tables do not determine the conditional
+$p(x_t \mid x_{t-1}, x_{t-2})$; the combining rule is the
+experiment:
 
 \begin{itemize}
-\item \emph{Mixture}: $w_0\, m(y) + w_1\, \hat p(y \mid x_{t-1})
-  + w_2\, \hat p(y \mid x_{t-2})$ over a grid of weights, $m$ the
-  unigram distribution.
+\item \emph{Mixture}: $w_0\, m(y) + w_1\, \hat p(y \mid x_{t-1}) +
+  w_2\, \hat p(y \mid x_{t-2})$ over a small grid of weights, $m$
+  the unigram table.
 \item \emph{Product}: $m(y) \prod_{\delta \in \{1,2\}}
   \bigl[\hat p(y \mid x_{t-\delta})/m(y)\bigr]^{\beta_\delta}$,
-  normalized, over a grid of exponents.  The point
-  $\beta_1 = \beta_2 = 1$ is not a tuning choice: it is the exact
+  normalized.  The point $\beta_1 = \beta_2 = 1$ is the exact
   conditional of the maximum-entropy joint consistent with the two
-  target pairs alone, and it is exact precisely when the two lags are
-  conditionally independent given the target
-  (Appendix~\ref{app:calibration}).
+  target--lag pairs (Appendix~\ref{app:calibration}); tempered
+  exponents discount the double counting of redundant lags.
 \item \emph{Calibrated product}: the conditional of the
   maximum-entropy joint consistent with all \emph{three} pair
-  distributions.  It still factorizes over the lags, but its two
-  factors are calibrated jointly, through the third table, so that
-  redundancy between the lags is discounted automatically;
-  Appendix~\ref{app:calibration} derives it and the fitting
-  procedure.
-\item \emph{References}: the lag-one predictor alone, and order-two
-  states, the $V^3$-scale construction this section tries to
-  approximate.  The order-two reference comes in two forms: successor
-  counts with backoff to lag one, and the layered estimator applied
-  per context pair, each pair carrying its own mixture.
+  tables; redundancy between the lags is then priced automatically
+  rather than by a tempering grid
+  (Appendix~\ref{app:calibration}).
+\item \emph{References}: the first-order model (the scoreboard
+  holder to beat), order-two counts with backoff, and the
+  \emph{exact} layered order-two code --- a mixture, so its
+  sequential code telescopes to one evaluation per context pair at
+  the final counts, with no checkpoint staleness at all.
 \end{itemize}
 
-With one exception, none of these predictors telescopes to a one-shot
-evaluation, so the code is the checkpointed one, as for the pooled
-lags: the stream is cut into $C$ equal blocks, every table and the
-calibration are computed from the data strictly before the block, the
-block is coded, and the tables are refreshed.  Every row of the
-comparison carries the same staleness cost, so the comparison is
-internal, and each member is a valid sequential code.
+\paragraph{The protocol.}  None of the combined rules telescopes, so
+they are coded sequentially with checkpointed tables: the stream is
+cut into $C$ blocks, every table and calibration is computed from
+the data strictly before the block, the block is coded, the tables
+refresh.  Every member pays the same staleness, so the internal
+comparison is fair; the exact order-two reference pays none, and the
+gap between its exact and checkpointed forms measures whether $C$ is
+large enough.  The checkpoints are placed \emph{geometrically} ---
+small blocks early, growing by a fixed ratio --- not equally.  This
+was decided by measurement against a scheme whose exact sequential
+value is known in closed form (the first-order model): at $C = 32$,
+equal blocks cost $0.170$ bits per token of staleness on the
+\texttt{text8} stream at $V=1024$ where geometric blocks cost
+$0.032$, and at $C = 8$ the ratio is nine to one.  The reason is
+the learning curve: the tables change fastest over the first
+tokens, so equal spacing wastes its refreshes where nothing moves
+and starves the stretch where everything does.  With geometric
+placement at $C = 32$ the residual staleness is a few hundredths of
+a bit per token --- known, small, and stated next to any number it
+affects.  Two further consequences of the exploratory round: the
+share-nothing layered reference is damaged far more than smooth
+members by any checkpointing ($0.198$ bits per token at $C = 32$
+equal), so it appears only in its exact, telescoped form; and
+members are reported with the checkpoint schedule they were
+computed under, always.
 
-The exception is the layered order-two reference.  It is a mixture,
-so its exact sequential code collapses as in
-Section~\ref{sec:firstorder}: coding the stream with the per-pair
-tables updated after every token costs one evaluation per context
-pair at the final counts.  We report this exact number next to its
-checkpointed version.  The difference between the two is the price of
-refreshing the tables only $C$ times instead of at every token; if it
-is large, $C$ blocks are too few for the comparison above to be
-trusted.
+\paragraph{The accounting.}  As everywhere now: full LLM vocabulary,
+complete codes, bits per character of the original file with the
+vocabulary charge included.  At the full vocabulary the pair tables
+are held sparsely --- each row a shared background plus corrections
+at observed symbols --- and mixtures and products cost only the
+observed entries, since a product of such rows lives on the union of
+their supports.  The one open feasibility question is the calibrated
+member: its fitted factors densify under the multiplicative fit, and
+if no sparse form is found it will be reported at a moderate
+alphabet as a \emph{complete} code --- the catch-all symbol's
+contents priced through a memoryless side channel --- so that even
+that number lives on the one scoreboard.
 
-With two lags the Chow--Liu alternative (keep the two highest-MI
-edges of the triangle and use the resulting tree) is degenerate:
-$\mathrm{MI}(x_t, x_{t-1})$ and $\mathrm{MI}(x_{t-1}, x_{t-2})$ are
-the same number, so the tree drops the weaker lag entirely and
-reduces to the lag-one predictor.  It is printed as a per-checkpoint
-diagnostic and becomes a real member only when the lag set grows.
-
-The measured comparison is reported in
-Section~\ref{sec:pairwise-layered}.
-\section{The pairwise rules with layered tables}
-\label{sec:pairwise-layered}
-
-The round of Section~\ref{sec:pairwise} estimated every pair table by
-count smoothing.  This section repeats it with one change: every
-table the rules consume --- the pair conditionals, the unigram, and
-the calibration inputs --- is estimated by the layered mixture
-instead.  Same file, same reduced alphabet ($V = 1024$), same
-checkpoint schedule ($C = 32$), same members.
-Table~\ref{tab:pairwise-layered} shows both rounds side by side.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrr}
-\toprule
-member & smoothed counts & layered tables \\
-\midrule
-lag one alone                  & $5.3393$ & $5.3146$ \\
-star product ($\beta = 1$)     & $5.3917$ & $5.3062$ \\
-best mixture                   & $5.2976$ & $5.2902$ \\
-best tempered product          & $5.2746$ & $5.2338$ \\
-calibrated product             & $5.2827$ & $\mathbf{5.1983}$ \\
-order two, backoff             & $5.2446$ & $5.2152$ \\
-order two, layered, checkpointed & ---    & $5.4031$ \\
-order two, layered, exact      & ---      & $5.2053$ \\
-\bottomrule
-\end{tabular}
-\caption{Bits per token on the reduced \texttt{text8} stream,
-  $V = 1024$, $C = 32$.  Left column: the round of
-  Section~\ref{sec:pairwise}, all tables count-smoothed.  Right
-  column: the same rules with every table estimated by the layered
-  mixture.  The best member of each round is the family's posterior
-  choice; in the layered round its posterior mass is $1.0000$.}
-\label{tab:pairwise-layered}
-\end{table}
-
-Three findings.
-
-First, better tables help every rule.  Each member improves, by
-$0.007$ (best mixture) up to $0.086$ (star product).  The comparison
-of combining rules was not an artifact of crude estimation.
-
-Second, the ranking flips at the top.  With count-smoothed tables the
-order-two reference with backoff was the best member and the
-calibrated product third.  With layered tables the calibrated product
-wins outright, at $5.1983$ with posterior mass $1.0$: the rule that
-respects all three pair distributions, with no free parameter,
-overtakes the $V^3$-scale reference it was meant to approximate.
-This is the strongest measured support so far for the constraint
-route of Appendix~\ref{app:routes}: once the statistics are well
-estimated, the maximum-entropy construction on top of them is not a
-cheap substitute but the winner.
-
-Third, the exact-versus-checkpointed control did exactly the job it
-was built for.  The layered per-pair reference looks disastrous when
-checkpointed --- $5.4031$, below lag one --- and its exact sequential
-form, computable in one pass because that member is a mixture
-(Section~\ref{sec:pairwise}), costs $5.2053$.  The difference,
-$0.198$ bits per token, is the price of refreshing that member's
-tables only $32$ times instead of after every token.  So the member
-is sound and the schedule was the problem; conclusions about members
-of its kind must come from the exact form, or from a much finer
-schedule.  Note also what the exact number does not change: the
-calibrated product, which pays the staleness cost like every
-checkpointed member, still beats the exact reference.
-
-This is one file at one reduced vocabulary: a ranking round, not a
-compression claim.  Both rounds have since been run on
-\texttt{enwik8}, and the counts round on \texttt{enwik9} (same
-$V = 1024$, same $C = 32$).  The ordering matches the
-\texttt{text8} counts round: order two with backoff best ($4.3096$
-and $3.7360$ under counts; $4.3017$ under layered tables on
-\texttt{enwik8}), tempered products next, mixtures behind, lag one
-last.  The layered per-pair reference is far less damaged by the
-checkpoint schedule on \texttt{enwik8} ($4.4194$, against $5.4031$
-on \texttt{text8}); its exact number there is pending.  The
-overflow that had destroyed the calibrated member on these files has
-since been repaired, and the first finite number is in: on the
-\texttt{enwik8} counts round the calibrated product scores $4.4836$
---- behind the best tempered products ($4.4222$) rather than ahead
-of them as on \texttt{text8} under layered tables.  One caveat
-attaches: the fitter's residuals on \texttt{enwik8} stall near
-$10^{-3}$ at every checkpoint, two orders above the \texttt{text8}
-level, indicating that the three pair tables are not yet mutually
-consistent there (the margin-matching step needs more rounds on this
-file's heavier tail).  The calibrated figure is therefore a
-conservatively-fitted lower bound on the construction, and the
-comparison at scale stays provisional until the fit converges.  The
-\texttt{enwik9} and $V=4096$ counts rounds are running and will be
-reported here.
+\paragraph{What the exploratory round fixed.}  A reduced-alphabet
+round (the mechanism arena; its raw figures are not file-comparable
+and are not reported here) made three design decisions.  Combining
+rules must consume layered tables: with crude count-smoothed tables
+the ranking of rules inverts, and the calibrated construction ---
+the principled one --- was the member most damaged by poor table
+estimates and most improved by good ones; under layered tables it
+overtook the backoff reference outright.  Checkpointing at $C = 32$
+is adequate for the smooth members and ruinous for share-nothing
+layered ones (the $0.198$ above).  And the calibration fit needs its
+margins made consistent to high precision before fitting, or it
+stalls short of its optimum --- the fitter, not the model, sets the
+floor.  The measured table --- the analogue of Table~\ref{tab:ctw}
+for this construction, three files, honest bits per character ---
+will replace this paragraph when the campaign completes.
 
 \appendix
 

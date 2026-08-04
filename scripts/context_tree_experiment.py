@@ -22,11 +22,17 @@ from pathlib import Path
 from product_model_with_memory.corpus import load_tokens
 from product_model_with_memory.pairs import empirical_entropies, reduce_vocabulary
 from product_model_with_memory.context_tree import context_tree_codelengths
+from product_model_with_memory.streams import load_stream, reduce_ids
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", required=True)
+    parser.add_argument("--corpus", default=None,
+                        help="raw corpus file (tokenized by load_tokens)")
+    parser.add_argument("--ids", default=None,
+                        help="token-stream directory (e.g. "
+                             "output/streams/bpe_text8) --- the LLM "
+                             "tokenization; use THIS for paper numbers")
     parser.add_argument("--top-k", type=int, required=True)
     parser.add_argument("--depth", type=int, required=True)
     parser.add_argument("--n", type=int, default=None)
@@ -46,11 +52,19 @@ def main() -> None:
     cache_dir = Path(args.cache_dir) if args.cache_dir else out_dir / "cache"
 
     t0 = time.time()
-    tokens = load_tokens(args.corpus)
-    if args.n:
-        tokens = tokens[: args.n]
-    reduced, vocab = reduce_vocabulary(tokens, args.top_k)
-    V = len(vocab)
+    if (args.ids is None) == (args.corpus is None):
+        parser.error("give exactly one of --ids or --corpus")
+    if args.ids is not None:
+        ids, meta = load_stream(args.ids)
+        if args.n:
+            ids = ids[: args.n]
+        reduced, V, _capped = reduce_ids(ids, args.top_k)
+    else:
+        tokens = load_tokens(args.corpus)
+        if args.n:
+            tokens = tokens[: args.n]
+        reduced, vocab = reduce_vocabulary(tokens, args.top_k)
+        V = len(vocab)
     ent = empirical_entropies(reduced)
     print(
         f"V={V} n={len(reduced):,} max depth={args.depth}  "
@@ -95,7 +109,7 @@ def main() -> None:
     )
 
     payload = {
-        "corpus": args.corpus,
+        "corpus": args.corpus or args.ids,
         "top_k": args.top_k,
         "vocabulary_size": V,
         "n_tokens": len(reduced),

@@ -3101,3 +3101,237 @@ cap 300 every checkpoint with resid floor ~3e-5, ~2,200 s/checkpoint
 under contention -> overnight job; leave it.  ctree enwik8 grid
 pushed from second Mac (git divergence resolved via pull --rebase);
 enwik9 ctree grid queued there.
+
+## 2026-08-04 (night) --- enwik9 pairwise done; enwik8 CTW grid in; paper two-corpus
+
+MEASURED, pairwise enwik9 counts rerun (2,874 s): markov2 3.7360
+best; calibrated FINITE 4.0920, behind all tempered products (best
+3.9611) and the star; residuals ~1e-3..1e-4 (same inconsistency
+floor as enwik8).  Both enwik calibrated numbers are provisional
+lower bounds until project_margins is strengthened.
+
+MEASURED, ctree enwik8 grid (second Mac, in git):
+  V=1024 depth ladder: family 3.9844/3.9385/3.9265 (D2/D3/D4);
+  added-by-depth 0.1194/0.0459/0.0121 --- collapse ~1/3 per depth,
+  much slower than text8 (~1/10): markup structure runs deeper.
+  D=5 at V=1024 on enwik8 likely still pays ~0.004 --- cheap, worth
+  running.  V=4096 D3 gain +0.0844 (double text8's).  V=16384 gain
+  +0.0020 (nearly dead --- earlier than text8's +0.0136).
+  FULLVOCAB (V=300,001): family 10.8075 vs fixed d1 10.8050: loses
+  0.0025 b/t --- the full-fidelity verdict holds on BOTH corpora.
+PAPER: sec:ctree tables now two-corpus (tab:ctree-depth,
+tab:ctree-vocab); conclusions note the file-dependence of the depth
+collapse; layered-round paragraph carries enwik9 calibrated.
+IN FLIGHT: v4096 pairwise --- cp3 converged at 98 sweeps/1e-9 (warm
+start engaged; cp2's 3e-5 cap-hit was the cold chain) -> ~700-800 s
+per checkpoint, ETA ~6 h, overnight.  enwik9 CTW grid queued on the
+second Mac.
+
+## 2026-08-04 (late) --- TOKENIZER DECREE + measurement harmonization
+
+RUEDIGER'S STANDING DECISIONS (supersede anything contrary):
+1. ONE measure: bits per character of the original file, honest
+   complete codes.  Reduced-alphabet runs must be COMPLETED (price
+   the catch-all contents + vocabulary charge + boundary) so every
+   table reports bpc; rankings survive (completion is
+   member-independent per run).
+2. ONE tokenization: the LLM tokenizer (the bpe_* streams).  All
+   word-tokenizer results are SCRATCHED for the paper: the entire
+   ctree grid (July + today, both corpora), state_family_fullvocab,
+   sf-mid (1.7503/1.6979 chain).  Pairwise experiments already live
+   on bpe streams and survive untouched.
+STATUS of the redo machinery: scripts/context_tree_experiment.py now
+takes --ids <stream dir> (LLM streams); smoke-verified in sandbox.
+Ctree grids to REDO on bpe_text8/bpe_enwik8 (laptop, alongside the
+v4096 run) and bpe_enwik9 (heavier).  scripts/complete_bpc.py (the
+bpc completion tool) still TO BE BUILT --- next session's first
+task, then the paper-wide table rewrite in bpc.
+Paper's sec:ctree numbers are word-tokenizer: to be REPLACED by the
+bpe redo (skeleton/prose stays).  Mac's enwik9 word-level ladder:
+STOP if still running.
+
+## 2026-08-04 (midnight) --- CTW ON THE LLM CHAIN: THE VERDICT FLIPS; one honest table in the paper
+
+MEASURED (ctw_* runs, bpe streams, top-k 100276 = no catch-all;
+bpc = (family_bits + boundary at d0 rate)/chars + vocab charge
+0.0621):
+  VALIDATION: depth-1 rows reproduce tab:firstorder EXACTLY
+  (text8 1.8298, enwik8 2.1135) --- accounting closed.
+  text8:  D2 1.8185, D3 1.8182 bpc (-0.0113/-0.0116 vs first order)
+  enwik8: D2 2.0676, D3 2.0606 bpc (-0.0459/-0.0529)
+  Complete fixed depths >1 lose badly (d2 alone 2.31/2.53) --- all
+  gain is per-context depth choice.  BEST HONEST NUMBERS IN THE
+  PAPER so far on both files.
+THE FLIP: on word tokens adaptive depth showed ~no gain at full
+fidelity; on subword tokens it pays clearly.  Ruediger's tokenizer
+decree changed the scientific conclusion, not just the bookkeeping.
+PAPER: sec:ctree = ONE table (tab:ctw), honest bpc, three corpora,
+word-chain results explicitly superseded in the text.
+RUNNING: ctw_enwik9_d2/d3 (laptop, --jobs 12) -> fills the enwik9
+rows (first order there 1.8371 bpc); v4096 pairwise still grinding
+(cp7, resid stalls ~2e-4 at later checkpoints --- margin
+inconsistency at V=4096 too; parked until pairwise phase resumes).
+Next for CTW per Ruediger: nothing else --- this table IS the CTW
+deliverable; D4 rows optional if he asks.
+
+## 2026-08-05 --- Pairwise sections merged; program redefined to the one standard
+
+PAPER: old sections 7+8 (pairwise counts round + layered round)
+replaced by ONE section (sec:pairwise): design, protocol,
+accounting; measured table forthcoming.  Standard: layered tables
+ONLY (no count-smoothed variants), full LLM vocabulary, complete
+codes, bpc.  The reduced-V rounds are cited as the exploratory round
+that fixed three design decisions (layered tables mandatory; exact
+form for the share-nothing layered reference --- the 0.198 b/t
+staleness measurement; margin consistency before fitting) with NO
+raw numbers in the paper.
+IMPLEMENTATION TODO before the pairwise campaign can run:
+1. Sparse pairwise machinery at full vocab (rows = background +
+   corrections; products on support unions) --- currently the script
+   is dense (V=1024/4096 only).
+2. project_margins strengthening (iters flag + measure the floor).
+3. Exact layered order-2 at full vocab: telescopes, needs profile
+   dedup over ~millions of context pairs --- feasibility check.
+4. Calibrated at full vocab: sparse IPF open; else moderate-V
+   COMPLETE code (side-channel priced) per the section text.
+V4096 COUNTS RUN: cannot produce a paper number under the standard
+(counts tables, reduced V) --- recommended KILL; Ruediger to
+confirm.  CTW: awaiting ctw_enwik9_d2/d3 to finish tab:ctw; then
+CTW is done per Ruediger (D4+ on enwik9 only if D3's increment
+warrants).
+
+CTW enwik9 D2 IN (1,314 s): family 6.1310 b/t = 1.6840 bpc,
+-0.1531 vs first order 1.8371 --- LARGEST GAIN of the campaign,
+2.75M depth-2 leaves; d0/d1 rows validate exactly (2.9775/1.8371).
+Best honest number in the project.  tab:ctw updated.  D3 running;
+D4 on enwik9 clearly warranted after D3 (watch counting-phase
+memory).  v4096 counts run KILLED by Ruediger (cannot enter the
+paper under the standard).
+
+CTW enwik9 D3 IN (2,282 s; 76.8M contexts, 933k profiles): family
+6.0424 b/t = 1.6598 bpc, -0.1773 vs first order; D3 adds 0.0242
+over D2 (enwik8's D3 added 0.007); 2.81M depth-3 leaves.  CURVE NOT
+SATURATED on enwik9 -> D4 is the next measurement there.
+IMPLEMENTATION PREREQUISITE for D4 at full vocab: the T4 packed
+context keys overflow int64 at V^4 (100277^4 ~ 1e20 > 2^63) ---
+counting needs per-level key remapping (rank contexts against the
+observed depth-3 set) or 128-bit keys before a D4 run can exist.
+Bounded work; do BEFORE promising the run.  tab:ctw is otherwise
+COMPLETE (3 corpora x D2/D3, all validated against tab:firstorder
+/ tab:memoryless anchors).  main.tex committed; PDF recompile
+pending (sandbox Bash briefly unavailable).
+
+SCOREBOARD added at the top of main.tex (unnumbered section before
+Sec. 1): bytes / LLM memoryless / first order / context tree (bold
+current bests 1.8182, 2.0606, 1.6598) / pairwise (in progress) vs
+published records, all honest bpc.  RULE: every section that
+produces a number updates this table.  D4 skipped per Ruediger
+(after tiny-margin assessment).  Published-target verification:
+nncp v3.2 enwik9 = 107,261,318 bytes WITH decompressor = 0.858 bpc,
+same rules (lossless whole file, decompressor counted, no external
+data; model trains online on the file) --- confirmed from LTCB
+(mattmahoney.net/dc/text.html) on 2026-08-05.  Bash sandbox
+recovered; PDF current again.
+
+## 2026-08-04 (afternoon 2) --- CHUNKING-COST STUDY: first measurements are decisive
+
+New instrument scripts/chunking_cost.py (exact telescoped reference
+vs chunked evaluation; C grid; equal vs geometric spacing; per-block
+batched evaluations; incremental saving added mid-study).  MEASURED
+so far (bpe_text8, order 1, V=1024; exact reference 5.1443 b/t ---
+first exact number on this reduced stream, no prior anchor):
+  C=8 equal: +0.6208 b/t.  C=8 geometric: +0.0682.  NINE times
+  less staleness from checkpoint PLACEMENT alone (small blocks
+  early where tables learn fastest).  Smoke (V=64 order 0, C=4):
+  equal +0.810 vs geo +0.109.
+Runtime note: each configuration costs millions of fresh ladder
+evaluations (every checkpoint re-freezes every profile) -> ~10-20
+min per config at this size, NOT minutes total; this is the physics
+of the measurement.  Remaining: C=32, C=128 both spacings, then
+full-vocab orders 0/1 on text8+enwik8.
+IMPLICATION already visible: the exploratory pairwise rounds ran
+C=32 EQUAL --- much of their staleness was avoidable; geometric
+checkpoints become the default for every future chunked experiment
+(pairwise campaign included), pending the full grid.
+Paper: bits-per-character = bits-per-byte convention paragraph
+added to Sources (Ruediger).
+
+CHUNKING STUDY CLOSED EARLY (Ruediger; grid truncated on evidence).
+MEASURED, bpe_text8 order 1 V=1024 (exact 5.1443):
+  C=8  equal +0.6208 (596s)  | C=8  geo +0.0682 (150s)
+  C=32 equal +0.1703 (4393s) | C=32 geo +0.0319 (630s)
+CROSS-VALIDATION: C=32 equal = 5.3146 = the pairwise layered
+round's lag1 member EXACTLY (independent program, same protocol).
+CONCLUSIONS (standing):
+1. GEOMETRIC spacing is the default for all future chunked runs
+   (9x less staleness at C=8, 5x at C=32; also CHEAPER to evaluate
+   --- fewer distinct profile snapshots).
+2. The exploratory pairwise rounds (C=32 equal) carried ~0.17 b/t
+   avoidable staleness on lag1-class members at this scale; treat
+   their absolute numbers accordingly.
+3. C=128 rows and the full-vocab grid SKIPPED --- the geo curve
+   (0.068 -> 0.032) is already in diminishing returns; each future
+   chunked campaign can measure its own gap cheaply at small scale.
+TODO before the pairwise campaign: add --spacing {equal,geo} to
+scripts/pairwise_experiment.py (edges as in chunking_cost.py);
+default geo.  The killed run wrote no results.json (predates the
+incremental-save fix); the numbers above, from the terminal, are
+the record.
+CORRECTION (Ruediger): the 4393 s for C=32 equal includes a period
+with the laptop lid closed --- wall time inflated, not
+representative.  The gap numbers are unaffected (codelengths are
+clock-independent).  Honest timing comparison: C=8, equal 596 s vs
+geo 150 s (~4x).
+
+RENAME (5 Aug): the dense reduced-alphabet script pairwise_experiment.py
+-> pairwise_arena.py (mechanism arena; keeps the --exact merge mode).
+The tables-free campaign evaluator pairwise_sparse.py ->
+pairwise_experiment.py.  All handover mentions of
+pairwise_experiment.py BEFORE this line mean the arena script.
+
+## 4 Aug 2026, evening: tables-free evaluator rewritten, validated, fast
+- scripts/pairwise_experiment.py is now the vectorized + threaded
+  tables-free evaluator (no Python loop walks tokens, pairs, or
+  triples; numpy on whole blocks, chunked over a thread pool; one
+  batched builder request per block).  The old slow tables-free
+  version is superseded; scripts/pairwise_fast.py is an identical
+  copy left from testing and can be deleted.
+- Validated on the laptop, bpe_text8 full vocabulary (V=100,253),
+  4M-token slice, C=16 geo: every member agrees with the slow
+  reference to 8.6e-12; wall time 1557 s -> 802 s at --jobs 8.
+  Earlier check at V=64: agreement to 2.4e-14.
+- Measured phase split of the 802 s: layered-table work 792 s,
+  everything else 10 s.  The table phase is the parallel part; use
+  --jobs 12 on the 12-core laptop.  New sub-timers prep_py/prep_tab
+  report the serial-vs-parallel split inside the table phase on
+  every future run.
+- Science note (slice, to be confirmed by the campaign): at full
+  vocabulary the mixes win (best 9.75 bits/token), products collapse
+  (up to 15.4), lag1 10.65 --- the reverse of the V=1024 arena
+  ranking.
+
+## 4-5 Aug 2026, night: performance ledger of the pairwise evaluator
+Benchmark: bpe_text8 full vocabulary, 1M tokens, C=8, --jobs 12.
+Every step's members agreed to at least 1e-11; only time moved.
+- Baseline barrier scheduling + per-checkpoint worker start: 123 s.
+- KEPT: persistent worker pool, definitions once per call via shared
+  memory, 4 work pieces per worker per level, task-time accounting
+  (eval vs eval_cpu columns) -> 99 s.  This is the standing version.
+- TRIED AND REVERTED (all correct, all slower): no-barrier task
+  scheduling (269 s: level early-stop lost, giant families computed
+  all 54 levels); + worker-side early stop and row cache (295 s:
+  stop rule almost never triggers at these profile sizes); giant
+  families as concurrent level-waves (100 s: freed eval time went to
+  queue contention); + fill prefetch and longer waves (112 s: wave
+  overshoot).  Lesson written in blood: scheduling changes traded
+  seconds around a ~100 s plateau; do not retry these shapes.
+- Measured structure of the 99 s: eval wall 60, of which true worker
+  work 427 cpu-s (7.1 of 12 busy; the level barrier and indivisible
+  giant families set the pace); fill 17; ~22 s parent-side Python
+  BEFORE workers start (collecting/validating families, needed_r
+  unions, window/setup) --- the largest single untouched item and
+  the right next target, needs restructuring not knobs.
+- py-spy cannot attach on this macOS (timeout even with sudo); the
+  in-code eval/eval_cpu accounting is the working substitute.
+- 4M slice, C=16, jobs 8 standing: 802 s (was 1557 before the
+  vectorized script).  Campaign not yet launched.

@@ -1,0 +1,29 @@
+{
+  "corpus": "output/streams/bpe_text8",
+  "top_k": 100276,
+  "vocabulary_size": 100277,
+  "n_tokens": 19429294,
+  "empirical": {
+    "unigram_bits": 10.8431718592214,
+    "pair_bits": 18.08003887101992,
+    "conditional_bits": 7.236866917878798
+  },
+  "n_coded": 19429292,
+  "l_max": 54,
+  "leaf_model": "layered",
+  "max_depth": 2,
+  "contexts_observed": 3699134,
+  "unique_profiles": 86110,
+  "family_bits_per_token": 9.040002853676466,
+  "fixed_depth_bits_per_token": {
+    "0": 10.857248792169479,
+    "1": 9.09834277323539,
+    "2": 11.55508001224004
+  },
+  "map_bits_per_token": 9.04028381824775,
+  "map_leaves_by_depth": {
+    "1": 28624,
+    "2": 141002
+  },
+  "seconds": 196.29685282707214
+}
