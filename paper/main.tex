@@ -645,54 +645,83 @@ constructions of the next sections.
 \section{Adaptive depth: the context-tree family}
 \label{sec:ctree}
 
-The results in this section are preliminary --- one file, the reduced
-alphabet, two depths --- and are recorded so the numbers have a home;
-more depths and files follow.
-
 The family is the measured instance of the hierarchy route of
 Appendix~\ref{app:routes}: condition each position on its last $k$
 symbols, where $k$ is not fixed but chosen per context by a mixture
 over all prunings of the context tree up to depth $D$, with the prior
-and the recursion given there, and the layered estimator at every
-node.  Because every node's estimator is exchangeable, the whole
-codelength is computed in closed form --- with the table of
-Appendix~\ref{app:store}, the depth-3 run below took $80$ seconds.
+and recursion given there and the layered estimator at every node.
+Because every node's estimator is exchangeable, the codelength is
+computed in closed form; with the table of Appendix~\ref{app:store},
+every run below took about two minutes, so the family has now been
+measured across both axes --- depth at a fixed alphabet, and alphabet
+at the depths that matter.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{lrrrrrr}
+\begin{tabular}{lrrrr}
 \toprule
-run & $d{=}0$ & $d{=}1$ & $d{=}2$ & $d{=}3$ & family & leaves by depth \\
+ & best fixed depth & family & gain & added by last depth \\
 \midrule
-$D=2$, layered & $6.0636$ & $5.0564$ & $5.1309$ & --- & $4.9507$ &
-  $967 / 26{,}506$ \\
-$D=3$, layered & $6.0636$ & $5.0564$ & $5.1306$ & $5.9071$ &
-  $\mathbf{4.9390}$ & $969 / 21{,}817 / 17{,}698$ \\
-$D=3$, KT leaves & $6.0636$ & $5.1123$ & $5.6164$ & $6.7815$ &
-  $5.0825$ & $1{,}020 / 1{,}827 / 810$ \\
+$D=2$ & $5.0564$ & $4.9507$ & $0.1057$ & $0.1057$ \\
+$D=3$ & $5.0564$ & $4.9390$ & $0.1174$ & $0.0117$ \\
+$D=4$ & $5.0564$ & $4.9384$ & $0.1180$ & $0.0006$ \\
 \bottomrule
 \end{tabular}
-\caption{Context trees on the reduced \texttt{text8} stream,
-  $V = 1024$, bits per token.  The $d{=}k$ columns are complete
-  fixed-depth trees; ``family'' is the mixture over all prunings;
-  ``leaves by depth'' describes the pruning the posterior singles
-  out.  The last row replaces the layered node estimator by the
-  classical Krichevsky--Trofimov rule.}
-\label{tab:ctree-v1024}
+\caption{Depth ladder on the reduced \texttt{text8} stream at
+  $V = 1024$, bits per token.  ``Gain'' is best fixed depth minus
+  family; the last column is the family's improvement over the
+  family one depth shallower.  Each successive depth buys roughly a
+  tenth of the previous one: the memory this axis can reach
+  saturates at two to three symbols.}
+\label{tab:ctree-depth}
 \end{table}
 
-Three observations.  First, every complete fixed depth beyond one
-\emph{loses} --- depth $2$ by $0.074$, depth $3$ by $0.85$ --- yet
-the family beats the best fixed depth by $0.117$: all of the gain
-of depth comes from choosing it per context.  Second, the gains
-collapse as depth grows: allowing depth $2$ bought $0.106$ bits per
-token, allowing depth $3$ buys another $0.0117$, although the chosen
-pruning uses depth $3$ at $17{,}698$ contexts.  Memory of this kind
-saturates quickly, as the count profile predicts: most deep contexts
-are seen once or twice.  Third, the node estimator sets how much
-memory the data can afford: with KT nodes the same family affords
-almost no depth and lands $0.14$ above the layered version's
-depth-one figure.
+\begin{table}[ht]
+\centering
+\begin{tabular}{rrrrr}
+\toprule
+$V$ & depth & best fixed & family & gain \\
+\midrule
+$1{,}024$  & $4$ & $5.0564$  & $4.9384$  & $+0.1180$ \\
+$4{,}096$  & $3$ & $6.7132$  & $6.6766$  & $+0.0366$ \\
+$16{,}384$ & $2$ & $8.2518$  & $8.2382$  & $+0.0136$ \\
+$253{,}855$ & $2$ & $10.0915$ & $10.0926$ & $-0.0011$ \\
+\bottomrule
+\end{tabular}
+\caption{Alphabet trend, \texttt{text8}, bits per token, corrected
+  evaluator throughout.  The adaptive gain shrinks by roughly a
+  factor of three for every fourfold growth of the alphabet, and at
+  the full vocabulary the family \emph{loses} to fixed depth one:
+  the prior cost of describing the pruning exceeds what depth earns.
+  Consistency checks: the depth-one baseline at $V=4096$ agrees with
+  the independently verified state-family figure ($6.7132$), and the
+  $V=16{,}384$ family reproduces the July cluster run to the fourth
+  decimal.  The full-vocabulary figure supersedes the earlier
+  published $10.0919$, which carried a small error from the
+  since-repaired evaluator and table cache.}
+\label{tab:ctree-vocab}
+\end{table}
+
+Three conclusions.  First, all of depth's value comes from choosing
+it per context: every \emph{complete} fixed depth beyond one loses,
+at every alphabet, yet the mixture beats the best fixed depth
+wherever the alphabet is small enough.  Second, both axes exhaust
+quickly.  Along depth the gains collapse geometrically
+(Table~\ref{tab:ctree-depth}); along the alphabet they shrink toward
+zero and cross it at the full vocabulary
+(Table~\ref{tab:ctree-vocab}).  The count profiles say why: at large
+$V$, or beyond depth two, almost every context is seen once or
+twice, and a node with two observations cannot pay for its own
+description.  Third, the node estimator remains decisive --- with
+Krichevsky--Trofimov nodes in place of layered ones the family
+affords almost no depth at any size (Section~\ref{sec:ctree}
+ablations at $V=1024$: family $5.0825$, a tenth of the layered
+splits).  Taken together: the tree is the right way to \emph{spend}
+memory of a few symbols, and no way to acquire more.  Longer reach
+must come from the other routes of Appendix~\ref{app:routes} ---
+the constraint models of Section~\ref{sec:pairwise}, whose cost
+grows with $V^2$ rather than $V^{k}$, and retrieval, whose cost does
+not depend on $V$ at all.
 
 \section{Memory of order two from pairwise statistics}
 \label{sec:pairwise}
