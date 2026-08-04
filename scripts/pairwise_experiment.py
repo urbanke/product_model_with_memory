@@ -53,6 +53,7 @@ checkpoint, not a scheme.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
@@ -103,22 +104,174 @@ def project_margins(J: np.ndarray, m: np.ndarray,
     return J
 
 
+def _ipf_anderson(P01, P02, P12, psi01, psi02, psi12,
+                  iters, tol, floor):
+    """Anderson-accelerated IPF.  Same map, same residual test, same
+    unique optimum as plain IPF.  The state advances in the linear
+    domain (the map's natural, cheap form); the acceleration history
+    lives in the LOG domain in float64 --- reduced precision fails in
+    BOTH domains (measured 4 Aug: linear differences underflow;
+    floored log entries reach magnitude ~700 where float32 carries
+    only ~4e-5 absolute).  Extrapolations are proposals only:
+    exponentiation keeps them positive, and the full-precision
+    residual test decides."""
+
+    V_ = psi01.shape[0]
+    n2 = V_ * V_
+    n = 3 * n2
+    m = 4 if V_ <= 1500 else 2
+
+    def G_inplace(a01, a02, a12):
+        def step(a, P, M):
+            sM = M.sum()
+            if not np.isfinite(sM) or sM <= 0.0:
+                return False
+            a *= P / np.maximum(M / sM, floor)
+            a /= a.max()
+            return True
+        ok = (step(a01, P01, a01 * (a02 @ a12.T))
+              and step(a02, P02, a02 * (a01 @ a12))
+              and step(a12, P12, a12 * (a01.T @ a02)))
+        if not ok:
+            return None
+        M01 = a01 * (a02 @ a12.T)
+        sM = M01.sum()
+        return (np.abs(M01 / sM - P01).sum()
+                if np.isfinite(sM) and sM > 0.0 else float("inf"))
+
+    def logflat(a01, a02, a12):
+        out = np.empty(n)
+        out[:n2] = np.log(np.maximum(a01, 1e-300)).ravel()
+        out[n2:2 * n2] = np.log(np.maximum(a02, 1e-300)).ravel()
+        out[2 * n2:] = np.log(np.maximum(a12, 1e-300)).ravel()
+        return out
+
+    a01 = np.maximum(psi01, 1e-300)
+    a02 = np.maximum(psi02, 1e-300)
+    a12 = np.maximum(psi12, 1e-300)
+    lx = logflat(a01, a02, a12)
+    lx_prev = None
+    lf_prev = None
+    dX = np.zeros((m, n))
+    dF = np.zeros((m, n))
+    nh = 0
+    head = 0
+    sweeps = 0
+    while sweeps < iters:
+        resid = G_inplace(a01, a02, a12)
+        sweeps += 1
+        if resid is None:
+            a01 = np.ones((V_, V_))
+            a02 = np.ones((V_, V_))
+            a12 = np.ones((V_, V_))
+            lx = logflat(a01, a02, a12)
+            nh = 0
+            lx_prev = lf_prev = None
+            continue
+        if resid < tol:
+            return a01, a02, a12, sweeps, float(resid)
+        lgx = logflat(a01, a02, a12)
+        lf = lgx - lx
+        if lx_prev is not None:
+            dX[head] = lx - lx_prev
+            dF[head] = lf - lf_prev
+            head = (head + 1) % m
+            nh = min(nh + 1, m)
+        lx_prev, lf_prev = lx, lf
+        did_mix = False
+        if nh >= 1:
+            D_F = dF[:nh]
+            D_X = dX[:nh]
+            A = D_F @ D_F.T
+            A[np.diag_indices_from(A)] += 1e-8 * max(1.0, A.max())
+            try:
+                gam = np.linalg.solve(A, D_F @ lf)
+                cand_log = lgx - D_X.T @ gam - D_F.T @ gam
+                if np.isfinite(cand_log).all():
+                    v = np.exp(cand_log)
+                    # no renormalization here: the map is scale-
+                    # invariant, and lx must stay the exact log of
+                    # the state for the history to be consistent
+                    a01 = v[:n2].reshape(V_, V_)
+                    a02 = v[n2:2 * n2].reshape(V_, V_)
+                    a12 = v[2 * n2:].reshape(V_, V_)
+                    lx = cand_log
+                    did_mix = True
+            except np.linalg.LinAlgError:
+                nh = 0
+                lx_prev = lf_prev = None
+        if not did_mix:
+            lx = lgx
+    return a01, a02, a12, sweeps, float(resid)
+
+
 def ipf_triangle(P01, P02, P12, psi01, psi02, psi12,
-                 iters: int, tol: float):
+                 iters: int, tol: float, ex=None, jobs: int = 1,
+                 solver: str = "ipf"):
     """Fit psi01(x0,x1) psi02(x0,x2) psi12(x1,x2) to the three pair
     margins by iterative proportional fitting.  The V^3 joint is never
     materialized: each pair margin is one V x V matrix product.
     Warm-startable; returns (psi01, psi02, psi12, sweeps, residual)."""
 
+    # Numerics (fix, 4 Aug 2026): each factor is rescaled to max 1
+    # right after its update.  The fitted model is invariant to a
+    # per-factor scale (every use of the factors normalizes over the
+    # target), but WITHOUT the rescaling the scales drift
+    # exponentially across warm-started checkpoints and overflow to
+    # nan --- observed at checkpoint 6 on enwik8 and enwik9, which
+    # cost those runs their calibrated member.  The floor moved from
+    # 1e-300 (one update away from the float64 edge) to 1e-150.  If a
+    # margin still degenerates, the factors are reset and the sweep
+    # restarted, and a degenerate final residual reports inf, never
+    # nan.
+    floor = 1e-150
+    V_ = psi01.shape[0]
+    if solver == "anderson":
+        return _ipf_anderson(P01, P02, P12, psi01, psi02, psi12,
+                             iters, tol, floor)
+
+    if ex is not None and jobs > 1:
+        nb = min(jobs * 2, V_)
+        edges = np.linspace(0, V_, nb + 1, dtype=int)
+        slices = [slice(int(a_), int(b_))
+                  for a_, b_ in zip(edges[:-1], edges[1:])
+                  if b_ > a_]
+    else:
+        slices = None
+
+    def _step(psi, P, M):
+        # All reductions (sum, max) stay global and serial, so the
+        # threaded elementwise updates are bit-identical to serial.
+        s = M.sum()
+        if not np.isfinite(s) or s <= 0.0:
+            return False
+        if slices is None:
+            psi *= P / np.maximum(M / s, floor)
+            psi /= psi.max()
+        else:
+            def _upd(sl):
+                psi[sl] *= P[sl] / np.maximum(M[sl] / s, floor)
+            list(ex.map(_upd, slices))
+            mx = psi.max()
+            def _nrm(sl):
+                psi[sl] /= mx
+            list(ex.map(_nrm, slices))
+        return True
+
+    resid = float("inf")
     for it in range(1, iters + 1):
+        ok = (_step(psi01, P01, psi01 * (psi02 @ psi12.T))
+              and _step(psi02, P02, psi02 * (psi01 @ psi12))
+              and _step(psi12, P12, psi12 * (psi01.T @ psi02)))
+        if not ok:
+            psi01[:] = 1.0
+            psi02[:] = 1.0
+            psi12[:] = 1.0
+            continue
         M01 = psi01 * (psi02 @ psi12.T)
-        psi01 *= P01 / np.maximum(M01 / M01.sum(), 1e-300)
-        M02 = psi02 * (psi01 @ psi12)
-        psi02 *= P02 / np.maximum(M02 / M02.sum(), 1e-300)
-        M12 = psi12 * (psi01.T @ psi02)
-        psi12 *= P12 / np.maximum(M12 / M12.sum(), 1e-300)
-        M01 = psi01 * (psi02 @ psi12.T)
-        resid = np.abs(M01 / M01.sum() - P01).sum()
+        s = M01.sum()
+        resid = (np.abs(M01 / s - P01).sum()
+                 if np.isfinite(s) and s > 0.0 else float("inf"))
         if resid < tol:
             return psi01, psi02, psi12, it, float(resid)
     return psi01, psi02, psi12, iters, float(resid)
@@ -228,6 +381,16 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=None,
                     help="use only the first n tokens")
     ap.add_argument("--ipf-iters", type=int, default=300)
+    ap.add_argument("--ipf-solver", choices=("ipf", "anderson"),
+                    default="ipf",
+                    help="anderson: accelerated fit, same optimum,"
+                         " typically 3-10x fewer sweeps; digits can"
+                         " differ only where neither run converges")
+    ap.add_argument("--ipf-lag", type=int, default=1,
+                    help="warm-start each calibration fit from the fit"
+                         " this many checkpoints back; k>1 runs k fit"
+                         " chains concurrently (changes calibrated"
+                         " digits only where the sweep cap binds)")
     ap.add_argument("--ipf-tol", type=float, default=1e-9)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -309,9 +472,62 @@ def main() -> None:
     edges = np.linspace(2, n, C + 1).astype(np.int64)
     coded = 0
     diagnostics = []
+    pool = (ThreadPoolExecutor(max_workers=args.jobs)
+            if args.jobs > 1 else None)
+    scorer = ThreadPoolExecutor(max_workers=1)
+    pending = None
     CH = max(1, (1 << 23) // V)               # scoring chunk length
+    phase_seconds = {"tables": 0.0, "ipf": 0.0, "score": 0.0,
+                     "layered": 0.0, "reveal": 0.0}
+
+    # ---- fit/score pipeline.  --ipf-lag k warm-starts each fit from
+    # the fit k checkpoints back, splitting the single fit chain into
+    # k independent chains that run concurrently (Ruediger, 4 Aug).
+    # lag 1 is the classical single chain.  Scoring always merges in
+    # checkpoint order.  The layered member forces the strictly
+    # serial path.
+    lag = max(1, int(args.ipf_lag))
+    if pool is None or "markov2-layered" in bits:
+        lag = 1
+    sync_mode = (pool is None) or ("markov2-layered" in bits)
+    fitpool = ThreadPoolExecutor(max_workers=lag)
+    fit_futs = []                 # submission-indexed fit futures
+    outq = []                     # (c, coded_after, score_fut, diag)
+    WIN = max(2, lag + 1)         # bound on unmerged checkpoints
+
+    def _fit_task(P01_, P02_, warm_fut):
+        t_ = time.time()
+        if warm_fut is None:
+            w01 = np.ones((V, V))
+            w02 = np.ones((V, V))
+            w12 = np.ones((V, V))
+        else:
+            w01, w02, w12 = warm_fut.result()[0]
+        r01, r02, r12, sweeps_, resid_ = ipf_triangle(
+            P01_, P02_, P01_, w01, w02, w12,
+            args.ipf_iters, args.ipf_tol, ex=None, jobs=1,
+            solver=args.ipf_solver)
+        return ((r01, r02, r12), np.log(r01), np.log(r02),
+                sweeps_, resid_, time.time() - t_)
+
+    def _merge_head():
+        c_, coded_, sfut_, diag_ = outq.pop(0)
+        tot_, sweeps_, resid_, ipf_dt = sfut_.result()
+        for k2, v2 in tot_.items():
+            bits[k2] -= v2
+        phase_seconds["ipf"] += ipf_dt
+        diag_["ipf_sweeps"] = sweeps_
+        diag_["ipf_residual_l1"] = resid_
+        diagnostics.append(diag_)
+        print(f"  checkpoint {c_ + 1}/{C}: coded {coded_:,} "
+              f"(ipf {sweeps_} sweeps, resid {resid_:.1e}) "
+              f"({time.time() - t0:.0f}s; "
+              + " ".join(f"{k_}={v_:.0f}s"
+                         for k_, v_ in phase_seconds.items()) + ")",
+              flush=True)
 
     for c in range(C):
+        tblk = time.time()
         lo, hi = int(edges[c]), int(edges[c + 1])
         if hi <= lo:
             continue
@@ -341,38 +557,111 @@ def main() -> None:
         # table with roles (x_{t-1}, x_{t-2}); P02 from the lag-2 pairs
         P01 = project_margins(J1.T, m)
         P02 = project_margins(J2.T, m)
-        P12 = P01                       # same table, roles shifted
-        psi01, psi02, psi12, sweeps, resid = ipf_triangle(
-            P01, P02, P12, psi01, psi02, psi12,
-            args.ipf_iters, args.ipf_tol)
-        K01, K02 = np.log(psi01), np.log(psi02)
+        phase_seconds["tables"] += time.time() - tblk
+
+        # ---- dispatch the fit, chained to its ancestor 'lag' back
+        warm = (fit_futs[len(fit_futs) - lag]
+                if len(fit_futs) >= lag else None)
+        ffut = fitpool.submit(_fit_task, P01, P02, warm)
+        fit_futs.append(ffut)
+
         mi01, mi02 = mutual_information(J1), mutual_information(J2)
-        diagnostics.append({"checkpoint": c + 1, "ipf_sweeps": sweeps,
-                            "ipf_residual_l1": resid,
-                            "mi_lag1": mi01, "mi_lag2": mi02,
-                            "chow_liu": "lag1-chain" if mi01 >= mi02
-                                        else "lag2-edge"})
+        diag0 = {"checkpoint": c + 1,
+                 "mi_lag1": mi01, "mi_lag2": mi02,
+                 "chow_liu": "lag1-chain" if mi01 >= mi02
+                             else "lag2-edge"}
         if Ctri.nnz or tri_c:
             rowsum = np.asarray(Ctri.sum(axis=1)).ravel()
         else:
             rowsum = np.zeros(V * V)
 
-        # ---- score the block
-        for j0 in range(lo, hi, CH):
-            j1 = min(j0 + CH, hi)
+        # ---- data-side snapshot for the scorer
+        tph = time.time()
+        tb_all = np.arange(lo, hi)
+        cid_all = x[tb_all - 1] * V + x[tb_all - 2]
+        ncb_all = (np.asarray(Ctri[cid_all, x[tb_all]]).ravel()
+                   if "markov2" in bits else None)
+        snap = dict(p1=p1, p2=p2, m=m, L1=L1, L2=L2, Lm=Lm,
+                    rowsum=rowsum, cid_all=cid_all, ncb_all=ncb_all,
+                    lo=lo, hi=hi)
+
+        def _score_chunk(sn, j0, j1):
+            local = {}
             t = np.arange(j0, j1)
             b, a1, a2 = x[t], x[t - 1], x[t - 2]
-            r1b = p1[a1, b]
-            r2b = p2[a2, b]
-            mb = m[b]
-            bits["lag1"] -= np.log2(r1b).sum()
-            cid = a1 * V + a2
-            ncb = np.asarray(Ctri[cid, b]).ravel()
+            r1b = sn["p1"][a1, b]
+            r2b = sn["p2"][a2, b]
+            mb = sn["m"][b]
+            local["lag1"] = np.log2(r1b).sum()
+            cid = sn["cid_all"][j0 - sn["lo"]:j1 - sn["lo"]]
             if "markov2" in bits:
-                nc = rowsum[cid]
+                ncb = sn["ncb_all"][j0 - sn["lo"]:j1 - sn["lo"]]
+                nc = sn["rowsum"][cid]
                 pm2 = (ncb + s * r1b) / (nc + s)
-                bits["markov2"] -= np.log2(pm2).sum()
-            if "markov2-layered" in bits:
+                local["markov2"] = np.log2(pm2).sum()
+            for w0, w2 in mix_grid:
+                w1 = 1.0 - w0 - w2
+                p = w0 * mb + w1 * r1b + w2 * r2b
+                local[f"mix:{w0:g},{w2:g}"] = np.log2(p).sum()
+            R1 = sn["L1"][a1] - sn["Lm"][None, :]
+            R2 = sn["L2"][a2] - sn["Lm"][None, :]
+            for b1, b2 in prod_grid:
+                logits = sn["Lm"][None, :] + b1 * R1 + b2 * R2
+                mx = logits.max(axis=1, keepdims=True)
+                lz = mx[:, 0] + np.log(
+                    np.exp(logits - mx).sum(axis=1))
+                sel = logits[np.arange(len(t)), b]
+                local[f"prod:{b1:g},{b2:g}"] = (
+                    (sel - lz) / math.log(2)).sum()
+            logits = sn["K01"][:, a1].T + sn["K02"][:, a2].T
+            mx = logits.max(axis=1, keepdims=True)
+            lz = mx[:, 0] + np.log(np.exp(logits - mx).sum(axis=1))
+            sel = logits[np.arange(len(t)), b]
+            local["calibrated"] = ((sel - lz) / math.log(2)).sum()
+            return local
+
+        def _score_block(sn):
+            tb = time.time()
+            rng = [(j0, min(j0 + CH, sn["hi"]))
+                   for j0 in range(sn["lo"], sn["hi"], CH)]
+            if pool is not None:
+                parts = list(pool.map(
+                    lambda ab: _score_chunk(sn, *ab), rng))
+            else:
+                parts = [_score_chunk(sn, *ab) for ab in rng]
+            tot_ = {}
+            for loc in parts:
+                for k2, v2 in loc.items():
+                    tot_[k2] = tot_.get(k2, 0.0) + v2
+            phase_seconds["score"] += time.time() - tb
+            return tot_
+
+        def _score_after_fit(sn, ff):
+            _, K1_, K2_, sweeps_, resid_, ipf_dt = ff.result()
+            sn = dict(sn)
+            sn["K01"] = K1_
+            sn["K02"] = K2_
+            return _score_block(sn), sweeps_, resid_, ipf_dt
+
+        coded += hi - lo
+        outq.append((c, coded,
+                     scorer.submit(_score_after_fit, snap, ffut),
+                     diag0))
+        if sync_mode:
+            _merge_head()
+        else:
+            while len(outq) >= WIN:
+                _merge_head()
+
+        tph = time.time()
+        if "markov2-layered" in bits:
+            ranges = [(j0, min(j0 + CH, hi))
+                      for j0 in range(lo, hi, CH)]
+            for j0, j1 in ranges:
+                t = np.arange(j0, j1)
+                b, a1, a2 = x[t], x[t - 1], x[t - 2]
+                cid = a1 * V + a2
+                ncb = np.asarray(Ctri[cid, b]).ravel()
                 # share-nothing layered estimator per context pair:
                 # p(b|c) = q(profile_c + one more b) / q(profile_c),
                 # one evaluation per distinct (profile, count) pair,
@@ -388,7 +677,8 @@ def main() -> None:
                 fams: dict = {}
                 need = []
                 for kk in upair:
-                    bi, cv = int(kk) // (int(ncb.max()) + 2),                              int(kk) % (int(ncb.max()) + 2)
+                    bi, cv = int(kk) // (int(ncb.max()) + 2), \
+                             int(kk) % (int(ncb.max()) + 2)
                     base = bases[bi]
                     need.append((base, cv))
                     if (base, cv) not in ratio_memo:
@@ -402,32 +692,16 @@ def main() -> None:
                                 bb, _augmented_profile(bb, cv))
                 lut = np.array([ratio_memo[k2] for k2 in need])
                 bits["markov2-layered"] -= lut[pinv].sum()
-            for w0, w2 in mix_grid:
-                w1 = 1.0 - w0 - w2
-                p = w0 * mb + w1 * r1b + w2 * r2b
-                bits[f"mix:{w0:g},{w2:g}"] -= np.log2(p).sum()
-            # normalization-based members, (chunk, V) logits
-            R1 = L1[a1] - Lm[None, :]
-            R2 = L2[a2] - Lm[None, :]
-            for b1, b2 in prod_grid:
-                logits = Lm[None, :] + b1 * R1 + b2 * R2
-                mx = logits.max(axis=1, keepdims=True)
-                lz = mx[:, 0] + np.log(
-                    np.exp(logits - mx).sum(axis=1))
-                sel = logits[np.arange(len(t)), b]
-                bits[f"prod:{b1:g},{b2:g}"] -= (
-                    (sel - lz) / math.log(2)).sum()
-            logits = K01[:, a1].T + K02[:, a2].T
-            mx = logits.max(axis=1, keepdims=True)
-            lz = mx[:, 0] + np.log(np.exp(logits - mx).sum(axis=1))
-            sel = logits[np.arange(len(t)), b]
-            bits["calibrated"] -= ((sel - lz) / math.log(2)).sum()
-        coded += hi - lo
+        phase_seconds["layered"] += time.time() - tph
 
-        # ---- reveal the block to the counters
+        # ---- reveal the block to the counters (safe alongside the
+        # background fits and scorer: they only read their snapshots)
+        tph = time.time()
         t = np.arange(lo, hi)
-        np.add.at(N1, (x[t - 1], x[t]), 1)
-        np.add.at(N2, (x[t - 2], x[t]), 1)
+        N1 += np.bincount(x[t - 1].astype(np.int64) * V + x[t],
+                          minlength=V * V).reshape(V, V)
+        N2 += np.bincount(x[t - 2].astype(np.int64) * V + x[t],
+                          minlength=V * V).reshape(V, V)
         uni += np.bincount(x[t], minlength=V)
         if c == 0:                       # tokens before the first target
             uni += np.bincount(x[:2], minlength=V)
@@ -437,9 +711,11 @@ def main() -> None:
             (np.ones(hi - lo, dtype=np.int64),
              (tri_c[-1], tri_b[-1])), shape=(V * V, V)).tocsr()
         Ctri = (Ctri + new).tocsr()
-        print(f"  checkpoint {c + 1}/{C}: coded {coded:,} "
-              f"(ipf {sweeps} sweeps, resid {resid:.1e}) "
-              f"({time.time() - t0:.0f}s)", flush=True)
+        phase_seconds["reveal"] += time.time() - tph
+
+    while outq:
+        _merge_head()
+
 
     if args.exact == "add":
         tx = time.time()
@@ -469,6 +745,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "results.json").write_text(json.dumps({
         "ids": args.ids, "top_k": args.top_k, "V": V, "n_tokens": n,
+        "phase_seconds": {k_: round(v_, 1)
+                          for k_, v_ in phase_seconds.items()},
         "coded_positions": coded, "checkpoints": C, "smooth": s,
         "member_bits_per_token": per_tok,
         "family_bits_per_token": fam / coded,

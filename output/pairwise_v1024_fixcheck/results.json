@@ -1,0 +1,299 @@
+{
+  "ids": "output/streams/bpe_text8",
+  "top_k": 1023,
+  "V": 1024,
+  "n_tokens": 19429294,
+  "phase_seconds": {
+    "tables": 3.3,
+    "ipf": 255.0,
+    "score": 109.3,
+    "layered": 0.0,
+    "reveal": 1.2
+  },
+  "coded_positions": 19429292,
+  "checkpoints": 32,
+  "smooth": 64.0,
+  "member_bits_per_token": {
+    "lag1": 5.339316710696136,
+    "calibrated": 5.2827106715785845,
+    "markov2": 5.244556823699947,
+    "mix:0.02,0.05": 5.305263198890961,
+    "mix:0.02,0.1": 5.297616483026158,
+    "mix:0.02,0.2": 5.299536333423628,
+    "mix:0.02,0.3": 5.315482801568072,
+    "mix:0.05,0.05": 5.307415377387325,
+    "mix:0.05,0.1": 5.3020653076027715,
+    "mix:0.05,0.2": 5.306931075740361,
+    "mix:0.05,0.3": 5.3252473864617444,
+    "prod:0.75,0.25": 5.30018075921197,
+    "prod:0.75,0.5": 5.278395698637295,
+    "prod:0.75,0.75": 5.300905753618705,
+    "prod:0.75,1": 5.366315644905953,
+    "prod:1,0.25": 5.280147914398951,
+    "prod:1,0.5": 5.274643003658552,
+    "prod:1,0.75": 5.3124059018692,
+    "prod:1,1": 5.391710730014581
+  },
+  "family_bits_per_token": 5.244557042335166,
+  "posterior_max": 1.0,
+  "best_member": "markov2",
+  "diagnostics": [
+    {
+      "checkpoint": 1,
+      "ipf_sweeps": 1,
+      "ipf_residual_l1": 0.0,
+      "mi_lag1": 0.0,
+      "mi_lag2": 0.0,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 2,
+      "ipf_sweeps": 173,
+      "ipf_residual_l1": 9.3344868647015e-10,
+      "mi_lag1": 1.0079015701075829,
+      "mi_lag2": 0.5403349309486518,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 3,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 3.784682979860378e-09,
+      "mi_lag1": 1.0801198144863124,
+      "mi_lag2": 0.5526384656246721,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 4,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.9291942761921546e-09,
+      "mi_lag1": 1.0861288657514192,
+      "mi_lag2": 0.5367100511849441,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 5,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.8637528564026546e-09,
+      "mi_lag1": 1.0801230472693208,
+      "mi_lag2": 0.5192475061883604,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 6,
+      "ipf_sweeps": 264,
+      "ipf_residual_l1": 9.8940940236123e-10,
+      "mi_lag1": 1.077679996095956,
+      "mi_lag2": 0.5059348729454849,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 7,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.899911136850713e-09,
+      "mi_lag1": 1.0722073923190532,
+      "mi_lag2": 0.4929569780586085,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 8,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 3.0292541687032383e-09,
+      "mi_lag1": 1.0671764750788109,
+      "mi_lag2": 0.48339666608497855,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 9,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.5862511769373893e-09,
+      "mi_lag1": 1.0700093564033781,
+      "mi_lag2": 0.48001488425402444,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 10,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.860450364266122e-09,
+      "mi_lag1": 1.0647970161582074,
+      "mi_lag2": 0.4722084714411682,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 11,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.2508509529302967e-09,
+      "mi_lag1": 1.060825300696196,
+      "mi_lag2": 0.46633357850942625,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 12,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.6889598517971225e-09,
+      "mi_lag1": 1.0567627265322086,
+      "mi_lag2": 0.4595978526287919,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 13,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 3.5150520271599745e-09,
+      "mi_lag1": 1.0554114794004643,
+      "mi_lag2": 0.4559779749979763,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 14,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.191818745734544e-09,
+      "mi_lag1": 1.0529847114559612,
+      "mi_lag2": 0.45254166528249784,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 15,
+      "ipf_sweeps": 287,
+      "ipf_residual_l1": 9.815340931702082e-10,
+      "mi_lag1": 1.0536587034306508,
+      "mi_lag2": 0.4502781266438866,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 16,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 3.3977217230425104e-09,
+      "mi_lag1": 1.0514262487950627,
+      "mi_lag2": 0.4468329254764216,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 17,
+      "ipf_sweeps": 296,
+      "ipf_residual_l1": 9.942516206983182e-10,
+      "mi_lag1": 1.051793762556649,
+      "mi_lag2": 0.4449649692258901,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 18,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.5237982975868608e-09,
+      "mi_lag1": 1.0519836229817128,
+      "mi_lag2": 0.4450615052671766,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 19,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.683047732822363e-09,
+      "mi_lag1": 1.05107668574655,
+      "mi_lag2": 0.44226088327618,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 20,
+      "ipf_sweeps": 278,
+      "ipf_residual_l1": 9.933897817607522e-10,
+      "mi_lag1": 1.0510129547027338,
+      "mi_lag2": 0.44061925669395335,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 21,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.3415065295886604e-09,
+      "mi_lag1": 1.0521907080673176,
+      "mi_lag2": 0.4396803036656522,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 22,
+      "ipf_sweeps": 292,
+      "ipf_residual_l1": 9.940159749236361e-10,
+      "mi_lag1": 1.0535958092027882,
+      "mi_lag2": 0.43830216540012185,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 23,
+      "ipf_sweeps": 295,
+      "ipf_residual_l1": 9.953099003881846e-10,
+      "mi_lag1": 1.053749957854466,
+      "mi_lag2": 0.4365470364151919,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 24,
+      "ipf_sweeps": 290,
+      "ipf_residual_l1": 9.956051755788227e-10,
+      "mi_lag1": 1.0538549028640267,
+      "mi_lag2": 0.43544908721943787,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 25,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.6526632294126543e-09,
+      "mi_lag1": 1.056424507790264,
+      "mi_lag2": 0.4362719338058786,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 26,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.1851952417657823e-09,
+      "mi_lag1": 1.0645764908685176,
+      "mi_lag2": 0.44091026786182475,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 27,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.4274577977264416e-09,
+      "mi_lag1": 1.0656423642083788,
+      "mi_lag2": 0.44005719055135717,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 28,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.3515959581502752e-09,
+      "mi_lag1": 1.0654647747194144,
+      "mi_lag2": 0.4391082124963633,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 29,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.3715394069898013e-09,
+      "mi_lag1": 1.0635411776870156,
+      "mi_lag2": 0.43738593050274016,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 30,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 2.7117180037515966e-09,
+      "mi_lag1": 1.0617866217277458,
+      "mi_lag2": 0.43544023666836035,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 31,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 1.2054441689011068e-09,
+      "mi_lag1": 1.064303948492282,
+      "mi_lag2": 0.43701275997667394,
+      "chow_liu": "lag1-chain"
+    },
+    {
+      "checkpoint": 32,
+      "ipf_sweeps": 300,
+      "ipf_residual_l1": 5.817979054030911e-09,
+      "mi_lag1": 1.0637495266092323,
+      "mi_lag2": 0.4362364694087949,
+      "chow_liu": "lag1-chain"
+    }
+  ],
+  "seconds": 369.2787766456604
+}

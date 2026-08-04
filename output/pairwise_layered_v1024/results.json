@@ -26,9 +26,10 @@
     "prod:1,0.25": 5.254783560420398,
     "prod:1,0.5": 5.2337570453841025,
     "prod:1,0.75": 5.250243974671723,
-    "prod:1,1": 5.306151477995107
+    "prod:1,1": 5.306151477995107,
+    "markov2-layered-exact": 5.205314379493553
   },
-  "family_bits_per_token": 5.198300290400889,
+  "family_bits_per_token": 5.198300294023734,
   "posterior_max": 1.0,
   "best_member": "calibrated",
   "diagnostics": [
@@ -289,5 +290,6 @@
       "chow_liu": "lag1-chain"
     }
   ],
-  "seconds": 29622.263227939606
+  "seconds": 29622.263227939606,
+  "exact_seconds": 107.29035425186157
 }

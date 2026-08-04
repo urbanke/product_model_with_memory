@@ -2817,3 +2817,231 @@ sequential version; a large gap exact-vs-5.4031 convicts the
 checkpoint schedule, a small one convicts the member.
 Next on laptop after exact-only: ctree D=3 V=1024 (queued command
 in the 2026-08-03 (late) entry).
+
+EXACT NUMBER IN (--exact only, ~25 min): markov2-layered-exact
+5.2053.  MEASURED verdicts: (1) checkpointing convicted --- the
+0.198 gap to the checkpointed 5.4031 is the price of C=32 for the
+per-pair layered member; conclusions about such members need the
+exact form or a much finer schedule.  (2) calibrated 5.1983 still
+beats even the exact order-2 layered reference, while itself paying
+staleness.  Results committed and pushed (commit 3256b60).
+PAPER: new section "The pairwise rules with layered tables"
+(sec:pairwise-layered) added after sec:pairwise, with the two-round
+table (counts vs layered), the three findings, and the forthcoming
+runs marked; the placeholder in sec:pairwise now points there.
+A future CTW section is intended to go BEFORE it (Ruediger).
+NOTE: the ctree D=3 launch FAILED on first attempt (truncated
+--out argument in the pasted command); relaunched separately ---
+check for output/ctree_v1024_d3/results.json.
+
+OVERNIGHT LAPTOP QUEUE (revised; single-line chain, ';' separated):
+ctree D=3 layered -> ctree D=3 KT ablation -> pairwise counts
+enwik8 (V=1024) -> pairwise counts enwik9 (V=1024).  The two enwik
+counts runs were the server's unstarted jobs; the SERVER SHOULD NOT
+run enwik8/enwik9 counts anymore (same out dirs, git conflict) ---
+its remaining job is pairwise_v4096 only.
+
+## 2026-08-04 (overnight) --- ctree D=3 in (80 s!); enwik pairwise runs done but CALIBRATED IS NAN
+
+MEASURED, ctree D=3 V=1024 with the anchor ladder (80 s wall ---
+the ladder makes these runs near-free; the KT ablation took 23 s):
+  fixed depths: d0 6.0636, d1 5.0564, d2 5.1306, d3 5.9071
+  family 4.9390 (D=2 family was 4.9507: depth 3 adds 0.0117)
+  MAP 4.9396, leaves {1:969, 2:21817, 3:17698} -> depth 3 heavily
+  used; gains per depth collapsing (0.106 then 0.0117).
+  Sanity: d0/d1 exactly reproduce the old run; d2 5.1306 vs old
+  5.1309 (corrected evaluator).
+  KT ablation: family 5.0825, leaves {1:1020, 2:1827, 3:810}.
+  D=4/D=5 now cheap to try (context-count check first).
+
+MEASURED, pairwise counts enwik8 (999 s) and enwik9 (8,084 s),
+V=1024 C=32 cap=freq, laptop:
+  enwik8: markov2 4.3096 best, prod:0.75,0.5 4.4222, lag1 4.6454;
+  enwik9: markov2 3.7360 best, prod:1,0.5 3.9879, lag1 4.3777;
+  *** calibrated = NAN on BOTH, family/posterior NAN. ***
+BUG: RuntimeWarning invalid/overflow at pairwise_experiment.py:119
+(psi12 *= P12 / np.maximum(M12/M12.sum(), 1e-300)) at checkpoint 6
+on both files; ipf_residual_l1 = nan from then on.  IPF was already
+at the 300-sweep cap with resid ~5e-4 on enwik8 BEFORE the nan
+(text8 converges to 1e-9).  Non-calibrated members come straight
+from tables and look sane.  WARNING: the server pairwise_v4096 run
+uses the same code path --- check its output for the same failure.
+TODO next session (in order): fix the overflow (log-domain or
+renormalize psi12 per sweep; investigate the poor convergence at
+the same time); verify the fix reproduces text8 counts calibrated
+5.2827 and layered 5.1983; rerun enwik8/enwik9; then collect
+second-Mac + server results and assemble the full grid
+(scripts/assemble_pairwise_grid.py).
+
+PAPER: preliminary section "Adaptive depth: the context-tree family"
+(sec:ctree, tab:ctree-v1024) added between sec:ordertwo and
+sec:pairwise, with the D=2/D=3/KT table; the layered-round section
+now reports the enwik counts numbers and the calibrated-nan status
+in prose.  Both marked as preliminary/forthcoming where applicable.
+
+## 2026-08-04 (morning) --- Layered enwik8 in (calibrated nan AGAIN); server v4096 diagnosis; duplicate-run trap
+
+MEASURED, pairwise_layered_enwik8 (second Mac, 32,651 s, results
+pulled to laptop and pushed): markov2 4.3017 best; prod:0.75,0.75
+4.3963; markov2-layered 4.4194 (NOT the text8 disaster of 5.4031;
+exact number pending on that Mac); lag1 4.6378; calibrated NAN ---
+third run lost to the pairwise_experiment.py:119 overflow.  Layered
+minus counts gains on enwik8 are small (markov2 -0.008): more data
+per table, less estimation benefit.  Paper's layered section
+updated accordingly.
+
+SERVER v4096 (log seen at checkpoint 26/32, ~2,200 s/checkpoint,
+~16 h elapsed, ~4 h to go): single core because the command had no
+--jobs (default 1).  BUT the dominant phases (IPF sweeps, coding
+loop) are single-core regardless of --jobs --- confirms the
+efficiency note as the gate to the constraint-model program.
+No nan so far on text8 V=4096 (resid ~6e-6 at the 300-sweep cap;
+compare 1e-9 at V=1024 --- convergence degrades with V).
+
+TRAP: the server shell has enwik8 queued as typed-ahead input, then
+a nohup'd enwik9 --- both would duplicate laptop runs already
+pushed.  When v4096 prints its member table: Ctrl+C the starting
+enwik8, then pgrep -af pairwise and kill survivors; git add ONLY
+output/pairwise_v4096 on the server.
+
+## 2026-08-04 (day) --- IPF overflow FIXED; scoring PARALLELIZED (threads); server run killed
+
+The entry-node v4096 run was killed (wrong place to compute; also
+counts mode ignores --jobs entirely --- it is consumed only by the
+layered builder, MEASURED from the code).  Two changes to
+scripts/pairwise_experiment.py, installed on the laptop:
+
+1. ipf_triangle: each psi factor rescaled to max 1 after its update
+   (model provably invariant --- every use normalizes over the
+   target); floor 1e-300 -> 1e-150; degenerate margins reset the
+   factors and report resid=inf, never nan.  MEASURED: smoke
+   reproduces published numbers EXACTLY (calibrated 3.0307,
+   posterior 0.5296); v1024 fixcheck checkpoints 1-4 reproduced the
+   original run's IPF diagnostics digit for digit before Ruediger
+   killed it in favour of the parallel version.
+
+2. Scoring loop threaded (ThreadPoolExecutor over position chunks;
+   numpy releases the GIL in the array arithmetic).  Partials merged
+   in chunk order -> BIT-IDENTICAL to serial (verified in the cloud
+   sandbox: jobs 1 vs jobs 2 results.json equal bit for bit).
+   markov2-layered excluded from the pool (shared memoized builder);
+   it runs in a separate serial pass --- parallelizing the layered
+   member is still open.  IPF matmuls also still serial --- whether
+   the numerical library threads them is machine-dependent (probe
+   outstanding).
+
+VALIDATION RUN (in flight or next): v1024 counts fixcheck with
+--jobs 12; must reproduce calibrated 5.2827 and the full published
+table.  THEN rerun enwik8 (~17 min serial, less now) and enwik9,
+then v4096 counts on the laptop.  Server: nothing running; cluster
+use deferred until the program parallelizes properly.
+
+## 2026-08-04 (midday) --- Fix VALIDATED (5.2827 exact); 2.3x measured; phase economics understood
+
+MEASURED: v1024 counts fixcheck (--jobs 12, threaded-scoring version)
+reproduces the published table digit for digit --- calibrated 5.2827,
+markov2 5.2446, lag1 5.3393, family 5.2446, posterior 1.0 --- in
+354 s vs 799 s serial.  MEASURED phase breakdown (4-checkpoint slice,
+output/pairwise_timing_probe): ipf 23.7 s, score 16.1 s, everything
+else 0.5 s.  BLAS probe: numpy on Accelerate; 10 matmuls 2048^2 in
+0.48 s (~360 GFLOPS via the AMX coprocessor) --- matmuls are already
+on the fastest unit and show as ONE busy core in Activity Monitor;
+visual utilization is the wrong instrument, wall time is the right
+one.  Further script versions installed since the fixcheck ran:
+bincount counting, sparse gather hoisted out of threads, IPF
+elementwise threaded via one shared pool (all verified bit-identical
+on smoke in the cloud sandbox).  Remaining serial floor: AMX matmuls
++ IPF sweep dependency; next lever would be ALGORITHMIC (sweep cap),
+which changes numbers --- Ruediger's call only.
+QUEUED on laptop (single line, sequential): enwik8 counts rerun,
+enwik9 counts rerun (both replace nan-calibrated results), then
+pairwise_v4096 (never completed anywhere).  Read results.json as
+each lands; then grid, paper, handover.
+
+FIXCHECK COMPLETE (instrumented version): full published v1024
+counts table reproduced digit for digit, incl. per-checkpoint IPF
+residuals.  MEASURED full-run phases: wall 369 s; ipf 255 s (69%),
+score 109 s (threaded), tables 3 s, reveal 1 s.  PIPELINE VERSION
+INSTALLED after this run: fitting of checkpoint c+1 overlaps scoring
+of checkpoint c (state snapshotted; merges in checkpoint order;
+verified bit-identical on smoke, jobs 1 and jobs > 1).  Expected
+v1024-class wall ~270 s (3x vs 799 serial).  NOTE: with overlap on,
+phase_seconds may sum to MORE than wall (concurrency) --- wall is
+the metric.  Remaining floor: the IPF sweep chain (sequential, AMX).
+Algorithmic lever documented and DECLINED by default: lowering the
+300-sweep cap changes calibrated digits (Ruediger's call only).
+CAUTION for the next --tables layered run: the layered member's
+serial pass was carried through the pipeline refactor unchanged and
+overlap is disabled when it is present, but run the layered smoke
+first (--n 300000 --top-k 63 --tables layered --order2 both) as a
+cheap check before any long layered run.
+Chain queued on laptop (pipelined script): enwik8, enwik9, v4096.
+
+## 2026-08-04 (afternoon) --- Pipeline post-mortem and the lag-k fit chains
+
+MEASURED, pipecheck: the first overlap attempt delivered NOTHING
+(373 s vs 369 s) --- the fitter's threaded elementwise helpers
+shared the scoring pool and queued behind scoring chunks, slowing
+ipf 255 s -> 360 s.  Fix: fitter off the shared pool (serial
+elementwise on its own thread).
+
+NEW: --ipf-lag k (Ruediger's idea): warm-start each calibration fit
+from the fit k checkpoints back -> k independent fit chains running
+concurrently on a k-worker fitter pool; scoring merges strictly in
+checkpoint order behind them; bounded window (lag+1) keeps memory
+flat.  Validity unchanged (fits use only prefix data).  MEASURED on
+smoke: lag 1 BIT-IDENTICAL to all previous versions (default;
+comparability preserved); lag 2 changes ONLY calibrated, by 3e-11
+bits/token (start-independence where fits converge).  Digits move
+materially only where the 300-sweep cap binds --- and the runs where
+it binds (enwik8/9, v4096) have no surviving calibrated number, so
+nothing comparable breaks.  Layered member forces the strict serial
+path (sync_mode).
+--ipf-iters remains the other knob: raising it is free of
+comparability cost on exactly those same runs.
+Verification queued: v1024 lagcheck at --ipf-lag 3 --jobs 12;
+expect all members identical, calibrated ~5.2827 to 4 decimals,
+wall 130-160 s vs 369.  THEN the enwik8/enwik9/v4096 chain (use
+--ipf-lag 3 there too; for v4096 consider --ipf-iters 1000 if the
+lagcheck diagnostics look clean, since fitting is its dominant
+phase and nothing published constrains it).
+
+## 2026-08-04 (late afternoon) --- Anderson-accelerated IPF; concurrent fleet launch
+
+MEASURED, lagcheck (--ipf-lag 3): 244 s vs 369 s (34%); full table
+incl. calibrated 5.2827 reproduced at 4 decimals; fit thread-time
+tripled (698 s over 3 chains) --- AMX contention confirmed; lag-k is
+capped well short of k-fold.
+NEW: --ipf-solver anderson (default remains "ipf", bit-identical).
+Same fixed-point map, same residual test, same unique optimum;
+Anderson mixing over a small history.  Three implementation lessons,
+all MEASURED in the sandbox: (1) naive version lost the win to
+per-sweep log/exp and history re-stacking (235 s ipf despite 5x
+fewer sweeps); (2) float32 history fails in BOTH domains (linear:
+underflow across ~300 orders of magnitude; log: floored entries at
+magnitude ~700 x float32 eps = 4e-5 noise, killing convergence ---
+sweeps back to cap); (3) gauge consistency: never renormalize the
+state without updating its logged copy (the map is scale-invariant,
+so skip renormalization entirely).  Final form: linear-domain map,
+float64 log-domain history, incremental ring updates, no m x n
+temporaries.  Smoke: sweeps 300 -> 20-55, optimum agreement 2.6e-10,
+default path bit-identical.
+LAUNCHED concurrently on the laptop (Ruediger's suggestion ---
+complementary bottlenecks: enwik9 scoring-bound on cores, v4096
+fit-bound on AMX): enwik8 (jobs 4), enwik9 (jobs 8), v4096 (jobs 4),
+all --ipf-solver anderson, logs at output/log_*.txt.  All three had
+no surviving calibrated number, so the anderson digits break no
+comparability.  v1024-class published rounds keep solver=ipf.
+
+FLEET MID-RUN FINDING (from logs, runs untouched): enwik8/enwik9
+fits hit the 300-sweep cap at a residual FLOOR ~8e-4/1.2e-3 under
+BOTH solvers (plain IPF stalled at 5e-4 pre-fix; anderson stalls
+similarly).  INFERRED (strong): the three pair tables are not
+mutually consistent on enwik --- project_margins' fixed 500 Sinkhorn
+rounds (tol 1e-13) suffice for text8 but not for enwik's heavier
+tail; an inconsistent triangle has NO exact fixed point, so no
+solver can pass the floor.  Check after the runs: resid constant
+across checkpoints = floor, falling = convergence.  Fix candidate
+for the next enwik round: raise project_margins iters (or make it a
+flag) and re-measure the floor.  Today's calibrated numbers remain
+valid sequential codes, conservatively fitted.

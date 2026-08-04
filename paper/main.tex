@@ -642,6 +642,58 @@ learn its own distribution, not by how many states there are.
 Table~\ref{tab:firstorder} is the reference point for the
 constructions of the next sections.
 
+\section{Adaptive depth: the context-tree family}
+\label{sec:ctree}
+
+The results in this section are preliminary --- one file, the reduced
+alphabet, two depths --- and are recorded so the numbers have a home;
+more depths and files follow.
+
+The family is the measured instance of the hierarchy route of
+Appendix~\ref{app:routes}: condition each position on its last $k$
+symbols, where $k$ is not fixed but chosen per context by a mixture
+over all prunings of the context tree up to depth $D$, with the prior
+and the recursion given there, and the layered estimator at every
+node.  Because every node's estimator is exchangeable, the whole
+codelength is computed in closed form --- with the table of
+Appendix~\ref{app:store}, the depth-3 run below took $80$ seconds.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+run & $d{=}0$ & $d{=}1$ & $d{=}2$ & $d{=}3$ & family & leaves by depth \\
+\midrule
+$D=2$, layered & $6.0636$ & $5.0564$ & $5.1309$ & --- & $4.9507$ &
+  $967 / 26{,}506$ \\
+$D=3$, layered & $6.0636$ & $5.0564$ & $5.1306$ & $5.9071$ &
+  $\mathbf{4.9390}$ & $969 / 21{,}817 / 17{,}698$ \\
+$D=3$, KT leaves & $6.0636$ & $5.1123$ & $5.6164$ & $6.7815$ &
+  $5.0825$ & $1{,}020 / 1{,}827 / 810$ \\
+\bottomrule
+\end{tabular}
+\caption{Context trees on the reduced \texttt{text8} stream,
+  $V = 1024$, bits per token.  The $d{=}k$ columns are complete
+  fixed-depth trees; ``family'' is the mixture over all prunings;
+  ``leaves by depth'' describes the pruning the posterior singles
+  out.  The last row replaces the layered node estimator by the
+  classical Krichevsky--Trofimov rule.}
+\label{tab:ctree-v1024}
+\end{table}
+
+Three observations.  First, every complete fixed depth beyond one
+\emph{loses} --- depth $2$ by $0.074$, depth $3$ by $0.85$ --- yet
+the family beats the best fixed depth by $0.117$: all of the gain
+of depth comes from choosing it per context.  Second, the gains
+collapse as depth grows: allowing depth $2$ bought $0.106$ bits per
+token, allowing depth $3$ buys another $0.0117$, although the chosen
+pruning uses depth $3$ at $17{,}698$ contexts.  Memory of this kind
+saturates quickly, as the count profile predicts: most deep contexts
+are seen once or twice.  Third, the node estimator sets how much
+memory the data can afford: with KT nodes the same family affords
+almost no depth and lands $0.14$ above the layered version's
+depth-one figure.
+
 \section{Memory of order two from pairwise statistics}
 \label{sec:pairwise}
 
@@ -714,8 +766,90 @@ the same number, so the tree drops the weaker lag entirely and
 reduces to the lag-one predictor.  It is printed as a per-checkpoint
 diagnostic and becomes a real member only when the lag set grows.
 
-The measured comparison will be reported here when the runs
-with the layered estimator complete.
+The measured comparison is reported in
+Section~\ref{sec:pairwise-layered}.
+\section{The pairwise rules with layered tables}
+\label{sec:pairwise-layered}
+
+The round of Section~\ref{sec:pairwise} estimated every pair table by
+count smoothing.  This section repeats it with one change: every
+table the rules consume --- the pair conditionals, the unigram, and
+the calibration inputs --- is estimated by the layered mixture
+instead.  Same file, same reduced alphabet ($V = 1024$), same
+checkpoint schedule ($C = 32$), same members.
+Table~\ref{tab:pairwise-layered} shows both rounds side by side.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrr}
+\toprule
+member & smoothed counts & layered tables \\
+\midrule
+lag one alone                  & $5.3393$ & $5.3146$ \\
+star product ($\beta = 1$)     & $5.3917$ & $5.3062$ \\
+best mixture                   & $5.2976$ & $5.2902$ \\
+best tempered product          & $5.2746$ & $5.2338$ \\
+calibrated product             & $5.2827$ & $\mathbf{5.1983}$ \\
+order two, backoff             & $5.2446$ & $5.2152$ \\
+order two, layered, checkpointed & ---    & $5.4031$ \\
+order two, layered, exact      & ---      & $5.2053$ \\
+\bottomrule
+\end{tabular}
+\caption{Bits per token on the reduced \texttt{text8} stream,
+  $V = 1024$, $C = 32$.  Left column: the round of
+  Section~\ref{sec:pairwise}, all tables count-smoothed.  Right
+  column: the same rules with every table estimated by the layered
+  mixture.  The best member of each round is the family's posterior
+  choice; in the layered round its posterior mass is $1.0000$.}
+\label{tab:pairwise-layered}
+\end{table}
+
+Three findings.
+
+First, better tables help every rule.  Each member improves, by
+$0.007$ (best mixture) up to $0.086$ (star product).  The comparison
+of combining rules was not an artifact of crude estimation.
+
+Second, the ranking flips at the top.  With count-smoothed tables the
+order-two reference with backoff was the best member and the
+calibrated product third.  With layered tables the calibrated product
+wins outright, at $5.1983$ with posterior mass $1.0$: the rule that
+respects all three pair distributions, with no free parameter,
+overtakes the $V^3$-scale reference it was meant to approximate.
+This is the strongest measured support so far for the constraint
+route of Appendix~\ref{app:routes}: once the statistics are well
+estimated, the maximum-entropy construction on top of them is not a
+cheap substitute but the winner.
+
+Third, the exact-versus-checkpointed control did exactly the job it
+was built for.  The layered per-pair reference looks disastrous when
+checkpointed --- $5.4031$, below lag one --- and its exact sequential
+form, computable in one pass because that member is a mixture
+(Section~\ref{sec:pairwise}), costs $5.2053$.  The difference,
+$0.198$ bits per token, is the price of refreshing that member's
+tables only $32$ times instead of after every token.  So the member
+is sound and the schedule was the problem; conclusions about members
+of its kind must come from the exact form, or from a much finer
+schedule.  Note also what the exact number does not change: the
+calibrated product, which pays the staleness cost like every
+checkpointed member, still beats the exact reference.
+
+This is one file at one reduced vocabulary: a ranking round, not a
+compression claim.  Both rounds have since been run on
+\texttt{enwik8}, and the counts round on \texttt{enwik9} (same
+$V = 1024$, same $C = 32$).  The ordering matches the
+\texttt{text8} counts round: order two with backoff best ($4.3096$
+and $3.7360$ under counts; $4.3017$ under layered tables on
+\texttt{enwik8}), tempered products next, mixtures behind, lag one
+last.  The layered per-pair reference is far less damaged by the
+checkpoint schedule on \texttt{enwik8} ($4.4194$, against $5.4031$
+on \texttt{text8}); its exact number there is pending.  The
+calibrated member, however, failed numerically on all three of these
+runs --- an overflow in the calibration fitting at large counts,
+under repair --- so the one comparison they were meant to extend,
+calibrated against the rest at scale, is still open.  The $V=4096$
+counts round is running and will be reported here.
+
 \appendix
 
 \section{The bias of the empirical conditional entropy}
