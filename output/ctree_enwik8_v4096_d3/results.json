@@ -1,0 +1,31 @@
+{
+  "corpus": "data/enwik8",
+  "top_k": 4095,
+  "vocabulary_size": 4096,
+  "n_tokens": 13303079,
+  "empirical": {
+    "unigram_bits": 6.5558633325907145,
+    "pair_bits": 11.750361827977628,
+    "conditional_bits": 5.194498665648746
+  },
+  "n_coded": 13303076,
+  "l_max": 39,
+  "leaf_model": "layered",
+  "max_depth": 3,
+  "contexts_observed": 3220278,
+  "unique_profiles": 72808,
+  "family_bits_per_token": 5.396705655905989,
+  "fixed_depth_bits_per_token": {
+    "0": 6.557665782801063,
+    "1": 5.481121828143518,
+    "2": 5.941768200594949,
+    "3": 7.17984305287115
+  },
+  "map_bits_per_token": 5.397172535365263,
+  "map_leaves_by_depth": {
+    "1": 4048,
+    "2": 14102,
+    "3": 11095
+  },
+  "seconds": 71.63378930091858
+}
