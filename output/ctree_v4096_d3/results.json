@@ -1,0 +1,31 @@
+{
+  "corpus": "data/text8",
+  "top_k": 4095,
+  "vocabulary_size": 4096,
+  "n_tokens": 17005207,
+  "empirical": {
+    "unigram_bits": 8.05076097920498,
+    "pair_bits": 14.388410018838854,
+    "conditional_bits": 6.337649149739429
+  },
+  "n_coded": 17005204,
+  "l_max": 39,
+  "leaf_model": "layered",
+  "max_depth": 3,
+  "contexts_observed": 6472357,
+  "unique_profiles": 99564,
+  "family_bits_per_token": 6.676626196968778,
+  "fixed_depth_bits_per_token": {
+    "0": 8.05225591504054,
+    "1": 6.713179661406168,
+    "2": 7.422275675030023,
+    "3": 9.021957366856087
+  },
+  "map_bits_per_token": 6.6772879822299425,
+  "map_leaves_by_depth": {
+    "1": 4074,
+    "2": 26436,
+    "3": 20473
+  },
+  "seconds": 112.01028180122375
+}
