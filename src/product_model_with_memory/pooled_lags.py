@@ -258,9 +258,24 @@ class _LayeredPredictiveBuilder:
         unobserved symbol).  Renormalized identically to the dense
         form; the two agree exactly (complexity notes, T7)."""
 
-        V = self.V
         nz = np.flatnonzero(counts_row)
-        base = tuple(sorted(int(counts_row[i]) for i in nz))
+        return self.row_log_sparse_entries(nz, counts_row[nz])
+
+    def row_log_sparse_entries(
+        self, symbol_ids: np.ndarray, counts: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Sparse row predictive directly from observed ids and counts."""
+
+        V = self.V
+        nz = np.asarray(symbol_ids, dtype=np.int64)
+        vals = np.asarray(counts, dtype=np.int64)
+        if nz.shape != vals.shape:
+            raise ValueError("symbol ids and counts must have matching shapes")
+        if ((nz < 0) | (nz >= V)).any() or (vals <= 0).any():
+            raise ValueError("sparse row entries must be valid and positive")
+        if len(np.unique(nz)) != len(nz):
+            raise ValueError("sparse row symbol ids must be unique")
+        base = tuple(sorted(int(value) for value in vals))
         distinct = sorted(set(base))
         saturated = len(base) >= V
         cs = distinct if saturated else distinct + [0]
@@ -273,7 +288,6 @@ class _LayeredPredictiveBuilder:
             distinct_arr = np.array(distinct)
             lut = np.array([self._log2_ratio(base, aug_of[c])
                             for c in distinct])
-            vals = counts_row[nz].astype(np.int64)
             logp = lut[np.searchsorted(distinct_arr, vals)]
         else:
             logp = np.empty(0)
@@ -372,6 +386,92 @@ class _SparseLagTables:
                 # any finite reference is algebraically equivalent
                 "rho": np.where(np.isfinite(unseen), unseen, 0.0),
             })
+
+
+@dataclass(frozen=True)
+class SparseCountRows:
+    """CSR transition counts with rows=context and columns=target."""
+
+    vocabulary_size: int
+    ptr: np.ndarray
+    idx: np.ndarray
+    count: np.ndarray
+
+    @classmethod
+    def from_sorted_keys(
+        cls, vocabulary_size: int, keys: np.ndarray, counts: np.ndarray
+    ) -> "SparseCountRows":
+        keys = np.asarray(keys, dtype=np.int64)
+        counts = np.asarray(counts, dtype=np.int64)
+        if keys.shape != counts.shape or (counts <= 0).any():
+            raise ValueError("sorted keys/counts must match and be positive")
+        if len(keys) and (
+            keys[0] < 0 or keys[-1] >= vocabulary_size**2
+            or (np.diff(keys) <= 0).any()
+        ):
+            raise ValueError("transition keys must be unique and sorted")
+        rows = keys // vocabulary_size
+        ptr = np.zeros(vocabulary_size + 1, dtype=np.int64)
+        ptr[1:] = np.cumsum(np.bincount(rows, minlength=vocabulary_size))
+        return cls(
+            vocabulary_size,
+            ptr,
+            keys % vocabulary_size,
+            counts,
+        )
+
+
+def _layered_log_sparse_tables(
+    builder: _LayeredPredictiveBuilder,
+    uni_counts: FloatArray,
+    lag_counts: list[SparseCountRows],
+) -> tuple[FloatArray, list[dict[str, np.ndarray]]]:
+    """Layered unigram and sparse conditional rows without V-by-V counts."""
+
+    v = builder.V
+    if len(uni_counts) != v or any(table.vocabulary_size != v
+                                   for table in lag_counts):
+        raise ValueError("all sparse counts must use the builder vocabulary")
+    families: dict[tuple, set[int]] = {}
+
+    def add_family(values: np.ndarray) -> None:
+        base = tuple(sorted(int(value) for value in values))
+        cs = set(base) if len(base) >= v else set(base) | {0}
+        families.setdefault(base, set()).update(cs)
+
+    add_family(np.asarray(uni_counts)[np.asarray(uni_counts) > 0])
+    add_family(np.empty(0, dtype=np.int64))
+    for table in lag_counts:
+        nonempty = np.flatnonzero(np.diff(table.ptr))
+        for row in nonempty:
+            add_family(table.count[table.ptr[row]:table.ptr[row + 1]])
+    builder._ensure_families({
+        base: tuple(sorted(cs)) for base, cs in families.items()
+    })
+
+    log_q0 = builder.row_log_table(np.asarray(uni_counts))
+    tables = []
+    for counts in lag_counts:
+        unseen = np.full(v, -math.log2(v), dtype=np.float64)
+        values = np.empty(len(counts.idx), dtype=np.float64)
+        nonempty = np.flatnonzero(np.diff(counts.ptr))
+        for row in nonempty:
+            lo, hi = counts.ptr[row], counts.ptr[row + 1]
+            ids, logp, log_unseen = builder.row_log_sparse_entries(
+                counts.idx[lo:hi], counts.count[lo:hi]
+            )
+            if not np.array_equal(ids, counts.idx[lo:hi]):
+                raise RuntimeError("sparse layered row changed symbol order")
+            values[lo:hi] = logp
+            unseen[row] = log_unseen
+        tables.append({
+            "ptr": counts.ptr.copy(),
+            "idx": counts.idx.copy(),
+            "val": values,
+            "unseen": unseen,
+            "rho": np.where(np.isfinite(unseen), unseen, 0.0),
+        })
+    return log_q0, tables
 
 
 def _gather_entries(table, states):

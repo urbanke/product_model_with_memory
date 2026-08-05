@@ -1,0 +1,1451 @@
+\documentclass[11pt]{article}
+\usepackage[letterpaper,margin=0.88in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,array}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Prediction from Partial Marginals in Graphical Models},
+  pdfauthor={Product Model Project}
+}
+\setlist[itemize]{leftmargin=1.45em,itemsep=3pt,topsep=4pt}
+\setlist[enumerate]{leftmargin=1.55em,itemsep=3pt,topsep=4pt}
+\newcommand{\X}{\mathbf X}
+\newcommand{\E}{\mathbb E}
+\newcommand{\Pp}{\mathbb P}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\1}{\mathbf 1}
+\newcommand{\ind}{\mathop{\perp}\!\!\!\perp}
+\newcommand{\mcC}{\mathcal C}
+\newcommand{\mcA}{\mathcal A}
+\newcommand{\mcZ}{\mathcal Z}
+\newcommand{\hatp}{\widehat p}
+\newcommand{\softmax}{\operatorname{softmax}}
+
+\definecolor{navy}{HTML}{16324F}
+\definecolor{teal}{HTML}{0C7185}
+\definecolor{pale}{HTML}{EAF4F6}
+\definecolor{rule}{HTML}{9CB9C1}
+
+\newtcolorbox{keyidea}{
+  colback=pale,
+  colframe=rule,
+  boxrule=0.7pt,
+  arc=1.5pt,
+  left=8pt,right=8pt,top=7pt,bottom=7pt
+}
+\newtcolorbox{warningbox}{
+  colback=yellow!8,
+  colframe=orange!55!black,
+  boxrule=0.6pt,
+  arc=1.5pt,
+  left=8pt,right=8pt,top=7pt,bottom=7pt
+}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries\color{navy} Prediction from Partial Marginals\\[4pt]
+in High-Alphabet Graphical Models}\\[9pt]
+{\large A maximum-entropy, Bayesian, message-passing, and compression perspective}\\[8pt]
+{\small August 2026}
+\end{center}
+
+\vspace{4pt}
+\hrule height 0.8pt
+\vspace{12pt}
+
+\begin{abstract}
+Suppose that the next token \(Y\) and selected past tokens
+\(X_1,\ldots,X_k\) take values in a very large alphabet.  A complete conditional
+table \(p(Y\mid X_1,\ldots,X_k)\) cannot be estimated.  What may be available are
+selected low-order marginals: target--past pairs \(p(Y,X_i)\), past--past pairs
+\(p(X_i,X_j)\), and target--past--past triples \(p(Y,X_i,X_j)\), perhaps only for
+some lag pairs.  This note gives a concrete way to turn such partial information
+into a next-token predictor.
+
+The note develops two complementary completions.  Maximum entropy, or more
+generally minimum relative entropy relative to a baseline model, selects one
+joint distribution.  Bayesian averaging instead places a prior over possible
+joint distributions or factor parameters and averages their predictions.  The
+note derives the factor-graph potentials for the first route, explains how
+past--past marginals affect the final conditional prediction, and makes the
+Bayesian route explicit.  In particular, it gives an exactly conjugate
+Dirichlet construction for a fixed tree, its decomposable-graph analogue, and
+the reason general loopy models are not cheaply conjugate.  It also studies
+uncertainty about which interactions are trustworthy, including a factorized
+soft-reliability model and exact averaging over tree structures.  It
+distinguishes exact tree and junction-tree calculations from approximate
+message passing and ends with a practical path for a causal compressor.
+\end{abstract}
+
+\newpage
+{\footnotesize\tableofcontents}
+\newpage
+
+\section{The statistical problem}
+
+Let
+\[
+  Y = \text{the next token},\qquad
+  \X=(X_1,\ldots,X_k)=\text{selected tokens from the decoded past}.
+\]
+The variables may be particular lags, such as
+\(X_1=x_{t-1}\), \(X_2=x_{t-5}\), \(X_3=x_{t-100}\), or more general
+causal features of the already decoded prefix.  Let \(\mcA\) be the token
+alphabet, possibly with \(\lvert\mcA\rvert\) around \(10^5\).
+
+For prediction and compression, the desired object is
+\[
+  q_t(y\mid x_1,\ldots,x_k).
+\]
+The arithmetic or range coder spends approximately
+\[
+  -\log_2 q_t(y_t\mid x_{1,t},\ldots,x_{k,t})
+\]
+bits on token \(y_t\).  Encoder and decoder must construct exactly the same
+distribution from the already decoded past.
+
+The difficulty is that a literal conditional table has
+\(\lvert\mcA\rvert^{k+1}\) cells.  It cannot be learned from realistic data.
+Instead, suppose measurements give only selected low-order distributions such
+as
+\[
+  \hatp_{Yi}(y,a),\qquad
+  \hatp_{ij}(a,b),\qquad
+  \hatp_{Yij}(y,a,b).
+\]
+The hats emphasize that these are empirical estimates, not necessarily exact
+population quantities.
+
+\begin{keyidea}
+Partial marginals do \emph{not} specify a unique joint distribution.  They
+specify a set of compatible joint distributions.  A prediction rule requires
+an additional modelling principle for choosing one member of that set.
+\end{keyidea}
+
+\section{The constraint hypergraph}
+
+It is useful to organize the available information as a hypergraph.  Its
+vertices are
+\[
+  V=\{Y,X_1,\ldots,X_k\},
+\]
+and its hyperedges are the variable subsets whose marginal distributions are
+measured and trusted.
+
+For example, the collection
+\[
+  \mcC=
+  \bigl\{
+    \{Y,X_1\},\{Y,X_2\},\{Y,X_5\},
+    \{X_1,X_2\},\{X_2,X_5\},
+    \{Y,X_1,X_2\},\{Y,X_5,X_6\}
+  \bigr\}
+\]
+means that some target--past pairs, some past--past pairs, and two selected
+target--past--past triples are available.  There is no requirement that every
+pair or every triple be present.
+
+For a joint distribution \(q\) on all variables, write \(q_C\) for its marginal
+on a subset \(C\in\mcC\).  In the idealized exact-constraint problem, the
+feasible set is
+\[
+  \mathcal F
+  =
+  \left\{
+  q:
+  q_C=\hatp_C \text{ for every } C\in\mcC
+  \right\}.
+\]
+Before doing anything else, overlapping empirical marginals should be checked
+for consistency.  For instance, the one-variable distribution of \(X_i\)
+obtained from \(\hatp_{Yi}\) should agree with the one obtained from
+\(\hatp_{ij}\).  Finite samples usually violate such identities slightly; this
+is addressed in Section~\ref{sec:noisy}.
+
+\section{Maximum entropy: the least-committal completion}
+
+The maximum-entropy completion is
+\begin{equation}
+  q^\star
+  =
+  \arg\max_{q\in\mathcal F}
+  H(q),
+  \qquad
+  H(q)=-\sum_{z\in\mcZ}q(z)\log q(z).
+  \label{eq:maxent}
+\end{equation}
+It preserves exactly the specified marginal information and adds no
+unconstrained interaction deliberately.  This is the standard maximum-entropy
+principle and is equivalent to an exponential-family graphical model
+\cite{wainwright_jordan}.
+
+\subsection{Deriving the potentials}
+
+For clarity, assume first that every feasible distribution has positive
+probability.  Introduce one multiplier
+\(\theta_C(c)\) for every measured configuration \(c\) of every clique
+\(C\in\mcC\).  The Lagrangian is
+\begin{align}
+  \mathcal L(q,\lambda,\theta)
+  ={}&
+  -\sum_z q(z)\log q(z)
+  +\lambda\left(\sum_z q(z)-1\right) \notag\\
+  &+\sum_{C\in\mcC}\sum_c
+  \theta_C(c)
+  \left[
+    \sum_{z:z_C=c}q(z)-\hatp_C(c)
+  \right].
+  \label{eq:lagrangian}
+\end{align}
+Differentiating with respect to \(q(z)\) and setting the derivative to zero
+gives
+\[
+  -\log q(z)-1+\lambda+\sum_{C\in\mcC}\theta_C(z_C)=0.
+\]
+Hence
+\begin{equation}
+  q_\theta(z)
+  =
+  \frac{1}{Z(\theta)}
+  \exp\left[
+    \sum_{C\in\mcC}\theta_C(z_C)
+  \right],
+  \label{eq:factor_model}
+\end{equation}
+where
+\[
+  Z(\theta)
+  =
+  \sum_z
+  \exp\left[
+    \sum_{C\in\mcC}\theta_C(z_C)
+  \right].
+\]
+The functions \(\theta_C\) are the \emph{potentials}.  They are not generally
+\(\log\hatp_C\).  Because cliques overlap, a potential must compensate for all
+the other potentials so that every required marginal is correct.
+
+The fitting equations are the moment-matching equations
+\begin{equation}
+  q_{\theta,C}(c)
+  =
+  \hatp_C(c)
+  \qquad
+  \text{for all }C\in\mcC,\ c.
+  \label{eq:moment_match}
+\end{equation}
+Equivalently, define the concave dual objective
+\begin{equation}
+  \ell(\theta)
+  =
+  \sum_{C\in\mcC}\sum_c
+  \hatp_C(c)\theta_C(c)
+  -
+  \log Z(\theta).
+  \label{eq:dual}
+\end{equation}
+Its gradient is
+\begin{equation}
+  \frac{\partial\ell}{\partial\theta_C(c)}
+  =
+  \hatp_C(c)-q_{\theta,C}(c).
+  \label{eq:gradient}
+\end{equation}
+Thus every fitting method is trying to make the model marginal equal to the
+measured marginal.
+
+\begin{warningbox}
+Potentials are not unique: constants can be shifted between overlapping
+potentials without changing \(q_\theta\).  The probability distribution
+\(q_\theta\), and hence its prediction, is the meaningful object.
+\end{warningbox}
+
+\section{The full pair-and-selected-triple model}
+
+Let \(E_X\) denote selected past--past pairs, and \(E_Y\) selected
+target--past--past triples.  A useful explicit model is
+\begin{align}
+  \log q(y,x)
+  ={}&
+  \theta_Y(y)
+  +\sum_i\theta_i(x_i)
+  +\sum_i\theta_{Yi}(y,x_i) \notag\\
+  &+\sum_{(i,j)\in E_X}\theta_{ij}(x_i,x_j)
+  +\sum_{(i,j)\in E_Y}\theta_{Yij}(y,x_i,x_j)
+  -\log Z.
+  \label{eq:full_model}
+\end{align}
+The chosen edge set \(E_X\) can be sparse, and the selected triples in \(E_Y\)
+need not coincide with the past--past edges.
+
+Once the past is known, the predictor is
+\begin{equation}
+  q(y\mid x)
+  =
+  \frac{\exp S_y(x)}
+       {\sum_{y'\in\mcA}\exp S_{y'}(x)},
+  \label{eq:conditional_score}
+\end{equation}
+with score
+\begin{equation}
+  S_y(x)
+  =
+  \theta_Y(y)
+  +\sum_i\theta_{Yi}(y,x_i)
+  +\sum_{(i,j)\in E_Y}\theta_{Yij}(y,x_i,x_j).
+  \label{eq:score}
+\end{equation}
+The purely past-dependent terms in \eqref{eq:full_model} cancel from the
+conditional probability.  This is algebraically true, but it does \emph{not}
+mean that the measured past--past marginals are irrelevant.
+
+\subsection{How past--past pairs influence a prediction}
+
+The potential \(\theta_{ij}(x_i,x_j)\) does not appear directly in
+\eqref{eq:score}.  However, it is coupled to the other potentials through all
+the simultaneous moment-matching equations \eqref{eq:moment_match}.  Changing
+the measured marginal \(\hatp_{ij}\) changes the fitted
+\(\theta_{ij}\), and generally forces changes in
+\(\theta_{Yi}\), \(\theta_{Yj}\), and any nearby triple potentials to keep the
+target--past marginals and triples correct.  These changed target-dependent
+potentials alter the prediction.
+
+The role of \(\hatp_{ij}\) is to say how much of the information in \(X_i\) and
+\(X_j\) is duplicated.  A model that knows they nearly always agree should not
+treat two matching observations as two independent pieces of evidence.
+
+\subsection{A concrete binary example}
+
+Let \(Y,X_1,X_2\) be binary, each marginally uniform.  Suppose
+\[
+  \Pp(X_1=Y)=\Pp(X_2=Y)=0.9.
+\]
+If the only constraints are the two target--past pairs, maximum entropy gives
+conditional independence \(X_1\ind X_2\mid Y\).  Therefore
+\[
+  \Pp(Y=1\mid X_1=1,X_2=1)
+  =
+  \frac{0.9^2}{0.9^2+0.1^2}
+  \approx 0.9878.
+\]
+This is the familiar naive-Bayes multiplication of evidence.
+
+Now add the measured past--past constraint
+\[
+  \Pp(X_1=X_2)=1.
+\]
+The only compatible support has \(X_1=X_2\).  Together with the two
+target--past pair marginals, it implies
+\[
+  \Pp(Y=1,X_1=X_2=1)=0.45,\qquad
+  \Pp(Y=0,X_1=X_2=1)=0.05.
+\]
+Thus
+\[
+  \Pp(Y=1\mid X_1=1,X_2=1)=\frac{0.45}{0.45+0.05}=0.9.
+\]
+The second observation contributes no new information because it is a perfect
+duplicate of the first.  In a potential representation this hard dependence is
+expressed by \(\theta_{12}(0,1)=\theta_{12}(1,0)=-\infty\), or by a large
+negative finite value after smoothing.  The factor cancels from the final
+conditional score, but it changes which joint distributions are feasible and
+therefore changes the fitted target-dependent potentials.
+
+\subsection{What measured triples add}
+
+Suppose \(\hatp_{Yij}\) is available for a selected pair \((i,j)\).  The
+potential \(\theta_{Yij}(y,x_i,x_j)\) captures a genuinely three-variable
+effect.  It may express that the pair \((X_i,X_j)\) has a particular meaning for
+the next token that neither token has separately.
+
+If \(Y,X_i,X_j\) were the only variables, this is completely explicit:
+\[
+  q(y\mid x_i,x_j)
+  =
+  \frac{\hatp_{Yij}(y,x_i,x_j)}
+       {\sum_{y'}\hatp_{Yij}(y',x_i,x_j)}.
+\]
+With other variables present, the triple potential is fitted together with all
+other factors; one cannot simply multiply raw triple tables without correcting
+for their overlaps.
+
+\section{Exact easy cases}
+
+\subsection{A tree of pair marginals}
+
+Suppose the constraint graph consists only of one-variable and pairwise
+marginals, and its graph is a tree \(T=(V,E)\).  If the measured edge marginals
+are mutually consistent, the unique tree distribution is
+\begin{equation}
+  q_T(z)
+  =
+  \prod_{v\in V}\hatp_v(z_v)
+  \prod_{(u,v)\in E}
+  \frac{\hatp_{uv}(z_u,z_v)}
+       {\hatp_u(z_u)\hatp_v(z_v)}.
+  \label{eq:tree_factor}
+\end{equation}
+Equivalently,
+\[
+  q_T(z)
+  =
+  \frac{\prod_{(u,v)\in E}\hatp_{uv}(z_u,z_v)}
+       {\prod_{v\in V}\hatp_v(z_v)^{\deg(v)-1}}.
+\]
+It matches every specified node and edge marginal.  It is also the
+maximum-entropy extension of those tree constraints.
+
+Formula \eqref{eq:tree_factor} gives the potentials directly:
+\[
+  \theta_v(z_v)=\log\hatp_v(z_v),\qquad
+  \theta_{uv}(z_u,z_v)
+  =
+  \log\frac{\hatp_{uv}(z_u,z_v)}
+                {\hatp_u(z_u)\hatp_v(z_v)}.
+\]
+This is exceptional: in a tree, the potentials are available directly from the
+marginals, without iterative fitting.
+
+If \(Y\) has neighbors \(N(Y)\), then with all past variables observed,
+\[
+  q_T(y\mid x)
+  \propto
+  \hatp_Y(y)^{1-\lvert N(Y)\rvert}
+  \prod_{i\in N(Y)}\hatp_{Yi}(y,x_i).
+\]
+Only the Markov blanket \(N(Y)\) enters directly.  More distant past variables
+affect \(Y\) only through those neighbors; once the neighbors are observed,
+they carry no additional information in a tree model.
+
+\subsection{Junction trees with pair and triple cliques}
+
+The same simplification holds for a decomposable or junction-tree model.  Let
+\(\mathcal K\) be clique marginals arranged in a clique tree, and let
+\(\mathcal S\) be its separator marginals.  If they agree on intersections,
+\begin{equation}
+  q(z)
+  =
+  \frac{\prod_{C\in\mathcal K}\hatp_C(z_C)}
+       {\prod_{S\in\mathcal S}\hatp_S(z_S)}.
+  \label{eq:junction_tree}
+\end{equation}
+Repeated separators are included once for each clique-tree edge.
+
+For example, if the cliques are
+\[
+  C_1=\{Y,X_1,X_2\},\qquad
+  C_2=\{X_2,X_3\},
+\]
+the separator is \(\{X_2\}\) and
+\[
+  q(y,x_1,x_2,x_3)
+  =
+  \frac{\hatp_{Y12}(y,x_1,x_2)\hatp_{23}(x_2,x_3)}
+       {\hatp_2(x_2)}.
+\]
+Conditioning on all the past gives
+\[
+  q(y\mid x_1,x_2,x_3)
+  =
+  q(y\mid x_1,x_2)
+  =
+  \frac{\hatp_{Y12}(y,x_1,x_2)}
+       {\sum_{y'}\hatp_{Y12}(y',x_1,x_2)}.
+\]
+The \(X_2,X_3\) factor is important for the full joint distribution and for
+missing-data inference, but does not directly change the prediction once
+\(X_1,X_2,X_3\) are all observed.
+
+\begin{keyidea}
+Trees and junction trees are the computationally clean regime.  Their clique
+marginals determine the full joint distribution by products and separator
+divisions.  No global partition-function calculation is needed.
+\end{keyidea}
+
+\section{Fitting a general loopy model}
+
+When the selected clique hypergraph has cycles, raw clique marginals cannot
+usually be combined by multiplying them.  Their overlaps would be counted
+incorrectly.  The potentials must be calibrated.
+
+\subsection{Iterative proportional fitting}
+
+If the full joint table were small enough to store, iterative proportional
+fitting (IPF) would be the most direct algorithm.  Initialize with a positive
+reference distribution \(q^{(0)}\).  For each clique \(C\), update
+\begin{equation}
+  q^{(r+1)}(z)
+  =
+  q^{(r)}(z)
+  \frac{\hatp_C(z_C)}{q^{(r)}_C(z_C)}.
+  \label{eq:ipf}
+\end{equation}
+The update makes the \(C\)-marginal correct, but may perturb previous
+marginals; cycling through cliques converges under the usual positivity and
+consistency conditions.  IPF is also an alternating KL-projection algorithm.
+
+For a large alphabet, \eqref{eq:ipf} is a conceptual reference rather than an
+implementation: a full joint table is impossible.  It nevertheless explains
+where the potentials come from.  Each clique update adds
+\[
+  \log\hatp_C(z_C)-\log q_C^{(r)}(z_C)
+\]
+to the clique potential.  The needed quantity is the current model marginal
+\(q_C^{(r)}\), which must be computed by inference in the factor graph.
+
+\subsection{Gradient fitting}
+
+One can instead maximize the dual objective \eqref{eq:dual}.  The gradient
+\eqref{eq:gradient} has a simple interpretation:
+\[
+  \text{update}
+  =
+  \text{measured clique frequency}
+  -
+  \text{model clique frequency}.
+\]
+This is the usual fitting rule for an exponential family.  It is also the form
+of the gradient used by log-linear models and conditional random fields.
+Generalized iterative scaling is a classical alternative for such models
+\cite{darroch_ratcliff}.
+
+\section{Message passing and the meaning of tree-like}
+
+Write each factor as
+\[
+  \phi_C(z_C)=\exp\{\theta_C(z_C)\},
+  \qquad
+  q(z)\propto\prod_C\phi_C(z_C).
+\]
+The sum-product algorithm passes messages between variable and factor nodes.
+For a variable \(v\) and neighboring factor \(C\),
+\begin{align}
+  m_{v\to C}(z_v)
+  &=
+  \prod_{D\ni v,\ D\neq C}m_{D\to v}(z_v), \label{eq:var_message}\\
+  m_{C\to v}(z_v)
+  &=
+  \sum_{z_{C\setminus v}}
+  \phi_C(z_C)
+  \prod_{u\in C\setminus v}m_{u\to C}(z_u).
+  \label{eq:factor_message}
+\end{align}
+
+\subsection{When message passing is exact}
+
+If the factor graph is a tree, one inward and one outward pass computes exact
+marginals.  If the graph is not a tree but has small treewidth, it can be
+converted to a junction tree and exact message passing remains possible.  The
+cost is exponential in the largest clique size after this conversion, not in
+the total number of variables.
+
+Thus tree-like has two different meanings:
+\begin{itemize}
+  \item A \emph{tree} has treewidth one and admits exact, inexpensive
+  sum-product messages.
+  \item A sparse graph with cycles may still have low treewidth, in which case
+  exact junction-tree inference is possible, but its cost grows as
+  \(\lvert\mcA\rvert^{w+1}\), where \(w\) is the treewidth.
+\end{itemize}
+
+\subsection{Loopy belief propagation}
+
+On a graph with larger cycles or high treewidth, the same message equations can
+be iterated.  This is loopy belief propagation.  It is often useful, but it is
+an approximation: it can fail to converge, can have multiple fixed points, and
+its resulting clique marginals need not be exactly globally consistent.  It is
+reasonable as a numerical approximation after validation on small cases, not as
+an automatic replacement for the exact tree calculation.  The factor-graph and
+sum-product formalism is described clearly in \cite{kschischang}.
+
+\section{The large-alphabet obstacle}
+
+Even a single dense pair table over \(10^5\) token values has \(10^{10}\)
+entries, and a dense triple table has \(10^{15}\).  Therefore an implementation
+cannot literally keep all potentials or all measured marginals.
+
+Several representations are compatible with the graphical-model framework:
+\begin{itemize}
+  \item \textbf{Sparse exceptions plus a backoff model.}
+  Store only frequent pairs or triples and use a smoothed lower-order
+  distribution for all other configurations.
+  \item \textbf{Token classes or a hierarchical vocabulary.}
+  Model coarse token types first and refine within a class.
+  \item \textbf{Low-rank nonnegative factors.}
+  Represent a pair factor as
+  \[
+    \phi_{ij}(a,b)
+    \approx
+    \sum_{r=1}^R A_{ir}(a)B_{jr}(b).
+  \]
+  Then a factor-to-variable message can be computed in roughly
+  \(O(R\lvert\mcA\rvert)\), rather than \(O(\lvert\mcA\rvert^2)\).
+  Triple factors admit analogous nonnegative tensor decompositions.
+  \item \textbf{Shared embeddings or hashed features.}
+  Replace a separate parameter for every token identity by a lower-dimensional
+  representation.  This loses the exact marginal-matching interpretation, but
+  can be statistically far more sensible.
+\end{itemize}
+
+For a compressor, the fallback must give every symbol positive probability.
+Otherwise a previously unseen configuration yields an infinite code length.
+
+\section{Noisy marginals and regularization}
+\label{sec:noisy}
+
+Empirical marginals should not normally be imposed as exact constraints.
+Rare triples are especially noisy, and different empirical tables may not be
+perfectly consistent.  Three standard remedies are:
+\begin{enumerate}
+  \item \textbf{Smooth the measured tables.}  Mix each table with a lower-order
+  backoff distribution before treating it as a target.
+  \item \textbf{Use soft constraints.}  Instead of \(q_C=\hatp_C\), minimize
+  \[
+    \KL(q\Vert q_0)
+    +
+    \sum_{C\in\mcC}\lambda_C
+    D_C(q_C,\hatp_C),
+  \]
+  where \(D_C\) penalizes disagreement and \(\lambda_C\) reflects confidence
+  in the measurement.
+  \item \textbf{Regularize the potentials.}  Fit the factor model by a
+  likelihood or prequential code-length objective plus, for example,
+  \(-\lambda\lVert\theta\rVert_2^2/2\).  This shrinks poorly supported
+  interactions toward zero.
+\end{enumerate}
+
+The third form is often called conditional maximum entropy when the model is
+fit directly as \(q_\theta(Y\mid \X)\).
+
+\section{Conditional modelling versus full-joint modelling}
+
+\subsection{The important simplification when all context tokens are known}
+
+Suppose that at time \(t\) the compressor knows every selected past token
+\[
+  x=(x_1,\ldots,x_k).
+\]
+This is the usual causal prediction setting: encoder and decoder have both
+decoded the same prefix.  There is then no need to infer the values of the
+\(X_i\).  A full joint factor that depends only on \(x\) is a number and
+cancels when the distribution is normalized over \(y\).  The online task is
+therefore only
+\[
+  q(y\mid x)
+  =
+  \frac{\exp\{s(y,x)\}}
+       {\sum_{y'\in\mcA}\exp\{s(y',x)\}},
+  \label{eq:observed_context_softmax}
+\]
+for a score \(s(y,x)\).  In particular, ordinary sum-product messages over
+the past variables are \emph{not} needed during this prediction step.
+
+This distinction is useful:
+\begin{itemize}
+  \item A \emph{full-joint model} uses \(p(X_i,X_j)\) and other past-only
+  statistics to construct one coherent distribution over both \(Y\) and
+  \(X\).  It may require iterative fitting or message passing while the model
+  is being built.
+  \item A \emph{conditional model} builds only the score in
+  \eqref{eq:observed_context_softmax}.  It never represents the probability of
+  the observed context \(x\), so it does not need past-only potentials at
+  prediction time.
+\end{itemize}
+
+\subsection{The exact easy case: a decomposable joint model}
+
+First suppose the selected pair and triple tables form a consistent junction
+tree.  The joint distribution is then the clique-over-separator product in
+\eqref{eq:junction_tree}.  Let \(\mathcal K_Y\) denote its cliques containing
+\(Y\), and \(\mathcal S_Y\) its separators containing \(Y\).  Since all other
+factors are independent of \(y\), conditioning on the observed \(x\) gives
+\begin{equation}
+  q(y\mid x)
+  \propto
+  \frac{
+    \displaystyle\prod_{C\in\mathcal K_Y}
+    \hatp_C\bigl(y,x_{C\setminus\{Y\}}\bigr)}
+  {
+    \displaystyle\prod_{S\in\mathcal S_Y}
+    \hatp_S\bigl(y,x_{S\setminus\{Y\}}\bigr)
+  }.
+  \label{eq:junction_conditional}
+\end{equation}
+The normalization in \eqref{eq:observed_context_softmax} completes the
+calculation.  Thus a decomposable graph does not require iterative fitting or
+message passing for a fully observed context: look up the relevant clique
+values for each candidate \(y\), form the score, and normalize.
+
+For example, if the only relevant clique is
+\(\{Y,X_i,X_j\}\), then
+\[
+  q(y\mid x_i,x_j)
+  =
+  \frac{\hatp_{Yij}(y,x_i,x_j)}
+       {\sum_{y'}\hatp_{Yij}(y',x_i,x_j)}
+  =
+  \frac{\hatp_{Yij}(y,x_i,x_j)}
+       {\hatp_{ij}(x_i,x_j)}.
+  \label{eq:triple_conditional}
+\]
+Here the past--past pair \(\hatp_{ij}\) enters directly: it is the
+normalizing denominator that turns a joint triple table into a conditional
+next-token distribution.
+
+\subsection{A direct conditional predictor from pair and triple tables}
+
+The decomposable case is exact but restrictive.  A more flexible construction
+uses the measured tables as local pieces of predictive evidence.  Define,
+after causal smoothing,
+\begin{align}
+  r_i(y\mid a)
+  &=
+  \frac{\hatp_{Yi}(y,a)}{\hatp_i(a)}, \label{eq:pair_predictor}\\
+  r_{ij}(y\mid a,b)
+  &=
+  \frac{\hatp_{Yij}(y,a,b)}{\hatp_{ij}(a,b)}.
+  \label{eq:triple_predictor}
+\end{align}
+The first is the predictor from one lag; the second is the predictor from a
+pair of lags.  Their difference on the logarithmic scale is the conditional
+interaction
+\begin{equation}
+  I_{ij}(y;a,b)
+  =
+  \log r_{ij}(y\mid a,b)
+  -\log r_i(y\mid a)
+  -\log r_j(y\mid b)
+  +\log q_0(y).
+  \label{eq:conditional_interaction}
+\end{equation}
+It measures the part of the pair prediction not already accounted for by the
+two individual predictors, relative to a baseline \(q_0\).
+
+One concrete conditional model is
+\begin{equation}
+  s(y,x)
+  =
+  \log q_0(y)
+  +\sum_i w_i\log\frac{r_i(y\mid x_i)}{q_0(y)}
+  +\sum_{(i,j)\in E_Y}w_{ij}I_{ij}(y;x_i,x_j),
+  \label{eq:conditional_composite_score}
+\end{equation}
+followed by the softmax in \eqref{eq:observed_context_softmax}.  The weights
+can be fixed, selected by a held-out prequential code length, or learned
+online.  Formula \eqref{eq:conditional_composite_score} avoids the common
+mistake of treating correlated lags as independent evidence.  For two lags,
+with \(w_i=w_j=w_{ij}=1\), the score reduces exactly to
+\(\log r_{ij}(y\mid x_i,x_j)\): the triple term corrects the double counting
+in the two pair terms.
+
+This construction clarifies two distinct roles of
+\(\hatp_{ij}(x_i,x_j)\):
+\begin{enumerate}
+  \item It is needed explicitly in \eqref{eq:triple_predictor}.  A triple
+  joint frequency must be divided by the observed pair frequency to become a
+  conditional prediction.
+  \item It indicates how often the two context values co-occur and therefore
+  how reliable the corresponding triple estimate is.  It can set smoothing
+  strength, decide whether an interaction is stored, or regularize
+  \(w_{ij}\).
+\end{enumerate}
+
+If no triple \(\hatp_{Yij}\) is available, the past--past pair
+\(\hatp_{ij}\) alone does \emph{not} determine how the two lags jointly
+predict \(Y\).  It says that the lags are correlated, but it does not reveal
+whether their correlation is predictive of the next token.  At that point one
+needs an additional assumption: a downweighted product of pair predictors, a
+full-joint maximum-entropy completion, or a learned conditional model.
+
+\subsection{Fitting a conditional model from causal records}
+
+If the original causal records \((y_t,x_t)\) are retained, one need not first
+turn them into fixed tables.  Fit directly
+\begin{equation}
+  q_\theta(y\mid x)
+  =
+  \softmax_y\left[
+    b(y)+\sum_i f_i(y,x_i)+\sum_{(i,j)\in E_Y}f_{ij}(y,x_i,x_j)
+  \right].
+  \label{eq:conditional_model}
+\end{equation}
+For example, the features can be the log ratios in
+\eqref{eq:pair_predictor}--\eqref{eq:conditional_interaction}, sparse table
+entries, or shared low-dimensional embeddings.  With an \(\ell_2\) penalty,
+maximize
+\[
+  \mathcal L(\theta)
+  =
+  \sum_t\log q_\theta(y_t\mid x_t)
+  -\frac{\lambda}{2}\lVert\theta\rVert_2^2.
+  \label{eq:conditional_likelihood}
+\]
+For a pair feature \(\theta_i(c,a)\), its gradient is
+\[
+  \frac{\partial\mathcal L}{\partial\theta_i(c,a)}
+  =
+  \sum_t\1\{x_{i,t}=a\}
+  \left[\1\{y_t=c\}-q_\theta(c\mid x_t)\right]
+  -\lambda\theta_i(c,a),
+  \label{eq:conditional_gradient}
+\]
+and an interaction feature has the same form with
+\(\1\{x_{i,t}=a,x_{j,t}=b\}\) in front.
+
+This optimization can be done by stochastic gradient descent, online mirror
+descent, FTRL, or another standard conditional-model optimizer.  It does use
+iterations, but these iterations do \emph{not} compute a global graphical-model
+partition function.  Each update only evaluates the softmax over possible
+next tokens for an observed context.  For a fixed finite feature map, the
+regularized negative conditional log likelihood is convex.
+
+Past--past pairs do not appear as a separate factor in
+\eqref{eq:conditional_model}; all context values are already known.  They can
+still be used to choose which interactions to include, to set their
+regularization, and to make the interaction features in
+\eqref{eq:conditional_interaction} well defined.  This is the appropriate
+role for them in a purely conditional implementation.
+
+\subsection{When full-joint fitting is still useful}
+
+There are good reasons to fit the full-joint maximum-entropy model even when
+the final context is observed:
+\begin{itemize}
+  \item The available information may be only overlapping aggregate
+  pair/triple tables rather than the original records.  Full-joint
+  moment-matching uses these tables directly and enforces their consistency.
+  \item One may want calibrated probabilities for the context itself, to fill
+  in missing lags, to sample sequences, or to use latent features.
+  \item The past--past statistics may be part of the modelling claim, rather
+  than merely a device for choosing conditional features.
+\end{itemize}
+
+In this route, IPF or gradient fitting may need model clique marginals.  On a
+tree or junction tree they are available exactly.  On a graph with cycles,
+one may use exact variable elimination when the treewidth is small, or an
+approximation such as loopy belief propagation otherwise.  Crucially, this
+work belongs to fitting or recalibrating the model.  Once the model has been
+fitted and all \(x_i\) are observed, online prediction again reduces to
+evaluating the \(y\)-dependent factors and normalizing over \(y\).
+
+\subsection{When message passing is genuinely needed at prediction time}
+
+Messages return only when something in the context has not been observed.
+If a subset \(X_{\mathrm{miss}}\) is missing or latent, then
+\[
+  q(y\mid x_{\mathrm{obs}})
+  =
+  \sum_{x_{\mathrm{miss}}}
+  q(y,x_{\mathrm{miss}}\mid x_{\mathrm{obs}}),
+\]
+and sum-product or junction-tree messages perform this summation.  The same is
+true if the predictor contains hidden states, uncertain tokenization, or
+mixtures whose gate depends on unobserved variables.  With a complete decoded
+past, none of these sums is present.
+
+\subsection{The remaining large-alphabet cost}
+
+Knowing all of \(x\) removes inference over the past, but a dense softmax in
+\eqref{eq:observed_context_softmax} still costs \(O(\lvert\mcA\rvert)\) per
+token.  Message passing does not remove this cost: it comes from representing
+the next-token distribution itself.  A particularly useful exact construction
+is a full-support baseline with sparse conditional corrections.  Write
+\[
+  s(y,x)=\log q_0(y)+\Delta(y,x),
+\]
+and let \(C(x)\) be the candidate set on which \(\Delta(y,x)\ne 0\).  Then
+\begin{equation}
+  \sum_y q_0(y)e^{\Delta(y,x)}
+  =
+  1+\sum_{y\in C(x)}q_0(y)
+     \left(e^{\Delta(y,x)}-1\right).
+  \label{eq:sparse_normalizer}
+\end{equation}
+Thus the normalizer is exact in \(O(\lvert C(x)\rvert)\) time rather than
+\(O(\lvert\mcA\rvert)\).  The candidate set can be the union of tokens with
+stored pair or triple corrections for the observed lag values, plus a small
+set of high-probability baseline tokens.
+
+If the correction is dense, exact compression needs a different structured
+output representation, such as a hierarchical vocabulary, a class-based
+model, or a low-rank factorization that supports exact normalization and
+cumulative probabilities.  Sampling-based softmax approximations are useful
+for training, but the final encoder and decoder must use the same normalized,
+full-support distribution.
+
+\subsection{Practical consequence for the intended compressor}
+
+For the setting described here, the most direct initial implementation is a
+causal conditional predictor: maintain smoothed pair and selected triple
+counts, construct the score in \eqref{eq:conditional_composite_score}, and
+learn or validate its weights by prequential code length.  Use a full-support
+baseline \(q_0\), and restrict expensive triple corrections to frequent,
+well-supported context pairs.  A tree or junction-tree version is the best
+exact reference implementation.  A loopy full-joint fit is useful as an
+offline calibration experiment, but it is not required in the per-token
+prediction loop when the entire context is known.
+
+\section{Bayesian averaging and relative entropy}
+
+The specified marginals do not themselves choose either a single completion or
+a probability distribution over completions.  Maximum or relative entropy is a
+\emph{point-completion} rule.  Bayesian averaging is a different rule: it
+keeps uncertainty about the completion and averages the predictions.
+Neither is intrinsically more correct; the useful choice depends on the
+available data, the desired computation, and the modelling assumptions one is
+willing to make.
+
+\subsection{What exactly is being averaged?}
+
+Let \(q_\theta\) be a family of joint distributions and let
+\(\pi(d\theta\mid D)\) be a posterior distribution after data \(D\).  If the
+past \(x\) is treated as an externally given covariate, the Bayesian predictor
+is
+\begin{equation}
+  q_{\mathrm B}(y\mid x,D)
+  =
+  \int q_\theta(y\mid x)\,\pi(d\theta\mid D).
+  \label{eq:bayes_conditional}
+\end{equation}
+If \(q_\theta\) is instead a model for the joint stream and the newly observed
+past \(x\) is informative about \(\theta\), the posterior predictive
+conditional is
+\begin{equation}
+  q_{\mathrm B}(y\mid x,D)
+  =
+  \frac{\displaystyle\int q_\theta(y,x)\,\pi(d\theta\mid D)}
+       {\displaystyle\int\sum_{y'}q_\theta(y',x)\,\pi(d\theta\mid D)}.
+  \label{eq:bayes_joint_predictive}
+\end{equation}
+Equation \eqref{eq:bayes_joint_predictive} first averages joint
+distributions and then conditions.  It is not generally the same as simply
+averaging \(q_\theta(y\mid x)\) with unchanged posterior weights: models that
+make the observed context \(x\) more probable receive more weight.
+
+One can state the idea of averaging directly on the set of completions.  Given
+a prior \(\pi_0(dq)\) on the full joint simplex, a formal hard-constraint
+posterior is
+\[
+  \pi(dq\mid \hatp)
+  \propto
+  \mathbf{1}\{q\in\mathcal F\}\,\pi_0(dq).
+\]
+There is no canonical uniform average until \(\pi_0\) has been chosen.
+The flat Dirichlet prior is one possible convention, but it is still a
+substantive choice and it lives in a simplex with
+\(\lvert\mcA\rvert^{k+1}\) cells.
+
+\subsection{The global Dirichlet prior: natural but far too large}
+
+For a finite joint alphabet \(\mcZ\), the most familiar conjugate choice is
+\[
+  q\sim\operatorname{Dir}\{\alpha q_0(z):z\in\mcZ\},
+  \qquad \alpha>0,
+\]
+where \(q_0\) is a full-support baseline distribution and \(\alpha\) is its
+strength in pseudo-observations.  If complete joint records have counts
+\(n(z)\), then
+\[
+  q\mid D
+  \sim
+  \operatorname{Dir}\{\alpha q_0(z)+n(z):z\in\mcZ\},
+  \qquad
+  \Pp(Z_{\mathrm{new}}=z\mid D)
+  =
+  \frac{\alpha q_0(z)+n(z)}{\alpha+n}.
+  \label{eq:global_dirichlet}
+\]
+Thus the conjugate prior and posterior predictive are completely explicit.
+They are unusable here because \(\lvert\mcZ\rvert\) grows as
+\(\lvert\mcA\rvert^{k+1}\).  This example nevertheless identifies what a
+useful structured prior should preserve: a baseline distribution, a
+pseudo-count strength, and local updates from data.
+
+\subsection{An exactly conjugate Bayesian tree model}
+
+For a fixed tree, there is a practical structured replacement for
+\eqref{eq:global_dirichlet}.  Choose a root \(r\), direct every edge away from
+it, and write
+\begin{equation}
+  q_\theta(z)
+  =
+  \theta_r(z_r)
+  \prod_{v\ne r}
+  \theta_{v\mid \operatorname{pa}(v)}
+     \bigl(z_v\mid z_{\operatorname{pa}(v)}\bigr).
+  \label{eq:directed_tree}
+\end{equation}
+Put independent Dirichlet priors on the root table and on each row of each
+conditional table:
+\[
+  \theta_r\sim\operatorname{Dir}(\alpha_r),
+  \qquad
+  \theta_{v\mid u=a}\sim\operatorname{Dir}(\alpha_{v\mid a})
+  \quad\text{for every directed edge }u\to v.
+\]
+For complete records, let \(n_r(b)\) count \(Z_r=b\), and let
+\(n_{v\mid a}(b)\) count the records with \(Z_u=a,Z_v=b\).  Conjugacy gives
+\[
+  \theta_r\mid D\sim\operatorname{Dir}\{\alpha_r(b)+n_r(b)\}_b,
+  \qquad
+  \theta_{v\mid u=a}\mid D
+  \sim
+  \operatorname{Dir}\{\alpha_{v\mid a}(b)+n_{v\mid a}(b)\}_b.
+\]
+Consequently the posterior-mean local probabilities are
+\begin{align}
+  \bar\theta_r(b)
+  &=
+  \frac{\alpha_r(b)+n_r(b)}
+       {\sum_{b'}\alpha_r(b')+n_r(b')}, \label{eq:tree_root_predictive}\\
+  \bar\theta_{v\mid a}(b)
+  &=
+  \frac{\alpha_{v\mid a}(b)+n_{v\mid a}(b)}
+       {\sum_{b'}\alpha_{v\mid a}(b')+n_{v\mid a}(b')}.
+  \label{eq:tree_edge_predictive}
+\end{align}
+The posterior factors remain independent, so the posterior predictive joint
+is obtained simply by substituting these smoothed local tables into
+\eqref{eq:directed_tree}.  The next-token probability is then
+\(\bar q(y,x\mid D)/\sum_{y'}\bar q(y',x\mid D)\).  This is a true Bayesian
+average, not merely a plug-in fit.  Choosing
+\(\alpha_{v\mid a}=\tau_{v\mid a}b_{v\mid a}\) makes \(b_{v\mid a}\) a
+backoff distribution and \(\tau_{v\mid a}\) its effective sample size.
+
+The tree prior is computationally easy because it stores only local
+conditional tables and needs no partition function.  In a very large alphabet,
+the local tables still require sparse storage, backoff, token classes, or
+shared parameters; conjugacy does not by itself cure the large-alphabet
+problem.
+
+\subsection{Decomposable graphs: the hyper-Dirichlet extension}
+
+For a decomposable undirected graph or junction tree, the corresponding
+conjugate family is the \emph{hyper-Dirichlet} family
+\cite{dawid_lauritzen}.  It is a distribution over compatible clique and
+separator probabilities, concentrated on joint distributions that are Markov
+with respect to the chosen graph.  With complete records it stays in the same
+family after observing data.
+
+Concretely, choose a clique tree.  Its prior pseudo-count tables must agree
+under marginalization on every separator.  Observing a record adds one count
+to every clique configuration and to every separator configuration selected by
+that record.  The posterior hyperparameters are therefore prior compatible
+counts plus observed compatible counts.  A perfect elimination order converts
+the decomposable graph to a directed acyclic factorization, where the same
+calculation is visible as ordinary Dirichlet updates of conditional tables.
+This gives exact posterior prediction and exact message passing whenever the
+cliques are small enough.
+
+\subsection{General loopy models: formal conjugacy is not cheap}
+
+For the log-linear model in \eqref{eq:full_model}, complete records have
+likelihood
+\[
+  p(D\mid\theta)
+  \propto
+  \exp\{\langle T(D),\theta\rangle-n\log Z(\theta)\},
+\]
+where \(T(D)\) contains the measured feature counts.  Every regular exponential
+family has a formal Diaconis--Ylvisaker conjugate family
+\cite{diaconis_ylvisaker},
+\[
+  \pi(\theta\mid\eta,\nu)
+  \propto
+  \exp\{\langle\eta,\theta\rangle-\nu\log Z(\theta)\}.
+  \label{eq:dy_prior}
+\]
+After \(n\) records the parameters update to
+\((\eta+T(D),\nu+n)\).  This is mathematically natural, but it is usually
+not computationally convenient: evaluating \(Z(\theta)\), its gradient, and
+the normalizing constant of \eqref{eq:dy_prior} requires the same difficult
+inference that obstructs fitting the loopy model.  Independent Dirichlet
+priors on its overlapping factor tables are \emph{not} conjugate in general.
+
+Posterior prediction for a loopy model therefore normally uses an
+approximation: Markov-chain Monte Carlo, variational inference, a Laplace
+approximation around a regularized fit, or sometimes loopy message passing.
+The tree and low-treewidth cases are special precisely because this global
+inference disappears.
+
+\subsection{If only marginal tables have been retained}
+
+The clean conjugate updates above use the original complete records.  If only
+the aggregate estimates
+\(\hatp_{Yi},\hatp_{ij},\hatp_{Yij}\) have been retained, the tables are
+overlapping summaries of the same data.  Their count noise is correlated.  It
+is therefore incorrect to multiply independent multinomial likelihoods for
+each pair and triple table: this counts the same observations several times.
+
+There are three principled options:
+\begin{enumerate}
+  \item Retain or reconstruct the original causal records and use their joint
+  likelihood.  This is the cleanest route for Bayesian updating.
+  \item Use a composite likelihood made from selected marginal tables, but
+  choose its weights by held-out code length or by an explicit effective-sample
+  size calculation.  It is an approximation, not exact Bayes.
+  \item Approximate the vector of empirical margins by a joint Gaussian
+  distribution,
+  \[
+    \hat m\mid\theta
+    \approx
+    \mathcal N\bigl(m_\theta,\Sigma_\theta/n\bigr),
+  \]
+  where \(m_\theta\) contains the model pair and triple marginals and
+  \(\Sigma_\theta\) contains their shared-sample covariance.  This respects
+  the fact that overlapping tables are dependent, but computing
+  \(m_\theta\) and \(\Sigma_\theta\) again requires inference in the graph.
+\end{enumerate}
+
+\subsection{Relative entropy as a point decision}
+
+Maximum entropy uses a uniform reference distribution.  For prediction, it is
+usually preferable to begin with a baseline \(q_0\) and make the smallest
+change needed to respect the selected information:
+\begin{equation}
+  q^\star
+  =
+  \arg\min_{q\in\mathcal F}
+  \KL(q\Vert q_0).
+  \label{eq:relative_entropy}
+\end{equation}
+The solution is
+\[
+  q^\star(z)
+  \propto
+  q_0(z)
+  \exp\left[\sum_{C\in\mcC}\theta_C(z_C)\right].
+\]
+It is a point decision, not generally the same as the Bayesian posterior mean
+predictor.  One Bayesian interpretation is that \(q^\star\) is the mode of an
+entropy-centred prior restricted to the constraint set, for example a density
+proportional to \(\exp\{-\tau\KL(q\Vert q_0)\}\).  The strength \(\tau\)
+controls how strongly the prior favours the baseline.
+
+The baseline can be a unigram model, a conventional context model, a cache
+model, or eventually a language model.  The graphical factors then correct the
+baseline only where the measured data support a correction.
+
+\section{Uncertainty about which interactions to trust}
+
+The previous constructions assumed that a fixed collection of pair and triple
+statistics had already been chosen.  In practice, one may have many candidate
+lags and interactions, with only some worth using.  It is natural to place a
+prior on this selection rather than commit to one graph before prediction.
+
+\subsection{Choose interaction terms, not raw marginals}
+
+The elementary objects should be predictive effects, not arbitrary raw
+marginal tables.  A triple table \(\hatp_{Yij}\) already contains its
+\(Y,X_i\), \(Y,X_j\), and \(X_i,X_j\) projections.  Selecting that triple
+while declaring one of its projections absent is therefore not a meaningful
+independent choice.
+
+A useful hierarchy is:
+\begin{itemize}
+  \item a main effect from one lag, represented by
+  \(\log\{r_i(y\mid x_i)/q_0(y)\}\);
+  \item a genuine pair-of-lags effect, represented by the conditional
+  interaction \(I_{ij}(y;x_i,x_j)\) in
+  \eqref{eq:conditional_interaction}.
+\end{itemize}
+Introduce one inclusion indicator \(z_e\in\{0,1\}\) for each such effect and,
+as a first prior,
+\[
+  \Pp(z)
+  =
+  \prod_{e=1}^m\rho_e^{z_e}(1-\rho_e)^{1-z_e}.
+  \label{eq:independent_structure_prior}
+\]
+The probabilities \(\rho_e\) can depend on the order of the interaction, its
+causal count, or a shared Beta--Bernoulli sparsity prior.  A hierarchical prior
+can require an interaction to be included only when its corresponding
+lower-order effects are available.
+
+\subsection{Literal averaging over maximum-entropy completions}
+
+For a selected set \(z\), let \(\mathcal F_z\) impose exactly the corresponding
+chosen marginal constraints and define the relative-entropy completion
+\[
+  q_z
+  =
+  \arg\min_{q\in\mathcal F_z}\KL(q\Vert q_0).
+\]
+The literal Bayesian model average is
+\begin{equation}
+  \bar q(y\mid x,D)
+  =
+  \sum_{z\in\{0,1\}^m}
+  \Pp(z\mid D)\,q_z(y\mid x).
+  \label{eq:literal_bma}
+\end{equation}
+The prior in \eqref{eq:independent_structure_prior} is only the starting
+point.  A Bayesian weight should be
+\(\Pp(z\mid D)\propto \Pp(z)\Pp(D\mid z)\), or, for a compressor, can be
+replaced by a weight based on past prequential code length.
+
+Equation \eqref{eq:literal_bma} is generally harder than fitting one model.
+There are \(2^m\) terms, and the potentials in \(q_z\) are normally
+\emph{refitted} when a constraint is removed or added.  Consequently the
+normalization constants and potentials do not factorize over \(e\).  Each
+individual prediction is simple when all \(x_i\) are observed, but summing the
+exponentially many predictions is not.
+
+\subsection{Soft reliability: an exact elimination of the subset sum}
+
+There is a different Bayesian formulation in which averaging is genuinely
+simpler.  Let \(D_e(q_e,\hatp_e)\) measure disagreement between a model
+marginal and an estimated marginal.  Interpret \(z_e=1\) as saying that the
+estimate is trustworthy, and use the soft-constraint model
+\begin{equation}
+  \pi(q,z\mid\hatp)
+  \propto
+  \pi_0(q)
+  \prod_{e=1}^m
+  \left[
+    \rho_e\exp\{-\lambda_eD_e(q_e,\hatp_e)\}
+  \right]^{z_e}
+  (1-\rho_e)^{1-z_e}.
+  \label{eq:soft_reliability_joint}
+\end{equation}
+Summing every \(z_e\) independently is now exact:
+\begin{equation}
+  \pi(q\mid\hatp)
+  \propto
+  \pi_0(q)
+  \prod_{e=1}^m
+  \left[
+    (1-\rho_e)
+    +
+    \rho_e\exp\{-\lambda_eD_e(q_e,\hatp_e)\}
+  \right].
+  \label{eq:soft_reliability_marginal}
+\end{equation}
+Thus the exponential combinatorial sum has disappeared.  The price is that
+this is not the same object as \eqref{eq:literal_bma}: it is a posterior over
+joint distributions under uncertain \emph{constraint reliability}, rather than
+an average of separately refitted hard-constraint models.
+
+The induced penalty for one marginal is
+\[
+  \Psi_e(d)
+  =
+  -\log\left[
+    (1-\rho_e)+\rho_e e^{-\lambda_e d}
+  \right].
+\]
+It is near zero for a well-matched marginal and saturates at
+\(-\log(1-\rho_e)\) for a badly mismatched one.  This saturation is attractive:
+a dubious table can effectively switch itself off rather than forcing the
+entire model to distort itself.  Inference over \(q\) may still be difficult
+on a loopy graph, but no explicit enumeration of subsets remains.
+
+\subsection{A fast conditional surrogate: annealed optional evidence}
+
+When the context \(x\) is fully observed, let \(\delta_e(y,x)\) be a fixed
+conditional effect, such as a main effect or an interaction in
+\eqref{eq:conditional_composite_score}, and define
+\[
+  q_z(y\mid x)
+  =
+  \frac{
+    q_0(y)\exp\{\sum_e z_e\delta_e(y,x)\}
+  }{
+    \sum_{y'}q_0(y')\exp\{\sum_e z_e\delta_e(y',x)\}
+  }.
+\]
+The exact average \(\E_z q_z(y\mid x)\) is again an average of ratios and does
+not factorize.  However, averaging the \emph{unnormalized} evidence does:
+\begin{equation}
+  q_{\mathrm{ann}}(y\mid x)
+  \propto
+  q_0(y)
+  \prod_{e=1}^m
+  \left[
+    (1-\rho_e)+\rho_e e^{\delta_e(y,x)}
+  \right].
+  \label{eq:annealed_predictor}
+\end{equation}
+This annealed predictor is not identical to literal Bayesian model averaging,
+because an expectation of a normalized distribution is not generally a
+normalized expectation.  It is nevertheless a coherent, cheaply normalized
+conditional model with soft effective potentials
+\[
+  \delta_e
+  \longmapsto
+  \log\left[(1-\rho_e)+\rho_e e^{\delta_e}\right].
+\]
+For a small effect,
+\[
+  \log\left[(1-\rho_e)+\rho_e e^{\delta_e}\right]
+  =
+  \rho_e\delta_e
+  +
+  \frac{\rho_e(1-\rho_e)}{2}\delta_e^2
+  +O(\delta_e^3).
+\]
+To first order, uncertain evidence is simply tempered by \(\rho_e\).  If the
+effects are stored sparsely, the exact sparse normalizer
+\eqref{eq:sparse_normalizer} applies directly to
+\eqref{eq:annealed_predictor}.
+
+\subsection{The tree exception: exact averaging over many structures}
+
+There is one important case where a very large model average is exactly
+tractable.  Restrict the candidate pairwise structures to spanning trees and
+use a product-form prior
+\[
+  \Pp(T)
+  \propto
+  \prod_{e\in T}w_e.
+\]
+The edges are not independent, because they must form a tree, but the weight
+factorizes over selected edges.  If \(L\) is the weighted graph Laplacian,
+\[
+  L_{ij}=-w_{ij}\ (i\ne j),\qquad
+  L_{ii}=\sum_{j\ne i}w_{ij},
+\]
+then the matrix-tree theorem gives
+\begin{equation}
+  \sum_{T\ \mathrm{spanning\ tree}}\prod_{e\in T}w_e
+  =
+  \det L^{(r)},
+  \label{eq:matrix_tree}
+\end{equation}
+where \(L^{(r)}\) is any one row and its corresponding column removed.
+
+With compatible local Dirichlet priors, complete records update the local
+tables and the posterior edge weights.  For a proposed new configuration, its
+local predictive factors modify the \(w_e\), so the tree average can again be
+computed by a determinant.  This gives exact Bayesian prediction while
+averaging over all spanning-tree structures in polynomial time
+\cite{meila_jaakkola}.  The method is a clean reference for pairwise
+dependence, but arbitrary triple interactions or unrestricted loopy graphs
+lose this determinant simplification.
+
+\subsection{Recommended use}
+
+For an initial compressor, the most promising practical choice is the
+annealed conditional predictor \eqref{eq:annealed_predictor}: define sparse
+main and interaction effects from causal tables, use \(\rho_e\) as a
+reliability or inclusion strength, and tune these strengths by prequential
+code length.  The soft-reliability posterior
+\eqref{eq:soft_reliability_marginal} is the more principled route when one
+wants uncertainty over noisy marginal constraints themselves.  A Bayesian
+mixture of trees provides an exact benchmark.  Literal averaging of arbitrary
+maximum-entropy subsets is best reserved for small validation problems or
+Monte Carlo experiments.
+
+\section{A concrete route for a causal compressor}
+
+The following route retains the graphical-model interpretation while staying
+computationally realistic.
+
+\begin{enumerate}
+  \item Select a modest set of lag variables \(X_i\).  Include a safe base
+  predictor with full support.
+  \item Estimate smoothed target--past pair statistics for candidate lags.
+  Use them to identify individual predictive signals.
+  \item Estimate selected past--past pair statistics.  Use these to identify
+  redundancy and to propose a sparse tree or low-treewidth graph.
+  \item Add target--past--past triples only where held-out or prequential code
+  length shows a genuine interaction beyond the pair model.
+  \item Prefer a tree or junction-tree structure when possible.  Then compute
+  the predictor directly from clique and separator marginals.
+  \item If a loopy model is necessary, use sparse or low-rank factors; validate
+  loopy message passing against exact small instances.
+  \item Update all estimates causally from previously decoded tokens only, with
+  identical finite-precision rules in encoder and decoder.
+\end{enumerate}
+
+\begin{keyidea}
+The criterion for adding a pair, triple, or edge should be reduction in
+prequential code length after including the cost of the additional parameters.
+This is the compression form of model selection.
+\end{keyidea}
+
+\section{Conclusion}
+
+The correct general object is not a single pairwise model, nor a single
+triple model.  It is a constraint hypergraph containing whichever pair and
+triple marginals are trustworthy.  Maximum or relative entropy selects one
+coherent joint model, while Bayesian averaging keeps a distribution over
+plausible models and averages their predictions.  The latter is exactly
+tractable for a fixed tree with local Dirichlet priors, and for decomposable
+graphs through the hyper-Dirichlet construction.  When it is unclear which
+interactions deserve trust, soft reliability variables remove the exponential
+subset sum exactly; mixtures over all tree structures provide a separate
+determinant-based exact benchmark.
+
+In trees and junction trees, the construction is explicit and exact.  In
+general loopy graphs, potentials must be fitted to match all constraints, and
+Bayesian inference as well as message passing becomes approximate unless the
+graph has small treewidth.  If only overlapping marginal tables have been
+saved, their shared sampling noise must be modelled or approximated; they
+cannot be treated as independent observations.
+For a very large token alphabet, the essential practical issue is not only
+graph structure but the representation of each factor: sparse corrections,
+backoff distributions, classes, and low-rank factors are necessary.
+
+\begin{thebibliography}{9}
+
+\bibitem{wainwright_jordan}
+M. J. Wainwright and M. I. Jordan.
+\newblock Graphical Models, Exponential Families, and Variational Inference.
+\newblock \emph{Foundations and Trends in Machine Learning}, 1(1--2):1--305,
+2008.
+\newblock \url{https://www.cs.columbia.edu/~blei/fogm/2020F/readings/WainwrightJordan2008.pdf}.
+
+\bibitem{chow_liu}
+C. K. Chow and C. N. Liu.
+\newblock Approximating Discrete Probability Distributions with Dependence Trees.
+\newblock \emph{IEEE Transactions on Information Theory}, 14(3):462--467, 1968.
+\newblock \url{https://cs.nyu.edu/~roweis/csc2515-2006/readings/chowliu.pdf}.
+
+\bibitem{darroch_ratcliff}
+J. N. Darroch and D. Ratcliff.
+\newblock Generalized Iterative Scaling for Log-Linear Models.
+\newblock \emph{The Annals of Mathematical Statistics}, 43(5):1470--1480,
+1972.
+\newblock \url{https://doi.org/10.1214/aoms/1177692379}.
+
+\bibitem{kschischang}
+F. R. Kschischang, B. J. Frey, and H.-A. Loeliger.
+\newblock Factor Graphs and the Sum-Product Algorithm.
+\newblock \emph{IEEE Transactions on Information Theory}, 47(2):498--519,
+2001.
+\newblock \url{https://www.isiweb.ee.ethz.ch/papers/arch/aloe-2001-1.pdf}.
+
+\bibitem{diaconis_ylvisaker}
+P. Diaconis and D. Ylvisaker.
+\newblock Conjugate Priors for Exponential Families.
+\newblock \emph{The Annals of Statistics}, 7(2):269--281, 1979.
+\newblock \url{https://doi.org/10.1214/aos/1176344611}.
+
+\bibitem{dawid_lauritzen}
+A. P. Dawid and S. L. Lauritzen.
+\newblock Hyper Markov Laws in the Statistical Analysis of Decomposable
+Graphical Models.
+\newblock \emph{The Annals of Statistics}, 21(3):1272--1317, 1993.
+\newblock \url{https://doi.org/10.1214/aos/1176349260}.
+
+\bibitem{meila_jaakkola}
+M. Meil\u{a} and T. S. Jaakkola.
+\newblock Tractable Bayesian Learning of Tree Belief Networks.
+\newblock Technical Report CMU-RI-TR-00-15, Carnegie Mellon University, 2000.
+\newblock \url{https://sites.stat.washington.edu/mmp/Papers/prior-final-form.pdf}.
+
+\end{thebibliography}
+
+\end{document}

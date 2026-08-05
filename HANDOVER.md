@@ -3335,3 +3335,621 @@ Every step's members agreed to at least 1e-11; only time moved.
   in-code eval/eval_cpu accounting is the working substitute.
 - 4M slice, C=16, jobs 8 standing: 802 s (was 1557 before the
   vectorized script).  Campaign not yet launched.
+
+## 5 Aug 2026: state of play for a fresh start on evaluator performance
+
+For whoever works on this next. Read the ledger entry above first;
+it lists four scheduling designs that were built, measured, and
+reverted. Do not rebuild them from theory.
+
+WHAT STANDS (all validated, member values stable to 1e-11 across
+every variant tried):
+- scripts/pairwise_experiment.py: tables-free pairwise evaluator,
+  numpy on whole blocks, threaded. Its own cost is ~10 s of the
+  benchmark; it is NOT the problem.
+- src/product_model_with_memory/codelength.py: families evaluation
+  with a persistent worker pool, per-level scheduling, self-reported
+  timing columns per checkpoint line (tab[...]).
+- Benchmark command (the ONLY agreed yardstick, ~99 s standing):
+  export PMM_UNIVERSAL_TABLES=tables/anchors_prod \
+    PMM_PHI_LADDER_EVERY=1 PMM_PHI_LADDER_DEGREE=11 \
+    PMM_PHI_SADDLE_MIN_L=54 ; \
+  .venv/bin/python scripts/pairwise_experiment.py \
+    --ids output/streams/bpe_text8 --n 1000000 --checkpoints 8 \
+    --jobs 12 --out output/pws_bench_1M
+
+THE OPEN PROBLEM, measured (from the 99 s run and its columns):
+- eval wall 60 s vs true worker work 427 cpu-s: 7.1 of 12 cores.
+  Pace is set by the per-level barrier (54 levels, two pool
+  round-trips each) and by giant families (unigram row, ~35k-entry
+  profile; common states with >512 distinct successors) that are
+  indivisible within a level. Splitting a giant family's SCAN across
+  the grid (inside layered.py: log_q_lambda_scan_family) is the
+  untried move that would actually break the straggler; every
+  scheduling-level workaround was tried and failed.
+- ~22 s parent-side Python inside each _ensure_families call before
+  any worker starts: needed_r unions, validation, window and chunk
+  setup over tens of thousands of families. Untouched; second target.
+- fill (store row reads) 17 s: prefetching it into the eval tail was
+  NET NEGATIVE at the benchmark (queue contention) - see ledger.
+- The level early-stop (_LevelWindow, 80-bit drop rule) is essential:
+  removing it multiplied worker cpu ~6x. Any redesign must keep
+  sequential level order per family, or replicate the rule exactly.
+CONSTRAINTS that cost a night to learn:
+- macOS: worker process start is expensive (spawn); py-spy cannot
+  attach (timeout, even sudo). The in-code timing columns are the
+  measurement instrument. The cloud sandbox has 2 Linux cores:
+  correctness transfers, parallel behavior does not - benchmark only
+  on the laptop.
+- RUSAGE_CHILDREN only counts exited workers: useless with a
+  persistent pool; that is why eval_cpu comes from the tasks.
+- Stale git locks may need: rm -f .git/HEAD.lock \
+  .git/objects/maintenance.lock
+
+SCIENCE QUEUE (untouched by all of this, ready to run):
+- text8 campaign: full vocabulary, C=32 geometric, jobs 12,
+  all members; slice results (4M: mixes ~9.75 best, lag1 10.65,
+  products collapse) await confirmation at full length; then the
+  paper's pairwise section gets its measured table.
+
+Correction to the ledger, for honesty of the record (Ruediger's
+point, 5 Aug): the 1557 s "baseline" was itself degraded by a
+repeated known mistake (per-item builder requests - the same bug
+introduced four separate times this week). The week's hand-tuned
+programs ran at ~80% utilization; no version of the new evaluator
+has reached that. The night's "factor 2" recovered self-inflicted
+loss; the actual standard to meet is the 80% of the existing
+programs, and it has not been met.
+
+## 5 Aug 2026: three-pair calibration reformulated conditionally
+
+Ruediger's decision: the calibrated model using ALL THREE pair
+marginals is the point of Section 7. Mixtures/products that omit the
+past--past pair are controls, not the scientific deliverable. Do not
+launch the full campaign without a scalable calibrated member.
+
+Added paper/graphical_model_prediction_note.tex unchanged from
+Ruediger's supplied note. Added
+src/product_model_with_memory/graphical_calibration.py: a dense
+small-alphabet reference for conditional IPF. It eliminates the
+past--past potential analytically by writing
+
+  q(y,a,b) = P_ab(a,b) r(y|a,b),
+  r(y|a,b) proportional to f_ya(y,a) f_yb(y,b),
+
+then alternately corrects the produced (Y,A) and (Y,B) margins. P_ab
+is exact after every update by construction. This is algebraically
+the same three-pair maximum-entropy triangle, not a new estimator.
+
+VALIDATED in tests/test_graphical_calibration.py:
+- agrees with literal V^3 joint IPF to <2e-11 per joint cell;
+- agrees with scripts/pairwise_arena.py's existing three-factor IPF
+  to <2e-11;
+- duplicate-lag case returns the one-lag conditional rather than
+  squaring the evidence;
+- rejects inconsistent pair margins.
+Four tests pass; ruff passes.
+
+NEXT: implement the same conditional-IPF operator on the layered
+row representation (implicit background + observed corrections).
+The remaining question is closure: after a calibration update, do
+inactive target cells share an aggregable correction? If not, use an
+explicit active-set/coarsened-feature definition and measure it
+against the dense reference at small V. The current fast
+pairwise_experiment.py still has NO calibrated member.
+
+STRUCTURE PROBE COMPLETED (real bpe_text8 prefix, layered margins):
+- New scripts/calibration_structure_probe.py.
+- V=32, n=100k: full conditional IPF converged in 60 sweeps with all
+  three L1 margin residuals below 8e-12.
+- V=64, n=300k: converged in 350 sweeps, residuals below 1e-11.
+- VERDICT: the uncoarsened exact triangle is NOT closed under one
+  implicit background per factor row. After the best possible shared
+  target gauge, inactive-cell log-factor RMS/max errors were
+  0.331/1.726 at V32 and 0.485/3.413 at V64. Do not try to force the
+  full solution into the current sparse-row shape.
+
+Implemented the principled alternative in graphical_calibration.py:
+grouped_conditional_ipf. It defines an exact coarsened exponential
+family: every observed target--lag cell is constrained separately;
+all unobserved target cells in one context row form one aggregate
+constraint; P_ab is still enforced exactly. This representation is
+closed under background + observed corrections by construction.
+Validation test confirms every active cell, every inactive aggregate,
+and P_ab are matched.
+
+FIRST COST MEASUREMENT (V32, n=100k): after 20k plain sweeps the
+grouped residual was 5.3e-8 (strict 1e-11 stop not yet reached), while
+KL(grouped || full triangle) was only 0.0001211 bits/record. Very
+promising, but the slow convergence means the next implementation
+step is an accelerated/matrix-free grouped solver, then V64 and
+larger comparisons. Five calibration tests pass; ruff passes.
+
+WARM START + INTERLEAVING (same day): grouped_conditional_ipf now
+accepts prior log factors. A checkpoint-like regression confirms a
+warm fit reaches the same joint as a cold fit and uses fewer sweeps.
+Added GroupedCheckpoint + fit_grouped_checkpoints: with interleave=k,
+chain j fits j,j+k,j+2k,... sequentially, warm-starting within the
+chain, while k chains run concurrently; results return in checkpoint
+order. Regression: k=3 and k=1 produce the same six checkpoint joints
+to <2e-10. Seven calibration tests pass; ruff passes. This preserves
+the earlier pairwise evaluator lesson: a slightly older warm start is
+worth using when multiple serial calibration chains keep the CPU busy.
+
+TARGET MAIN EFFECT CORRECTION: the grouped model must separately
+preserve the full Y marginal; active cells + one inactive aggregate
+per row do not imply it. Added an explicit global log_base_y factor
+and an exact Y-margin IPF update. The scalable parameterization is now
+layered unigram q0(y) times a fitted Y correction times sparse lag
+corrections. Since P_Y is constrained, using q0 rather than uniform
+changes the parameterization/initialization, not the optimum. All
+seven tests still pass. On the V32 real-prefix probe the corrected
+grouped model's KL from the full triangle is 4.95e-5 bits/record
+(better than the earlier incomplete model's 1.21e-4); plain IPF is
+still slow (grouped residual 1.34e-6 after 20k sweeps).
+
+SCALING BOUNDARY IDENTIFIED: sparse evaluation of one q(y|a,b) is
+not enough. Exact enforcement of the layered, full-support P_ab asks
+for averages over every a,b, including unobserved context pairs: V^2
+context combinations. No table need be stored, but the computation is
+still prohibitive. A scientific choice is required before the
+matrix-free implementation: either (a) calibrate on the observed
+context-pair support and use an explicit fallback on new/unseen pairs,
+or (b) introduce a structured/coarsened model for P_ab's unobserved
+mass. Do not silently present either as the uncoarsened full-support
+triangle.
+
+DECISION (Ruediger, 5 Aug): take option (a) now. Calibrate only on
+context pairs observed in the decoded prefix; for an unseen context
+pair use the two-pair maximum-entropy product as an explicit fallback.
+This is a deliberate, revisitable model choice, not claimed to equal
+the full-support triangle. Added restrict_margins_to_observed_contexts:
+restrict/renormalize layered P_ab, then minimum-KL project P_ya and
+P_yb to its new A/B margins while retaining their common Y marginal.
+Regression verifies consistency. V32 real-prefix result: 635 observed
+context pairs retain 0.999109 of layered P_ab mass; the complete gated
+predictor is 0.0001485 bits/record KL from the full triangle.
+
+MATRIX-FREE REFERENCE: added SparseGroupedProblem +
+sparse_grouped_ipf. It stores only target baseline, observed context
+edges, and active YA/YB corrections; no YA, YB or YAB probability
+array. Each edge normalizer uses the union of its active corrections
+plus an analytic background mass; a stable dense-softmax fallback is
+used only when that union covers >99% of Y (tiny-V diagnostic regime).
+The sparse solver matches the dense grouped predictor on every tested
+supported context to <2e-9. Nine tests pass; ruff passes.
+
+PERFORMANCE STATUS: the transparent Python-loop sparse reference is
+far too slow (V32 real-prefix timing exceeded two minutes and was
+stopped). Correctness is established; next work is a vectorized
+sorted-array/join implementation plus acceleration of the 20k-sweep
+plain IPF convergence. Do not benchmark this reference on the laptop.
+
+VECTORIZED SPARSE SWEEPS (later 5 Aug): implemented a one-time
+edge--correction incidence plan; every repeated sweep now uses
+segmented maximum/reduction, bincount margin accumulation, and the
+analytic baseline normalizer. Near-full-union edges use one bounded
+batched dense softmax (the earlier per-edge fallback defeated
+vectorization at tiny V). All dense/sparse prediction equivalence
+tests still pass to <2e-9. Real V32, 635 context edges: 1000 sweeps
+now 4.2--4.4 s instead of >2 minutes. Ten tests passed at this point.
+
+SOLVER TRIALS, measured on the same V32/100k prefix:
+- plain IPF, 1000 sweeps: YA/YB/Y residuals .0354/.0315/.0280.
+- old-style Anderson (log history, regularized small system), 1000:
+  .0226/.0229/.0185. Helpful but not the old full-triangle speedup.
+- L-BFGS convex-dual attempt + IPF polish: 1000+1000 gave
+  .000254/2.19e-5/8.93e-5 in 5.5 s, a large improvement; letting
+  L-BFGS run longer was NON-MONOTONE in the certified residual and
+  worse (5000+5000: .00178/.000181/.000702). Do not adopt unchecked.
+  A short 200-step L-BFGS initializer was also worse after polishing.
+Eleven tests pass; ruff passes. Standing conclusion: vectorization is
+solved for the small reference, convergence is not. Keep the true L1
+margin certificate authoritative. Next: exploit causal checkpoint
+warm starts/interleaved chains on an actual geometric checkpoint
+sequence and measure whether only the cold first fit is difficult;
+do not spend more time tuning isolated-snapshot L-BFGS first.
+
+HYBRID SOLVER DECISION (later 5 Aug): use dual L-BFGS to approach the
+solution, then switch to ordinary marginal-scaling/IPF sweeps for the
+final certificate. Both phases now retain the iterate with the best
+true certificate max(L1 Y, L1 YA, L1 YB), rather than trusting the
+last iterate: neither scipy's dual stopping test nor the combined L1
+certificate is monotone along every numerical step. On the same
+V32/100k prefix, 1000 L-BFGS iterations followed by at most 5000 IPF
+sweeps returned YA/YB/Y residuals 6.99e-5/5.35e-6/2.36e-5 in 22.46 s,
+instead of the 5e-3--8e-3 late-iterate regression. It did not meet the
+deliberately severe 1e-8 test tolerance. Twelve tests pass. Next use
+this hybrid with transferred sparse warm starts on the geometric
+checkpoint sequence, and measure tolerances against predictive loss
+before choosing the production stopping threshold.
+
+GEOMETRIC SPARSE CHECKPOINT PROBE (later 5 Aug): added
+scripts/calibration_checkpoint_probe.py and
+fit_sparse_grouped_checkpoints. Each interleaved chain transfers the
+global target factor and corrections for still-active YA/YB cells;
+new cells start at zero. An early causal checkpoint exposed exact-zero
+A/B margins for context states not yet observed. The minimum-KL margin
+projection is now zero-margin safe, with a regression test (13 tests
+pass; ruff passes).
+
+Measured bpe_text8 V32, n=100k, eight geometric checkpoints, hybrid
+solver, at most 2000 iterations per phase, provisional tolerance 1e-4:
+- interleave=2: fitting 10.57 s; 7/8 certificates passed. Prefix 65,410
+  missed at max residual 3.53e-4; final prefix passed at 6.75e-5.
+- interleave=1: fitting 12.33 s; 7/8 passed. Prefix 65,410 passed at
+  4.28e-5; final narrowly missed at 1.11e-4.
+Interleaving therefore gave a modest 14% fit-time reduction here and
+no systematic accuracy loss, though each warm-start path can have a
+different difficult checkpoint. All results from either run are below
+5e-4, but do NOT yet adopt 5e-4: choose the production certificate by
+measuring predictive-loss sensitivity. Margin construction was more
+expensive than fitting because this diagnostic rebuilds every prefix;
+the 32-checkpoint experiment should update counts causally and avoid
+unnecessary repeated construction before scaling V.
+
+CAUSAL SCORING + THIRD-PAIR RESULT (later 5 Aug): added
+sparse_gated_log_probabilities and star_log_probabilities. Supported
+contexts are scored from baseline mass plus sparse correction unions;
+no context-by-target or triple table is built. Unseen contexts use the
+declared two-pair maxent/star fallback. A direct dense-conditionals
+regression passes (14 tests total; ruff passes). On bpe_text8 V32,
+n=100k, eight geometric checkpoints, interleave=2, tolerance 5e-4,
+the seven following blocks (97,950 records) measured:
+- calibrated gated three-pair: 2.09403068 bpc
+- two-pair star used everywhere: 2.12954671 bpc
+- third-pair gain: 0.03551603 bpc
+Every block improved (0.01757--0.05754 bpc). Observed-pair coverage
+rose from 95.92% after the first fit to 99.80% after the last scored
+fit. This is the first direct evidence that the third pair adds useful
+held-out information in the implemented model.
+
+TOLERANCE CAVEAT: independently rerunning L-BFGS or over-polishing
+failed checkpoints can produce extreme held-out probabilities even
+with a superficially small aggregate margin residual. Stable scoring
+fixed cancellation in the normalizer, but confirmed this is a factor
+path/fit issue, not merely scoring arithmetic. For the five checkpoints
+where independent IPF polishing from each 5e-4 candidate genuinely
+reached 1e-5, the loose-vs-tight difference was only -7.29e-5 bpc
+(the loose fit was slightly better on the next blocks); maximum absolute
+block difference was 1.35e-4 bpc. Two polishes failed and must not be
+treated as references. Provisional 5e-4 is therefore adequate for the
+small predictive experiment, but retain both the convergence flag and
+held-out sanity checks; residual alone is not a sufficient numerical
+health certificate.
+
+CHECKPOINT CONSTRUCTION: the probe now updates unigram, YA, YB and AB
+counts only from the newly revealed slice instead of recounting every
+prefix. A V16/n10k/three-checkpoint causal smoke run passes. Layered
+probability construction remains the dominant setup cost and is the
+next scaling target; incremental counts remove only the avoidable raw
+statistics work.
+
+32-CHECKPOINT RESULT + PERSISTENCE (later 5 Aug): four-worker layered
+family construction uses the existing cross-checkpoint builder memo and
+persistent worker pool. At V32/n100k, C=8 it cut construction to 22.24 s
+(about half the one-worker time); calibration was 4.63 s. The full
+C=32 geometric run with four interleaved fit chains took 104.50 s for
+layered construction and 23.50 s for calibration. All 32 checkpoints
+passed tolerance 5e-4; worst residual 1.17e-4, median 7.88e-5.
+
+The C=32 causal held-out comparison over 97,950 records is:
+- calibrated gated three-pair: 2.08177023 bpc
+- two-pair star everywhere: 2.11831991 bpc
+- third-pair gain: 0.03654968 bpc
+All 31 scored blocks improve (range 0.000376--0.117523 bpc; median
+0.030891 bpc). This confirms the C=8 result under the intended paper
+checkpoint schedule. The harness now persists every sparse problem,
+fitted factors, and fallback pair margins as compressed per-checkpoint
+NPZ state. All 32 states total 1.35 MB, allowing later scoring work
+without rebuilding the layered estimator. Result directory:
+output/calibration_prediction_v32_c32_i4_jobs4/.
+
+FIRST VOCABULARY SCALE STEP (later 5 Aug): V64/n100k/C=8,
+interleave=2, jobs=4, tolerance 5e-4. Layered construction took 33.51 s
+and calibration 50.45 s, so calibration becomes the bottleneck at V64.
+Six of eight checkpoints passed. Prefix 2,050 narrowly missed at
+5.23e-4; the final (unscored) prefix missed at 1.83e-3. Nevertheless
+the causal prediction result over 97,950 records is strong and sane:
+- calibrated gated three-pair: 2.75360432 bpc
+- two-pair star everywhere: 2.80362067 bpc
+- third-pair gain: 0.05001635 bpc
+All seven scored blocks improve (0.01949--0.07075 bpc, median 0.03936).
+Thus the third-pair benefit strengthens from V32 to V64. Do not launch
+V64/C32 yet: first add reload/refit support for persisted checkpoint
+states and diagnose continuation of the two failed V64 fits without
+rebuilding layered margins. Result directory:
+output/calibration_prediction_v64_c8_i2_jobs4/.
+
+PERSISTED V64 REFIT DIAGNOSTIC (later 5 Aug): added
+scripts/calibration_refit_states.py, which reloads selected sparse
+checkpoint problems/factors and continues them without layered
+reconstruction; it also rescored the following block. Plain-IPF results:
+- prefix 2,050: 5,030 sweeps / 5.02 s moved max residual from 5.23e-4
+  to 4.9999e-4, but worsened the next-block loss by 0.015307 bpc.
+- final prefix 100,000: 10,000 sweeps / 192.32 s still failed; best
+  max residual remained 1.825e-3 (no following block to score).
+Therefore do not enforce 5e-4 mechanically at V64. The narrowly failed
+early fit was predictively better, showing useful early-stopping
+regularization; the expensive final fit does not enter causal loss.
+Use held-out predictive sanity plus a broad residual guard, and treat
+the residual as a diagnostic rather than the sole acceptance rule.
+Refit output: output/calibration_prediction_v64_c8_refit_ipf/.
+
+V64/C32 PRODUCTION-STYLE RUN (later 5 Aug): applied the solver lesson
+by using 1000 L-BFGS iterations and a broad, explicit 2e-3 residual
+guard, with no forced long polish. Four interleaved chains accepted
+all 32 fits (worst residual 1.958e-3, median 6.87e-4). Construction
+took 151.78 s and calibration 41.84 s, less calibration time than the
+C=8 run that forced 5e-4. Causal result over 97,950 records:
+- calibrated gated three-pair: 2.69952421 bpc
+- two-pair star everywhere: 2.75137807 bpc
+- third-pair gain: 0.05185386 bpc
+All 31 blocks improve (0.001257--0.194952 bpc; median 0.049814).
+This is the current production stopping policy at V64, explicitly
+provisional and to be rechecked when V changes. Result directory:
+output/calibration_prediction_v64_c32_i4_guard2e3/.
+
+PAPER APPENDIX UPDATED: paper/main.tex no longer describes the obsolete
+dense full-support matrix-product implementation as the measured code.
+Appendix ``The calibrated pairwise predictor'' now derives the
+conditional elimination of the context potential, states the observed-
+support and grouped-inactive approximation explicitly, documents the
+two-pair fallback, sparse normalizers, hybrid solver, best-certificate
+retention, support-aware warm starts and interleaved chains, and warns
+that residual is not a held-out-loss oracle. It distinguishes checks of
+the implemented sparse model from the approximation choice. main.tex
+compiles successfully in two pdflatex passes (24 pages).
+
+SAME-BLOCK ARENA COMPARISON (later 5 Aug): ran the established
+pairwise_arena at V64/n100k/C32, then added
+scripts/calibration_compare_states.py to remove the arena's cold first
+block and score baselines on exactly the new model's 97,950 records.
+The scorer reproduces the stored star result at beta=(1,1) to 6.2e-15
+bpc. Apples-to-apples numbers:
+- tuned product beta=(.75,.5): 2.68251647 bpc
+- count-backoff Markov-2: 2.69003788 bpc
+- pure three-pair calibration: 2.69952421 bpc
+- star beta=(1,1): 2.75137807 bpc
+Thus the third pair recovers 0.05185 bpc from star but pure maximum-
+entropy calibration is over-strong and does not yet beat the tuned
+product or Markov baseline. The raw arena totals are not directly
+comparable because they include the cold first 2,048-token block.
+
+EXPLORATORY REGULARIZED THIRD-PAIR DIAGNOSTIC (DO NOT PROMOTE YET):
+tested a fixed arithmetic mixture
+q_w=(1-w) q_product + w q_calibrated, which remains causal, normalized,
+and uses the third pair for every w>0. At V64 the broad optimum is
+w=.35 (2.67491066 bpc), beating pure product by .007606 and Markov-2
+by .015127. Treating weights {0,.1,.15,.2,.25,.3,.35,.4,.45,.5,1}
+as an equal-prior Bayesian family costs 2.67494574 bpc, only 3.51e-5
+above the selected member. The identical grid and exponents replicate
+at V32/C32: product 2.08051827, Markov-2 2.07621293, pure calibration
+2.08177023, best mixture w=.5 2.07271899, family 2.07275416 bpc.
+On these particular strongly quantized 100k-token streams, regularized
+use of the third pair beats both comparison baselines. This is only a
+mechanism diagnostic. The product exponents, interpolation grid, and
+mixture weights were inspected on the same data, while V32/V64
+quantization changes support and redundancy drastically. Even though a
+fixed equal-prior mixture has a legitimate finite-family coding cost,
+that fact does not turn this hand-designed family into the universal,
+parameter-free construction sought by the project. Do not put the
+selected weights or the claimed win into the paper as a general result.
+Use this observation only to diagnose that the third-pair correction
+contains signal but is too strong in this small setting. Next seek a
+predeclared/Bayesian shrinkage rule derived from the model, and validate
+without retuning across substantially larger vocabularies and streams.
+Results:
+output/calibration_mixture_v64_c32_refined/ and
+output/calibration_mixture_v32_c32_refined/.
+
+DATA-SCALING CORRECTION + V128 (later 5 Aug): Ruediger correctly
+stopped further interpretation of tiny strongly quantized runs: raising
+V without raising n mainly creates rare cells and fallback dependence,
+and cannot establish a need for shrinkage. Pure calibration remains the
+central object. V128/n100k/C8 was retained only as a technical smoke:
+coverage 89.4%--96.0%, one of seven blocks regressed, although aggregate
+calibration beat star by .06539 bpc. V128/n1m/C8 improved coverage to
+88.8%--99.34%; only the first 4,555-record block regressed, and aggregate
+gain was .06741 bpc.
+
+The genuine full bpe_text8 V128 run used n=19,429,294, C=8,
+interleave=2, jobs=4, 1000 L-BFGS iterations and broad guard 5e-3.
+Construction took 159.74 s, fitting 190.06 s; all 8 fits passed (worst
+residual 3.44e-3). Over 19,427,244 causal records:
+- pure calibrated three-pair: 3.02584592 bpc
+- star: 3.09337028 bpc
+- gain: 0.06752437 bpc
+All seven blocks improve (0.00430--0.07707 bpc). Coverage rises from
+88.12% in the first scored block to 99.959%; final observed AB support
+has 13,811 edges and retains 0.9999468 of layered AB mass. This is the
+first substantial-data result and shows the small-n early regression
+disappearing. Result:
+output/calibration_prediction_v128_n19m_c8_i2_guard5e3/.
+
+SCORING SCALE FIX: star_log_probabilities and
+sparse_gated_log_probabilities now stable-sort records once by context
+and process contiguous groups, replacing one full-block boolean scan per
+distinct context. Tests remain 14 passed. Note: directory
+output/calibration_prediction_v128_full_c8_i2_guard5e3/ is an accidental
+100k repeat caused by the probe's default --n; do not use it as a full
+run.
+
+V256 PROGRESSION (later 5 Aug): kept pure calibration central and
+increased data rather than tuning shrinkage. V256/n1m/C8 used guard
+1e-2; construction 73.12 s, fit 267.30 s, all fits passed. Pure
+calibration 3.82625404 versus star 3.90685634: gain .08060230 bpc;
+all seven blocks improved despite coverage beginning at 81.82% and
+ending at 98.21%. This was an intermediate scaling check only.
+
+Full bpe_text8 V256 used n=19,429,294, C=8, interleave=2, jobs=4,
+1000 L-BFGS iterations and broad guard 1e-2. Construction took
+171.48 s; fitting took 1070.79 s (17.85 min), now the decisive
+bottleneck. All 8 fits passed (worst residual 9.08e-3, median 4.68e-3).
+Over 19,427,244 causal records:
+- pure calibrated three-pair: 3.61843123 bpc
+- star: 3.69715445 bpc
+- gain: 0.07872321 bpc
+All seven blocks improve (0.02121--0.09001 bpc). Coverage rises from
+81.13% to 99.793%; final support has 46,052 AB edges, retains
+0.9996834 of layered AB mass, and stores 46,052/60,994 YA/YB
+corrections. The full-data pure-calibration gain therefore increases
+from .06752 bpc at V128 to .07872 at V256; these results do not support
+asserting that shrinkage is intrinsically needed. Result:
+output/calibration_prediction_v256_n19m_c8_i2_guard1e2/.
+
+DO NOT launch V512 with the current harness. Before the next vocabulary
+step, optimize the calibration stage (V256 fitting is 6.2x construction)
+and remove the remaining dense V-by-V upstream count/probability arrays
+used by the diagnostic margin builder and fallback. Calibration sweeps
+are sparse, but real tokenizer V~100k remains impossible until the
+inputs are sparse too.
+
+LOCAL HARDWARE NOTE (Ruediger): the development machine has 12 CPU
+cores. Recent scaling runs deliberately/accidentally underused it
+(layered jobs=4, calibration interleave=2). Construction and fitting
+are sequential phases, so future benchmarks should test up to 12
+layered workers and up to min(checkpoints,12) interleaved calibration
+chains. Pin BLAS/OpenMP numerical-library threads to one per fit chain
+to avoid 8--12 outer chains each spawning an inner worker team. Measure
+jobs/interleave scaling rather than assuming 12 is automatically best;
+memory bandwidth and warm-start distance may make a smaller chain count
+faster or statistically/numerically preferable.
+
+12-CORE SCALING BENCHMARK (later 5 Aug): V256/n1m/C8, fixed 1000
+iteration/guard setup. Original jobs=4/interleave=2: construction
+73.12 s, fit 267.30 s, total 340.42 s, median residual 3.58e-3,
+3.82625404 bpc. With BLAS/OpenMP pinned to one inner thread:
+- jobs=12/interleave=8 (all cold): 51.27 + 218.06 = 269.33 s,
+  median residual 4.23e-3, 3.82655886 bpc.
+- jobs=12/interleave=4: 53.21 + 218.69 = 271.89 s,
+  median residual 4.20e-3, 3.82699675 bpc.
+- jobs=12/interleave=2: 56.09 + 277.98 = 334.07 s,
+  identical residuals/predictions to the original warm path.
+Ruediger observed the CPU trace: 4/8-chain runs had high peaky usage
+(about 60% peaks); the 2-chain fit was flat around 10%, as expected
+with two single-threaded outer chains on 12 cores. Conclusion: 12
+workers are useful for layered construction, but cold checkpoint
+parallelism trades away warm-start quality and saturates by four
+chains. The next optimization must parallelize margin/gradient work
+inside each warm-started fit (roughly 6 inner workers per each of two
+chains), rather than add more outer chains. Benchmark outputs are the
+three output/calibration_prediction_v256_n1m_c8_i{2,4,8}_jobs12_*
+directories.
+
+INNER-FIT PROFILING/EXPERIMENT (later 5 Aug): cProfile on the largest
+persisted full-V256 checkpoint, 20 IPF sweeps, found 54.1/61.0 s in 81
+margin evaluations; segmented np.at reductions and repeated dense-
+fallback indexing were visible costs. Raising the dense fallback cutoff
+from .99 to 1-1e-12 made 20 sweeps faster (41.5 s) but convergence much
+worse: at tolerance 5e-4 the .99 path converged in 2 sweeps/7.45 s,
+whereas the aggressive sparse path failed after 100 sweeps/205.0 s.
+The cutoff is now an explicit dense_fallback_mass parameter but remains
+.99 by default. Do not optimize per-sweep time at the expense of the
+certificate trajectory.
+
+Added optional margin_workers that parallelizes mathematically
+independent dense-fallback edge blocks. On the isolated largest
+checkpoint, 6 workers reduced the exact two-sweep continuation from
+7.45 to 5.43 s with identical residuals. End-to-end V256/n1m with
+jobs=12, interleave=2, margin_workers=6 preserved predictions/residuals
+exactly but fit time was 270.85 s: only slightly below the pinned
+single-inner 277.98 s and above the original unpinned 267.30 s. Thread
+pool overhead on small checkpoints plus memory-bandwidth saturation
+erase the isolated gain. Keep margin_workers optional/default 1; this
+is not the production scaling solution. Next reduce work per objective
+evaluation and build sparse upstream pair margins rather than relying
+on more threads.
+
+EXPERIMENT-LEVEL PARALLELISM (Ruediger): do not obsess over saturating
+CPU inside one fit. Independent experiments can run concurrently while
+each preserves its two warm-start chains. Added peak_resident_bytes to
+checkpoint and persisted-refit JSON. Loading/evaluating the largest
+full-V256 checkpoint measured 2,347,630,592 bytes peak RSS (~2.35 GB)
+for one process, before allowing extra margin for Python, layered worker
+processes and the OS. The sandbox could not read installed RAM. Until
+memory headroom is confirmed, run at most two V256 experiments at once
+(roughly 5 GB plus overhead), each with 2 fit chains and 4--6 layered
+workers; avoid two simultaneous jobs=12 construction bursts. V128 jobs
+are cheaper and can be paired more freely. Monitor memory pressure/swap,
+because swapping would erase any CPU-throughput gain.
+
+SPARSE-UPSTREAM IMPLEMENTATION (later 5 Aug): the development machine
+has 24 GB RAM; Ruediger also has access to a 240 GB, 64-core server whose
+individual cores may be slower. The production target is explicitly the
+full tokenizer alphabet on the whole sequence. Neither machine should
+use dense V-by-V pair tables: at V around 100k even one float64 table is
+about 80 GB, and the pipeline needs several such objects and temporaries.
+The server's memory is useful for large observed-support arrays and
+concurrent/sharded work, not for reverting to dense pair matrices.
+
+Added SparseCountRows and sparse layered-row construction, an implicit
+SparseProjectedPair representation and Sinkhorn projection, sparse
+restriction to observed AB contexts, analytic sparse star/gated
+fallback scoring, and a --sparse-upstream checkpoint-probe path. Thus
+the upstream counts and projected YA/YB/AB margins no longer require
+V-by-V arrays. The dense path remains only as a small-case reference.
+The combined graphical/layered suite passes 22 tests.
+
+An end-to-end V16/n10k/C3 equivalence run gave exactly the same retained
+AB masses and support/correction counts at every checkpoint. Sparse and
+dense star scores agree to numerical precision. With a deliberately
+loose 1e-3 solver tolerance, calibrated aggregate scores differed by
+2.20e-5 bpc because tiny floating-point differences changed the IPF
+stopping trajectory; this is below the requested tolerance and is not a
+different statistical construction. Do not tune against this tiny run.
+
+NEXT SCALING PLAN: first harden/profile the sparse path at progressively
+larger vocabulary and data sizes on the 24 GB machine, recording peak
+RSS, construction time, fit time, support sizes and convergence. Keep
+warm starts along each checkpoint chain; do not parallelize all
+checkpoints cold. Parallelism for the 64-core server should shard
+observed edges and sparse row/profile construction inside a small
+number of warm chains, with reusable worker pools and deterministic
+reductions. Independent full experiments can then occupy otherwise idle
+cores subject to measured memory. The acceptance test remains a pure
+three-pair full-alphabet, whole-sequence experiment—not a reduced-V
+benchmark.
+
+MODEL-COMPLEXITY CONTINUATION IDEA (Ruediger, later 5 Aug): in addition
+to warm-starting along data checkpoints, initialize the full model from
+a simpler fitted model and add factors/lags progressively. Implemented
+an optional --initialization first_pair mode. It exactly embeds P(y|x1):
+the YA margin and unigram target margin agree to machine precision before
+the first full-model iteration, while the YB correction starts neutral.
+This is a universal continuation device and may extend naturally to
+larger memories by adding one lag/factor at a time.
+
+A first V64/n100k controlled probe is mixed, so first_pair is NOT yet the
+default. It reduced the first checkpoint's reported iterations from
+1004 to 606, but total fit time was 27.36 versus 26.68 seconds because
+later warm-started checkpoints still hit their iteration caps. The last
+unscored checkpoint also had a worse certificate on this run. Re-test at
+a meaningful scale and inspect convergence trajectories; consider a
+two-pair intermediate rung rather than assuming the one-pair seed alone
+solves the production bottleneck.
+
+INITIALIZER FAMILY / PARALLEL PORTFOLIO (Ruediger, later 5 Aug): do not
+choose only one side. Added second_pair, pair_midpoint and pair_product
+starts alongside unigram and first_pair. pair_midpoint averages the two
+one-sided natural-parameter vectors, hence starts from
+q(y|a,b) proportional to sqrt(P(y|a) P(y|b)); pair_product uses both
+pair exponents at full strength. All are table-free and exactly embedded
+in the sparse factor representation.
+
+On the small V64/n100k/C8 screen, pair_midpoint was the clear candidate:
+all checkpoint certificates were below 1e-3, the first checkpoint used
+573 iterations versus 1004 from unigram, and a clean standalone run cut
+fit time from 26.68 to 10.88 seconds. A concurrent run reproduced the
+same parameters/results and took 11.42 seconds. This is promising but is
+not grounds to tune production to the strongly quantized diagnostic.
+Carry the initializer family to a meaningful-scale comparison.
+
+Potential server strategy: at each warm chain's first checkpoint, run a
+short fixed-budget portfolio of unigram/x1/x2/midpoint/product states on
+separate cores. Select by the actual maximum margin certificate (and,
+where available, dual objective), not intuition. Also evaluate consensus
+averages in natural-parameter space; retain an average only if its
+measured objective/certificate improves. Then continue only the selected
+state serially along that warm checkpoint chain. This can use the
+64-core server without reverting to cold independent checkpoint fits.

@@ -1179,24 +1179,77 @@ to \eqref{eq:star}.  Between the extremes it interpolates, which is
 the role the tempering exponents $\beta_\delta < 1$ play by hand,
 with one scalar where the calibration uses a full table.
 
-\paragraph{Computation.}  The potentials are fitted by iterative
-proportional fitting: cycle through the three pairs, each time
-rescaling one potential multiplicatively so that its pair margin of
-the current model matches the given table.  The $V^3$ joint is never
-materialized; each pair margin of the triangle model is one
-$V \times V$ matrix product (for example the $(0,1)$ margin is
-$\psi_{01} \odot (\psi_{02}\,\psi_{12}^{\top})$), so a sweep costs
-three matrix products.  The procedure converges to the
-maximum-entropy solution for strictly positive tables; the smoothed
-estimates used in Section~\ref{sec:pairwise} are strictly positive
-by construction.  In the sequential code the fit is warm-started
-from the previous checkpoint, and the residual margin error is
-reported as a diagnostic.  The implementation was checked against a
-dense enumeration at small $V$: the fitted margins match to
-$10^{-14}$, the conditional \eqref{eq:calibrated} matches the
-conditional of the fitted joint exactly, and the copy-lag case
-reproduces $p(x_0 \mid x_1)$ to $10^{-11}$ while the star rule errs
-by $0.36$ in total variation.
+\paragraph{Computation: eliminate the context potential.}
+The ideal three-pair solution can be written without ever storing the
+$V^3$ joint.  Fix the third margin and write
+\begin{equation}
+  q(x_0,x_1,x_2)
+  = \widehat p_{12}(x_1,x_2)\,
+    r(x_0\mid x_1,x_2),
+  \qquad
+  r(x_0\mid x_1,x_2)
+  \propto f_1(x_0,x_1)f_2(x_0,x_2).
+  \label{eq:conditional-calibration}
+\end{equation}
+The factor on the context pair has thereby been eliminated
+analytically: normalization of $r$ supplies whatever
+$\psi_{12}$ is required in the joint.  The two remaining factors are
+chosen so that averaging \eqref{eq:conditional-calibration} against
+$\widehat p_{12}$ reproduces the target--lag margins.  Ordinary
+iterative proportional fitting alternately rescales these factors;
+equivalently one may minimize the convex dual and finish with
+proportional-fitting sweeps whose marginal errors provide the final
+certificate.
+
+\paragraph{Observed-support approximation.}
+There is a scaling distinction between storage and work.  The layered
+estimator supplies pair probabilities without a dense table, but exact
+calibration against its positive $\widehat p_{12}$ still requires an
+average over all $V^2$ context pairs.  Our present implementation makes
+the following explicit, revisitable approximation.  Calibration is
+restricted to context pairs observed in the decoded prefix.  We
+renormalize $\widehat p_{12}$ on that support, then make the smallest
+relative-entropy adjustment of the two target--lag estimates that gives
+them the new lag margins while retaining their common target margin.
+For a context pair not yet observed, prediction falls back to the
+two-pair maximum-entropy rule \eqref{eq:star}.  Thus the third pair is
+used wherever the data have identified its support; the fallback is
+declared rather than silently assigning a dense table.
+
+The target--lag factors are stored as the layered unigram baseline,
+one global target correction, and corrections only for observed
+target--lag cells.  For a fixed observed context pair, its normalizer
+is the untouched baseline mass plus a log-sum-exp over the union of
+the two sparse correction lists.  The same identity computes fitted
+margins and predictions.  Consequently neither a pair-probability
+table nor a triple table is required by the repeated calibration
+sweeps.  Active cells are matched individually; all inactive cells in
+one lag row form a single grouped constraint.  This grouping, together
+with restriction of the context support, defines the scalable model
+being measured here; it is not claimed to equal the uncoarsened
+full-support triangle.
+
+\paragraph{Solver and sequential use.}
+The dual L-BFGS solver approaches the solution rapidly, after which
+ordinary proportional-fitting sweeps may polish the margins.  Both
+phases retain the iterate with the best actual certificate, the maximum
+of the three $L^1$ marginal errors, because neither the optimizer's
+stopping test nor that combined certificate is monotone at every
+numerical step.  At geometric checkpoints the sparse factors are
+carried forward: existing corrections are warm-started and newly
+observed cells start at zero.  Splitting the checkpoints into several
+interleaved warm-start chains keeps independent fits busy in parallel.
+The residual remains a numerical diagnostic rather than an oracle for
+held-out loss: at larger alphabets, forcing a slightly smaller residual
+by thousands of extra sweeps can worsen the following block, so we use
+a broad guard and report causal predictive loss as the deciding check.
+
+The conditional solver was checked against literal dense joint IPF and
+against the earlier triangle implementation at small $V$.  The sparse
+grouped evaluator agrees with its dense grouped reference to below
+$2\cdot10^{-9}$ in probability, including support growth and duplicate
+lags.  These checks separate correctness of the implemented sparse
+model from the observed-support approximation just stated.
 
 \section{The table of $\phi$ values: what is stored, what is
 computed, and how it was checked}

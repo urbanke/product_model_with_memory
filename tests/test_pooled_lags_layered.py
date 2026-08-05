@@ -20,6 +20,9 @@ from product_model_with_memory.codelength import (
 )
 from product_model_with_memory.pooled_lags import (
     _LayeredPredictiveBuilder,
+    _layered_log_sparse_tables,
+    _SparseLagTables,
+    SparseCountRows,
     pooled_lag_codelengths,
 )
 
@@ -42,11 +45,50 @@ def test_predictive_rows_normalize():
             nz = np.flatnonzero(row)
             base = tuple(sorted(int(row[i]) for i in nz))
             log_row = b.row_log_table(row)
+            sparse_ids, sparse_logp, sparse_unseen = b.row_log_sparse(row)
+            direct_ids, direct_logp, direct_unseen = (
+                b.row_log_sparse_entries(nz, row[nz])
+            )
+            assert np.array_equal(direct_ids, sparse_ids)
+            assert np.allclose(direct_logp, sparse_logp)
+            assert direct_unseen == sparse_unseen
             total = np.exp2(log_row).sum()
             assert abs(total - 1.0) < 1e-9
             # empty row must be exactly uniform
             if not base:
                 assert np.allclose(log_row, -math.log2(V))
+
+
+def test_sparse_count_rows_build_same_layered_tables_as_dense_counts():
+    v = 7
+    counts = np.array([
+        [0, 3, 0, 1, 0, 0, 2],
+        [0, 0, 0, 0, 0, 0, 0],
+        [2, 0, 1, 0, 4, 0, 0],
+        [0, 0, 0, 2, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1],
+        [0, 0, 0, 0, 0, 5, 0],
+        [0, 2, 0, 0, 3, 0, 0],
+    ], dtype=np.int64)
+    row, column = np.nonzero(counts)
+    keys = row * v + column
+    sparse_counts = SparseCountRows.from_sorted_keys(
+        v, keys, counts[row, column]
+    )
+    unigram = np.array([9, 7, 5, 3, 2, 1, 1], dtype=np.float64)
+    with tempfile.TemporaryDirectory() as tmp:
+        builder = _LayeredPredictiveBuilder(
+            v, default_l_max(v), tmp, 1, None
+        )
+        sparse_q0, (sparse_table,) = _layered_log_sparse_tables(
+            builder, unigram, [sparse_counts]
+        )
+        dense_q0 = builder.row_log_table(unigram)
+        dense_table = _SparseLagTables(builder, [counts]).lags[0]
+
+    assert np.allclose(sparse_q0, dense_q0)
+    for key in ("ptr", "idx", "val", "unseen", "rho"):
+        assert np.allclose(sparse_table[key], dense_table[key])
 
 
 def test_telescoping_identity_memoryless():
