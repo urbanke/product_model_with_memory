@@ -64,7 +64,7 @@ if [ ! -f "$PROBLEMS/results.json" ]; then
     --jobs 64 --iterations 2000 --tolerance 0.0001 \
     --projection-tolerance 1e-10 --projection-iterations 100000 \
     --sparse-upstream --stream-checkpoints --uncompressed-states \
-    --construct-only --out "$PROBLEMS"
+    --construct-only --resume-streamed --out "$PROBLEMS"
 else
   echo "reusing $PROBLEMS"
 fi

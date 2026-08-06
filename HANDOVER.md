@@ -4397,3 +4397,13 @@ controls are now explicit; the enwik8 job uses tolerance 1e-10 and at most
 100,000 iterations. The permitted final pair-margin discrepancy is still at
 most about 1e-9 L1, eight orders below the .01 calibration certificate.
 Failures now report achieved residual/tolerance/iterations.
+
+Construction now has checkpoint-level restart support.  The server job passes
+`--resume-streamed`: after an interrupted construction it replays the cheap
+cumulative token counts, validates each existing state against the expected
+prefix and vocabulary, and skips layered construction and pair projection for
+every completed checkpoint.  A `construction_fingerprint.json` binds reuse to
+the stream path, length, vocabulary, checkpoint edges, projection controls and
+layered-table settings; incompatible partial output is rejected.  Truncated
+checkpoint files are discarded and recomputed.  A two-checkpoint local test
+reused both states and a deliberately changed run configuration was rejected.

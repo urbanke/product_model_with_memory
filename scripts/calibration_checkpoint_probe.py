@@ -162,6 +162,14 @@ def main() -> None:
             "running calibration"
         ),
     )
+    parser.add_argument(
+        "--resume-streamed", action="store_true",
+        help=(
+            "reuse structurally valid completed checkpoint files in --out; "
+            "the token counts are replayed, but layered construction and "
+            "projection are skipped"
+        ),
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.stream_checkpoints and args.reference_tolerance is not None:
@@ -170,6 +178,13 @@ def main() -> None:
         parser.error("streamed checkpoints currently require copy transfer")
     if args.construct_only and not args.stream_checkpoints:
         parser.error("construction-only mode requires --stream-checkpoints")
+    if args.resume_streamed and not (
+        args.stream_checkpoints and args.construct_only
+    ):
+        parser.error(
+            "resume-streamed currently requires --stream-checkpoints "
+            "--construct-only"
+        )
     if args.solver == "exact-first-stochastic" and (
         not args.stream_checkpoints or args.interleave != 1
     ):
@@ -211,6 +226,31 @@ def main() -> None:
     if args.stream_checkpoints:
         out.mkdir(parents=True, exist_ok=True)
         (out / "states").mkdir(exist_ok=True)
+    resume_fingerprint = {
+        "ids": str(Path(args.ids).resolve()),
+        "n": len(x),
+        "V": vocabulary_size,
+        "top_k": args.top_k,
+        "edges": [int(edge) for edge in edges],
+        "sparse_upstream": args.sparse_upstream,
+        "projection_tolerance": args.projection_tolerance,
+        "projection_iterations": args.projection_iterations,
+        "universal_tables": os.environ["PMM_UNIVERSAL_TABLES"],
+        "phi_ladder_every": os.environ["PMM_PHI_LADDER_EVERY"],
+        "phi_ladder_degree": os.environ["PMM_PHI_LADDER_DEGREE"],
+        "phi_saddle_min_l": os.environ["PMM_PHI_SADDLE_MIN_L"],
+    }
+    fingerprint_path = out / "construction_fingerprint.json"
+    if args.resume_streamed and fingerprint_path.exists():
+        recorded = json.loads(fingerprint_path.read_text())
+        if recorded != resume_fingerprint:
+            raise RuntimeError(
+                "refusing to resume: construction fingerprint differs"
+            )
+    if args.stream_checkpoints:
+        temporary = fingerprint_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(resume_fingerprint, indent=2))
+        temporary.replace(fingerprint_path)
     v = vocabulary_size
     unigram = np.zeros(v, dtype=np.float64)
     if args.sparse_upstream:
@@ -323,6 +363,47 @@ def main() -> None:
                 lag1 * v + lag2, minlength=v * v
             ).reshape(v, v)
         previous_edge = int(edge)
+        resume_state = out / "states" / f"checkpoint_{checkpoint_index:03d}.npz"
+        if args.resume_streamed and resume_state.exists():
+            try:
+                with np.load(resume_state, allow_pickle=False) as saved:
+                    saved_prefix = int(saved["prefix"])
+                    saved_v = len(saved["target_y"])
+                    context_edges = len(saved["edge_probability"])
+                    ya_corrections = len(saved["target_ya"])
+                    yb_corrections = len(saved["target_yb"])
+            except (OSError, ValueError, KeyError, EOFError):
+                # An interrupted write is not a completed checkpoint.
+                resume_state.unlink(missing_ok=True)
+            else:
+                if saved_prefix != int(edge) or saved_v != v:
+                    raise RuntimeError(
+                        f"refusing checkpoint {checkpoint_index}: expected "
+                        f"prefix={int(edge)}, V={v}; found "
+                        f"prefix={saved_prefix}, V={saved_v}"
+                    )
+                row = {
+                    "prefix": int(edge),
+                    "retained_ab_mass": None,
+                    "context_edges": context_edges,
+                    "ya_corrections": ya_corrections,
+                    "yb_corrections": yb_corrections,
+                    "construction_seconds": 0.0,
+                    "persistence_seconds": 0.0,
+                    "constructed_only": True,
+                    "resumed": True,
+                }
+                construction.append(row)
+                streamed_rows.append(row)
+                print(json.dumps({
+                    "checkpoint": checkpoint_index,
+                    "prefix": int(edge),
+                    "resumed": True,
+                    "peak_resident_bytes": resource.getrusage(
+                        resource.RUSAGE_SELF
+                    ).ru_maxrss,
+                }), flush=True)
+                continue
         if args.sparse_upstream:
             sparse_counts1 = SparseCountRows.from_sorted_keys(
                 v, keys1, counts1
