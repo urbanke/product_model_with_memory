@@ -773,9 +773,23 @@ def sparse_factorized_margins_layered(
     log_base_y: np.ndarray,
     correction_ya: np.ndarray,
     correction_yb: np.ndarray,
+    *,
+    workers: int = 1,
+    max_parallel_scratch_bytes: int = 1 << 30,
 ) -> SparseFactorizedMargins:
     """Evaluate a birth-layered graph with the native sequential kernel."""
 
+    if workers < 1 or max_parallel_scratch_bytes < 1:
+        raise ValueError("invalid layered parallel settings")
+    scratch_per_worker = 8 * (
+        len(problem.edge_probability) + len(problem.target_yb)
+        + problem.vocabulary_size
+    )
+    effective_workers = min(
+        workers,
+        max(1, max_parallel_scratch_bytes // max(1, scratch_per_worker)),
+        max(1, len(problem.target_ya)),
+    )
     if not (
         _graphical_margin_c is not None
         and hasattr(_graphical_margin_c, "fused_margins_layered")
@@ -805,6 +819,7 @@ def sparse_factorized_margins_layered(
             tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.correction_yb),
             tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.edge_ab),
             checkpoint,
+            effective_workers,
         )
     )
     # The expanded 1+S1+S2+cross formula is fast but can lose precision when

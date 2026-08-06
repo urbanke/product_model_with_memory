@@ -4570,3 +4570,20 @@ was zero at displayed double precision.  NEXT: checkpoint this sequential
 kernel, then add parallel traversal with controlled thread-local reductions;
 do not trade the topology memory saving for unbounded workers-times-margin
 scratch arrays.
+
+The parallel layered kernel is now implemented with a hard scratch-memory
+budget.  Forward workers keep private AB cross accumulators; reverse workers
+own disjoint YA rows and keep private YB/target accumulators.  Requested
+workers are capped so scratch is at most the configured budget, with exact
+requirement `8 W (|E_AB|+|E_YB|+V)` bytes.  At V1024/C32 this is only about
+84 MB for 12 workers.  Stabilized final-checkpoint timings (three repeats):
+old explicit sequential .609--.611 s; layered W=4 .245--.272 s; W=8
+.172--.174 s; layered W=12 .141--.143 s.  Twelve workers therefore give a
+4.3x wall-clock speedup over the old sequential evaluation, alongside the
+43.5% topology reduction.  Direct-log-sum-exp validation remains exact at
+displayed double precision for the 100 most cancellation-sensitive edges.
+
+NEXT: construct the layered CSR topology directly from pair-edge birth depths
+rather than first building the final four-index plan and converting it.  Then
+persist/memory-map the one shared graph and adapt checkpoint problems to stable
+global YA/YB/AB identifiers before attempting a complete fitting trajectory.

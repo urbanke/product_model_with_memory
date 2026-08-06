@@ -30,6 +30,8 @@ def main() -> None:
     parser.add_argument("--factors", required=True)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--explicit-workers", type=int, default=1)
+    parser.add_argument("--layered-workers", type=int, default=1)
+    parser.add_argument("--scratch-gib", type=float, default=1.0)
     args = parser.parse_args()
 
     paths = sorted((Path(args.problems) / "states").glob("checkpoint_*.npz"))
@@ -74,7 +76,9 @@ def main() -> None:
         final, plan, log_base, c1, c2, intersection_shards=shards
     )
     layered = sparse_factorized_margins_layered(
-        final, graph, len(paths) - 1, log_base, c1, c2
+        final, graph, len(paths) - 1, log_base, c1, c2,
+        workers=args.layered_workers,
+        max_parallel_scratch_bytes=int(args.scratch_gib * 2**30),
     )
 
     def measure(function):
@@ -89,7 +93,9 @@ def main() -> None:
         final, plan, log_base, c1, c2, intersection_shards=shards
     ))
     layered_times = measure(lambda: sparse_factorized_margins_layered(
-        final, graph, len(paths) - 1, log_base, c1, c2
+        final, graph, len(paths) - 1, log_base, c1, c2,
+        workers=args.layered_workers,
+        max_parallel_scratch_bytes=int(args.scratch_gib * 2**30),
     ))
     worst_edge = int(np.argmax(np.abs(
         explicit.log_normalizer - layered.log_normalizer
@@ -133,8 +139,10 @@ def main() -> None:
         )),
         "layered_bytes": graph.nbytes,
         "explicit_workers": args.explicit_workers,
+        "layered_workers_requested": args.layered_workers,
+        "parallel_scratch_gib": args.scratch_gib,
         "explicit_seconds": explicit_times,
-        "layered_sequential_seconds": layered_times,
+        "layered_seconds": layered_times,
         "maximum_difference": max(
             float(np.max(np.abs(left - right)))
             for left, right in zip(

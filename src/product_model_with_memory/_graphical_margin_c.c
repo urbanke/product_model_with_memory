@@ -180,19 +180,58 @@ fail:
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);return NULL;
 }
 
+typedef struct {
+    const npy_int64 *ptr;
+    const int *yb;
+    const int *ab;
+} LayerView;
+
+typedef struct {
+    npy_intp row_lo,row_hi,n2,v;
+    int layers,phase;
+    const LayerView *view;
+    const double *base,*q1,*q2,*edge_mass;
+    const int *ya_y;
+    double *cross,*out_ya,*out_yb,*out_y;
+} LayerTask;
+
+static void *layer_worker(void *raw) {
+    LayerTask *t=(LayerTask*)raw;
+    if(t->phase==0){
+        for(int d=0;d<t->layers;d++) for(npy_intp i=t->row_lo;i<t->row_hi;i++){
+            double left=t->base[t->ya_y[i]]*t->q1[i];
+            for(npy_int64 p=t->view[d].ptr[i];p<t->view[d].ptr[i+1];p++)
+                t->cross[t->view[d].ab[p]] += left*t->q2[t->view[d].yb[p]];
+        }
+    }else{
+        for(int d=0;d<t->layers;d++) for(npy_intp i=t->row_lo;i<t->row_hi;i++){
+            int y=t->ya_y[i];
+            for(npy_int64 p=t->view[d].ptr[i];p<t->view[d].ptr[i+1];p++){
+                int j=t->view[d].yb[p],e=t->view[d].ab[p];
+                double common=t->base[y]*t->edge_mass[e];
+                t->out_ya[i]+=common*(1+t->q1[i])*t->q2[j];
+                t->out_yb[j]+=common*(1+t->q2[j])*t->q1[i];
+                t->out_y[y]+=common*t->q1[i]*t->q2[j];
+            }
+        }
+    }
+    return NULL;
+}
+
 static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
     PyArrayObject *base, *r1, *r2, *edge_a, *edge_b, *edge_p;
     PyArrayObject *ya_y, *ya_a, *yb_y, *yb_b;
     PyObject *row_layers, *yb_layers, *ab_layers;
-    int checkpoint;
-    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!O!O!O!O!i",
+    int checkpoint,workers=1;
+    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!O!O!O!O!i|i",
             &PyArray_Type,&base, &PyArray_Type,&r1, &PyArray_Type,&r2,
             &PyArray_Type,&edge_a, &PyArray_Type,&edge_b,
             &PyArray_Type,&edge_p, &PyArray_Type,&ya_y,
             &PyArray_Type,&ya_a, &PyArray_Type,&yb_y,
             &PyArray_Type,&yb_b, &PyTuple_Type,&row_layers,
             &PyTuple_Type,&yb_layers, &PyTuple_Type,&ab_layers,
-            &checkpoint)) return NULL;
+            &checkpoint,&workers)) return NULL;
+    if(workers<1)workers=1;
     Py_ssize_t layer_count=PyTuple_GET_SIZE(row_layers);
     if(layer_count<1 || PyTuple_GET_SIZE(yb_layers)!=layer_count ||
        PyTuple_GET_SIZE(ab_layers)!=layer_count || checkpoint<0 ||
@@ -211,12 +250,16 @@ static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
     double *cs1=calloc((size_t)v,sizeof(double)), *cs2=calloc((size_t)v,sizeof(double));
     double *cross=calloc((size_t)ne,sizeof(double)), *ccross=calloc((size_t)ne,sizeof(double)), *me=malloc((size_t)ne*sizeof(double));
     double *row=calloc((size_t)v,sizeof(double)), *col=calloc((size_t)v,sizeof(double));
+    LayerView *view=NULL;pthread_t *threads=NULL;LayerTask *tasks=NULL;
+    double *local_cross=NULL,*local_yb=NULL,*local_y=NULL;
     if(!my||!m1||!m2||!lz||!unstable||!s1||!s2||!cs1||!cs2||!cross||!ccross||!me||!row||!col){PyErr_NoMemory();goto fail_layered;}
     double *b=PyArray_DATA(base), *q1=PyArray_DATA(r1), *q2=PyArray_DATA(r2);
     double *ep=PyArray_DATA(edge_p), *oy=PyArray_DATA(my), *o1=PyArray_DATA(m1), *o2=PyArray_DATA(m2), *olz=PyArray_DATA(lz);
     npy_uint8 *bad=PyArray_DATA(unstable);
     int *ea=PyArray_DATA(edge_a), *eb=PyArray_DATA(edge_b), *ay=PyArray_DATA(ya_y), *aa=PyArray_DATA(ya_a), *by=PyArray_DATA(yb_y), *bb=PyArray_DATA(yb_b);
     /* Validate layer array sizes while the GIL is held. */
+    view=malloc((size_t)(checkpoint+1)*sizeof(*view));
+    if(!view){PyErr_NoMemory();goto fail_layered;}
     for(int d=0;d<=checkpoint;d++){
         PyObject *rp_obj=PyTuple_GET_ITEM(row_layers,d);
         PyObject *yb_obj=PyTuple_GET_ITEM(yb_layers,d);
@@ -226,6 +269,21 @@ static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
            PyArray_SIZE((PyArrayObject*)yb_obj)!=PyArray_SIZE((PyArrayObject*)ab_obj)){
             PyErr_SetString(PyExc_ValueError,"invalid layered CSR arrays");
             goto fail_layered;
+        }
+        view[d]=(LayerView){
+            PyArray_DATA((PyArrayObject*)rp_obj),
+            PyArray_DATA((PyArrayObject*)yb_obj),
+            PyArray_DATA((PyArrayObject*)ab_obj)
+        };
+    }
+    if(workers>1){
+        threads=malloc((size_t)workers*sizeof(*threads));
+        tasks=calloc((size_t)workers,sizeof(*tasks));
+        local_cross=calloc((size_t)workers*(size_t)ne,sizeof(double));
+        local_yb=calloc((size_t)workers*(size_t)n2,sizeof(double));
+        local_y=calloc((size_t)workers*(size_t)v,sizeof(double));
+        if(!threads||!tasks||!local_cross||!local_yb||!local_y){
+            PyErr_NoMemory();goto fail_layered;
         }
     }
     Py_BEGIN_ALLOW_THREADS
@@ -237,18 +295,27 @@ static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
         int a=bb[i];double value=b[by[i]]*q2[i]-cs2[a];
         double total=s2[a]+value;cs2[a]=(total-s2[a])-value;s2[a]=total;
     }
-    for(int d=0;d<=checkpoint;d++){
-        npy_int64 *ptr=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(row_layers,d));
-        int *jj=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(yb_layers,d));
-        int *ee=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(ab_layers,d));
-        for(npy_intp i=0;i<n1;i++){
+    if(workers==1){
+        for(int d=0;d<=checkpoint;d++) for(npy_intp i=0;i<n1;i++){
             double left=b[ay[i]]*q1[i];
-            for(npy_int64 p=ptr[i];p<ptr[i+1];p++){
-                int e=ee[p];double value=left*q2[jj[p]]-ccross[e];
-                double total=cross[e]+value;
-                ccross[e]=(total-cross[e])-value;cross[e]=total;
+            for(npy_int64 p=view[d].ptr[i];p<view[d].ptr[i+1];p++){
+                int e=view[d].ab[p];double value=left*q2[view[d].yb[p]]-ccross[e];
+                double total=cross[e]+value;ccross[e]=(total-cross[e])-value;cross[e]=total;
             }
         }
+    }else{
+        for(int w=0;w<workers;w++){
+            tasks[w]=(LayerTask){n1*w/workers,n1*(w+1)/workers,n2,v,
+                checkpoint+1,0,view,b,q1,q2,NULL,ay,
+                local_cross+(size_t)w*ne,NULL,NULL,NULL};
+            pthread_create(&threads[w],NULL,layer_worker,&tasks[w]);
+        }
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(npy_intp e=0;e<ne;e++)for(int w=0;w<workers;w++){
+            double value=local_cross[(size_t)w*ne+e]-ccross[e];
+            double total=cross[e]+value;ccross[e]=(total-cross[e])-value;cross[e]=total;
+        }
+        free(local_cross);local_cross=NULL;
     }
     double sm=0.0;
     for(npy_intp e=0;e<ne;e++){
@@ -264,21 +331,31 @@ static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
     for(npy_intp i=0;i<n1;i++){o1[i]=b[ay[i]]*(1+q1[i])*row[aa[i]];oy[ay[i]]+=b[ay[i]]*q1[i]*row[aa[i]];}
     for(npy_intp i=0;i<n2;i++){o2[i]=b[by[i]]*(1+q2[i])*col[bb[i]];oy[by[i]]+=b[by[i]]*q2[i]*col[bb[i]];}
     for(npy_intp y=0;y<v;y++) oy[y]+=b[y]*sm;
-    for(int d=0;d<=checkpoint;d++){
-        npy_int64 *ptr=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(row_layers,d));
-        int *jj=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(yb_layers,d));
-        int *ee=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(ab_layers,d));
-        for(npy_intp i=0;i<n1;i++) for(npy_int64 p=ptr[i];p<ptr[i+1];p++){
-            int j=jj[p],e=ee[p],y=ay[i]; double common=b[y]*me[e];
-            o1[i]+=common*(1+q1[i])*q2[j];
-            o2[j]+=common*(1+q2[j])*q1[i];
-            oy[y]+=common*q1[i]*q2[j];
+    if(workers==1){
+        for(int d=0;d<=checkpoint;d++) for(npy_intp i=0;i<n1;i++)
+        for(npy_int64 p=view[d].ptr[i];p<view[d].ptr[i+1];p++){
+            int j=view[d].yb[p],e=view[d].ab[p],y=ay[i];double common=b[y]*me[e];
+            o1[i]+=common*(1+q1[i])*q2[j];o2[j]+=common*(1+q2[j])*q1[i];oy[y]+=common*q1[i]*q2[j];
+        }
+    }else{
+        for(int w=0;w<workers;w++){
+            tasks[w]=(LayerTask){n1*w/workers,n1*(w+1)/workers,n2,v,
+                checkpoint+1,1,view,b,q1,q2,me,ay,NULL,o1,
+                local_yb+(size_t)w*n2,local_y+(size_t)w*v};
+            pthread_create(&threads[w],NULL,layer_worker,&tasks[w]);
+        }
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(int w=0;w<workers;w++){
+            for(npy_intp j=0;j<n2;j++)o2[j]+=local_yb[(size_t)w*n2+j];
+            for(npy_intp y=0;y<v;y++)oy[y]+=local_y[(size_t)w*v+y];
         }
     }
     Py_END_ALLOW_THREADS
+    free(view);free(threads);free(tasks);free(local_cross);free(local_yb);free(local_y);
     free(s1);free(s2);free(cs1);free(cs2);free(cross);free(ccross);free(me);free(row);free(col);
     return Py_BuildValue("NNNNN",my,m1,m2,lz,unstable);
 fail_layered:
+    free(view);free(threads);free(tasks);free(local_cross);free(local_yb);free(local_y);
     free(s1);free(s2);free(cs1);free(cs2);free(cross);free(ccross);free(me);free(row);free(col);
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
 }
