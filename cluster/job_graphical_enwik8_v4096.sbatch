@@ -29,16 +29,17 @@ PY=""
 for cand in "$(command -v python3 2>/dev/null || true)" \
             "$HOME/anaconda3/envs/pmm/bin/python" \
             "$HOME/miniforge3/envs/pmm/bin/python" \
+            "$HOME/anaconda3/bin/python" \
             /usr/bin/python3; do
   if [ -x "$cand" ] && "$cand" -c \
-      'import sys; assert sys.version_info >= (3,11); import numpy, scipy' \
+      'import sys; assert sys.version_info >= (3,11); import numpy, scipy, setuptools' \
       2>/dev/null; then
     PY="$cand"
     break
   fi
 done
 [ -n "$PY" ] || {
-  echo "ERROR: no existing Python >=3.11 with numpy/scipy was found."
+  echo "ERROR: no existing Python >=3.11 with numpy/scipy/setuptools was found."
   exit 1
 }
 echo "using python: $PY"
