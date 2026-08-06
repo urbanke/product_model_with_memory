@@ -464,6 +464,7 @@ class SparseGroupedResult:
     residual_y_l1: float
     converged: bool
     margin_evaluations: int = 0
+    hessian_products: int = 0
 
 
 @dataclass(frozen=True)
@@ -1518,6 +1519,10 @@ def sparse_grouped_newton_cg(
     correction_yb: np.ndarray,
     max_iterations: int = 200,
     tolerance: float = 1e-5,
+    jacobi_precondition: bool = True,
+    precondition_floor: float = 1e-8,
+    precondition_max_scale: float = 10.0,
+    max_hessian_products: int | None = None,
 ) -> SparseGroupedResult:
     """Fit the exact dual with the standard trust-region Newton--CG method.
 
@@ -1528,6 +1533,10 @@ def sparse_grouped_newton_cg(
 
     if max_iterations < 1 or tolerance <= 0.0:
         raise ValueError("invalid Newton-CG convergence settings")
+    if precondition_floor <= 0.0 or precondition_max_scale < 1.0:
+        raise ValueError("invalid Newton-CG preconditioner settings")
+    if max_hessian_products is not None and max_hessian_products < 1:
+        raise ValueError("max_hessian_products must be positive")
     v = problem.vocabulary_size
     n1 = len(problem.target_ya)
     n2 = len(problem.target_yb)
@@ -1553,17 +1562,62 @@ def sparse_grouped_newton_cg(
         for state in np.flatnonzero(counts == v):
             free[offset + np.flatnonzero(states == state)[0]] = False
     fixed = full_initial.copy()
+
+    # Optimize in diagonally whitened coordinates.  The entries below are
+    # the Bernoulli/Fisher diagonal for each target feature, with the active
+    # pair features conditioned on their context.  It is a cheap Jacobi
+    # approximation to the exact Hessian diagonal and uses only the target
+    # margins already resident in the problem.  Trust-NCG still receives
+    # exact Hessian-vector products; this is solely a linear change of
+    # variables that removes the worst rare-feature scaling.
+    scale = np.ones_like(full_initial)
+    if jacobi_precondition:
+        pa = np.bincount(
+            problem.edge_a,
+            weights=problem.edge_probability,
+            minlength=v,
+        )
+        pb = np.bincount(
+            problem.edge_b,
+            weights=problem.edge_probability,
+            minlength=v,
+        )
+        conditional_ya = np.divide(
+            problem.target_ya,
+            pa[problem.active_ya_a],
+            out=np.zeros_like(problem.target_ya),
+            where=pa[problem.active_ya_a] > 0.0,
+        )
+        conditional_yb = np.divide(
+            problem.target_yb,
+            pb[problem.active_yb_b],
+            out=np.zeros_like(problem.target_yb),
+            where=pb[problem.active_yb_b] > 0.0,
+        )
+        diagonal = np.concatenate([
+            problem.target_y * (1.0 - problem.target_y),
+            problem.target_ya * np.maximum(0.0, 1.0 - conditional_ya),
+            problem.target_yb * np.maximum(0.0, 1.0 - conditional_yb),
+        ])
+        scale = np.minimum(
+            precondition_max_scale,
+            1.0 / np.sqrt(np.maximum(diagonal, precondition_floor)),
+        )
     best_parameters = full_initial.copy()
     best_certificate = float("inf")
     best_residuals = (float("inf"),) * 3
     evaluations = 0
+    hessian_products = 0
 
     class _CertificateReached(Exception):
         pass
 
+    class _HessianBudgetReached(Exception):
+        pass
+
     def expand(reduced: np.ndarray) -> np.ndarray:
         full = fixed.copy()
-        full[free] = reduced
+        full[free] += scale[free] * reduced
         return full
 
     def objective_gradient(reduced: np.ndarray):
@@ -1585,19 +1639,26 @@ def sparse_grouped_newton_cg(
                 float(evaluation.residual_ya_l1),
                 float(evaluation.residual_yb_l1),
             )
-        return evaluation.objective, evaluation.gradient()[free]
+        return evaluation.objective, scale[free] * evaluation.gradient()[free]
 
     def hessian_product(reduced: np.ndarray, direction: np.ndarray):
+        nonlocal hessian_products
+        if (
+            max_hessian_products is not None
+            and hessian_products >= max_hessian_products
+        ):
+            raise _HessianBudgetReached
+        hessian_products += 1
         full = expand(reduced)
         full_direction = np.zeros_like(full)
-        full_direction[free] = direction
+        full_direction[free] = scale[free] * direction
         product = sparse_factorized_dual_hessian_product(
             problem,
             full[:v], full[v:v + n1], full[v + n1:],
             full_direction,
             intersection_plan=plan,
         )
-        return product[free]
+        return scale[free] * product[free]
 
     accepted_iterations = 0
 
@@ -1610,7 +1671,7 @@ def sparse_grouped_newton_cg(
     try:
         optimized = minimize(
             objective_gradient,
-            full_initial[free],
+            np.zeros(np.count_nonzero(free), dtype=np.float64),
             method="trust-ncg",
             jac=True,
             hessp=hessian_product,
@@ -1619,6 +1680,8 @@ def sparse_grouped_newton_cg(
         )
         iterations = int(optimized.nit)
     except _CertificateReached:
+        iterations = accepted_iterations
+    except _HessianBudgetReached:
         iterations = accepted_iterations
     return SparseGroupedResult(
         best_parameters[:v],
@@ -1630,6 +1693,7 @@ def sparse_grouped_newton_cg(
         best_residuals[0],
         best_certificate <= tolerance,
         evaluations,
+        hessian_products,
     )
 
 

@@ -4430,3 +4430,65 @@ gives reduced prediction, vocabulary description, escape payload and their
 honest total.  The front scoreboard now uses
 the V8192 result.  The PDF was rebuilt and pages 14--15 were visually checked:
 the table is legible and Appendix A starts after the Section 7 discussion.
+
+### 2026-08-06 --- Active scaling runs and next solver branch
+
+Two scaling runs are active.  EPFL server job 2187 is constructing
+enwik8/V4096/C32 with 64 workers and has passed the projection failure point
+from job 2186; at checkpoint 29 it had accumulated 2.67 hours of construction.
+Its printed `peak_resident_bytes` is actually Linux `ru_maxrss` in KiB, so
+16,737,532 means about 16.0 GiB.  It will automatically continue through the
+fixed-12-replica/12-worker calibration and 31-worker scoring stages.  The M4
+Max (16 cores, 36 GB) is running text8/V16384/C32: eight construction workers,
+then fixed 12 replicas/workers for calibration and 15 scoring workers.  At
+checkpoint 18 it had accumulated .80 hours and peaked at 13.39 GB.  Its runner
+is `scripts/run_graphical_text8_v16384_m4.sh`; it deterministically builds the
+cl100k stream and exact production anchor store when absent.
+
+The user now also has SCITAS access to 72-core Xeon nodes with 512 GB--2 TB
+RAM.  These make a first full-token enwik9 structural/baseline run feasible,
+but a week per experiment is unacceptable because longer-memory models are
+the real target.  Optimization priority is therefore explicit: (1) remove
+computations and data first; (2) only then execute the remaining work faster.
+The two leading exact-model ideas are matrix-free Newton--CG to remove the
+long stochastic tail and lazy sampled-block intersections to avoid building
+unused plan records.  Newton--CG comes first because it attacks the dominant
+number of margin passes, can be tested against existing saved checkpoints,
+and may change the access pattern that the block store should optimize.
+
+NEXT IMPLEMENTATION: derive an analytic sparse-dual Hessian-vector product;
+validate it against finite differences and literal dense small problems;
+then use a standard trust-region/Newton--CG method from an existing stochastic
+warm iterate.  Test transitions from certificates roughly .05/.02 to .01 and
+count full-plan-equivalent passes as well as elapsed time.  Continue only if
+about 5--20 Hessian-vector passes replace a material part of the present
+hundreds of stochastic updates; stop early if inner CG needs many full passes
+or conditioning is poor.  Preserve gauge removal, damping/globalization and
+the exact marginal certificate.  Sampled-block construction remains the next
+memory branch regardless of the Newton outcome.
+
+The Newton experiment is now complete enough to decide.  The analytic exact
+Hessian-vector product agrees both with centered finite differences and with
+an independently constructed literal covariance Hessian on small problems.
+The first unpreconditioned real checkpoint-23 trial spent more than 150 s in
+the inner CG loop without completing a useful outer step.  Curvature probes
+showed severe scaling: normalized-gradient curvature was about 0.0742 whereas
+a random-direction curvature was about 6.45e-6.  A standard target-Fisher
+Jacobi coordinate scaling plus a hard Hessian-product budget fixed this
+pathology.  On the genuine checkpoint-22 to checkpoint-23 transfer it reduced
+the certificate .06035 -> .02871 with 40 products/20.69 s, -> .01570 with 80
+products/42.61 s, and -> .01117 with 140 products/69.42 s.  The existing
+fixed-batch stochastic fit reached .00772 in about 5 s.  On the much harder
+checkpoint-0 to checkpoint-1 transfer, a conservatively capped preconditioner
+used 100 products but only reduced .46384 -> .14974, while stochastic reached
+.00929 in 2.83 s.  An aggressive scale cap also exposed nonfinite exploratory
+products at that early checkpoint.
+
+DECISION: retain the validated, budgeted Newton-CG implementation and probe
+script as a documented experimental/fallback branch, but do not put it in the
+production checkpoint solver.  Exact curvature passes do not remove enough
+work to beat sampled gradients.  The next implementation is lazy sampled-block
+intersection construction: stochastic fitting must not first materialize the
+full intersection plan/reference cache when it will touch only sampled edge
+blocks.  This directly targets both computation and peak memory and therefore
+matches the agreed remove-work-first priority.

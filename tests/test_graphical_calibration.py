@@ -30,6 +30,7 @@ from product_model_with_memory.graphical_calibration import (
     sparse_factorized_margins,
     sparse_factorized_margins_reference,
     sparse_gated_log_probabilities,
+    sparse_grouped_newton_cg,
     sparse_grouped_ipf,
     sparse_problem_from_dense,
     sparse_problem_from_projected,
@@ -843,6 +844,86 @@ def test_factorized_hessian_product_matches_gradient_difference():
         problem, lb, c1, c2, gauge, intersection_plan=plan
     )
     assert np.max(np.abs(gauge_product)) < 2e-14
+
+
+def test_factorized_hessian_product_matches_literal_covariance():
+    rng = np.random.default_rng(1712)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(4, 4, 4))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    mask1 = rng.random(p_ya.shape) < 0.7
+    mask2 = rng.random(p_yb.shape) < 0.7
+    problem = sparse_problem_from_dense(p_ya, p_yb, p_ab, mask1, mask2)
+    plan = build_sparse_intersection_plan(problem)
+    v = problem.vocabulary_size
+    n1 = len(problem.target_ya)
+    n2 = len(problem.target_yb)
+    lb = rng.normal(scale=0.2, size=v)
+    c1 = rng.normal(scale=0.15, size=n1)
+    c2 = rng.normal(scale=0.15, size=n2)
+    direction = rng.normal(size=v + n1 + n2)
+
+    literal = np.zeros((len(direction), len(direction)))
+    normalized = lb - np.logaddexp.reduce(lb)
+    for a, b, edge_mass in zip(
+        problem.edge_a, problem.edge_b, problem.edge_probability
+    ):
+        features = np.zeros((v, len(direction)))
+        features[np.arange(v), np.arange(v)] = 1.0
+        first = np.flatnonzero(problem.active_ya_a == a)
+        second = np.flatnonzero(problem.active_yb_b == b)
+        features[problem.active_ya_y[first], v + first] = 1.0
+        features[problem.active_yb_y[second], v + n1 + second] = 1.0
+        scores = normalized + features[:, v:] @ np.concatenate([c1, c2])
+        probability = np.exp(scores - np.logaddexp.reduce(scores))
+        mean = probability @ features
+        centered = features - mean
+        literal += edge_mass * (centered.T * probability) @ centered
+
+    product = sparse_factorized_dual_hessian_product(
+        problem, lb, c1, c2, direction, intersection_plan=plan
+    )
+    assert np.max(np.abs(product - literal @ direction)) < 2e-13
+
+
+def test_sparse_newton_cg_converges_and_counts_products():
+    rng = np.random.default_rng(1713)
+    raw = rng.gamma(shape=1.2, scale=1.0, size=(4, 4, 4))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    result = sparse_grouped_newton_cg(
+        problem,
+        log_base_y=np.log(problem.target_y),
+        correction_ya=np.zeros(len(problem.target_ya)),
+        correction_yb=np.zeros(len(problem.target_yb)),
+        max_iterations=100,
+        tolerance=1e-8,
+    )
+    assert result.converged
+    assert result.margin_evaluations > 0
+    assert result.hessian_products > 0
+    assert max(
+        result.residual_y_l1,
+        result.grouped_residual_ya_l1,
+        result.grouped_residual_yb_l1,
+    ) <= 1e-8
+
+    budgeted = sparse_grouped_newton_cg(
+        problem,
+        log_base_y=np.log(problem.target_y),
+        correction_ya=np.zeros(len(problem.target_ya)),
+        correction_yb=np.zeros(len(problem.target_yb)),
+        max_iterations=100,
+        tolerance=1e-15,
+        max_hessian_products=1,
+    )
+    assert budgeted.hessian_products == 1
+    assert budgeted.margin_evaluations >= 1
 
 
 def test_factorized_margins_stably_recompute_cancelled_edge():
