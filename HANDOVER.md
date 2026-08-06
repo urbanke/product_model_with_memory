@@ -4492,3 +4492,19 @@ intersection construction: stochastic fitting must not first materialize the
 full intersection plan/reference cache when it will touch only sampled edge
 blocks.  This directly targets both computation and peak memory and therefore
 matches the agreed remove-work-first priority.
+
+Potential future fallback hierarchy (record this exactly, but do not implement
+it yet): run the normal stochastic fit from the best certified warm start; if
+its scheduler stalls above tolerance, try preconditioned Newton--CG under a
+small hard Hessian-product/time budget; accept the Newton candidate only when
+an exact certificate improves sufficiently and is finite; otherwise pass the
+best valid candidate to the existing reliable L-BFGS fallback.  Newton must
+never replace that final safety net.  Controlled checkpoint-23 finishing tests
+show why it can be a useful rescue but not the default: from certificate
+.02141 it crossed .01 in one accepted step (.00675), but required 37 serial
+Hessian products/18.3 s versus 3.5 s for stochastic continuation.  Starts at
+.02742 and .03379 exhausted 100/120-product budgets without crossing .01, and
+some closer states were also poorly conditioned.  Thus certificate alone does
+not identify the one-step basin; a bounded attempt and exact acceptance test
+are essential.  Parallel Hessian products or a future tighter required
+tolerance could change this assessment.
