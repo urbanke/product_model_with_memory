@@ -180,8 +180,112 @@ fail:
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);return NULL;
 }
 
+static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
+    PyArrayObject *base, *r1, *r2, *edge_a, *edge_b, *edge_p;
+    PyArrayObject *ya_y, *ya_a, *yb_y, *yb_b;
+    PyObject *row_layers, *yb_layers, *ab_layers;
+    int checkpoint;
+    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!O!O!O!O!i",
+            &PyArray_Type,&base, &PyArray_Type,&r1, &PyArray_Type,&r2,
+            &PyArray_Type,&edge_a, &PyArray_Type,&edge_b,
+            &PyArray_Type,&edge_p, &PyArray_Type,&ya_y,
+            &PyArray_Type,&ya_a, &PyArray_Type,&yb_y,
+            &PyArray_Type,&yb_b, &PyTuple_Type,&row_layers,
+            &PyTuple_Type,&yb_layers, &PyTuple_Type,&ab_layers,
+            &checkpoint)) return NULL;
+    Py_ssize_t layer_count=PyTuple_GET_SIZE(row_layers);
+    if(layer_count<1 || PyTuple_GET_SIZE(yb_layers)!=layer_count ||
+       PyTuple_GET_SIZE(ab_layers)!=layer_count || checkpoint<0 ||
+       checkpoint>=layer_count){
+        PyErr_SetString(PyExc_ValueError,"invalid layered intersection graph");
+        return NULL;
+    }
+    npy_intp v=PyArray_SIZE(base), n1=PyArray_SIZE(r1), n2=PyArray_SIZE(r2);
+    npy_intp ne=PyArray_SIZE(edge_p), dims[1];
+    dims[0]=v; PyArrayObject *my=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n1; PyArrayObject *m1=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n2; PyArrayObject *m2=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=ne; PyArrayObject *lz=(PyArrayObject*)PyArray_EMPTY(1,dims,NPY_DOUBLE,0);
+    PyArrayObject *unstable=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_UINT8,0);
+    double *s1=calloc((size_t)v,sizeof(double)), *s2=calloc((size_t)v,sizeof(double));
+    double *cs1=calloc((size_t)v,sizeof(double)), *cs2=calloc((size_t)v,sizeof(double));
+    double *cross=calloc((size_t)ne,sizeof(double)), *ccross=calloc((size_t)ne,sizeof(double)), *me=malloc((size_t)ne*sizeof(double));
+    double *row=calloc((size_t)v,sizeof(double)), *col=calloc((size_t)v,sizeof(double));
+    if(!my||!m1||!m2||!lz||!unstable||!s1||!s2||!cs1||!cs2||!cross||!ccross||!me||!row||!col){PyErr_NoMemory();goto fail_layered;}
+    double *b=PyArray_DATA(base), *q1=PyArray_DATA(r1), *q2=PyArray_DATA(r2);
+    double *ep=PyArray_DATA(edge_p), *oy=PyArray_DATA(my), *o1=PyArray_DATA(m1), *o2=PyArray_DATA(m2), *olz=PyArray_DATA(lz);
+    npy_uint8 *bad=PyArray_DATA(unstable);
+    int *ea=PyArray_DATA(edge_a), *eb=PyArray_DATA(edge_b), *ay=PyArray_DATA(ya_y), *aa=PyArray_DATA(ya_a), *by=PyArray_DATA(yb_y), *bb=PyArray_DATA(yb_b);
+    /* Validate layer array sizes while the GIL is held. */
+    for(int d=0;d<=checkpoint;d++){
+        PyObject *rp_obj=PyTuple_GET_ITEM(row_layers,d);
+        PyObject *yb_obj=PyTuple_GET_ITEM(yb_layers,d);
+        PyObject *ab_obj=PyTuple_GET_ITEM(ab_layers,d);
+        if(!PyArray_Check(rp_obj)||!PyArray_Check(yb_obj)||!PyArray_Check(ab_obj)||
+           PyArray_SIZE((PyArrayObject*)rp_obj)!=n1+1 ||
+           PyArray_SIZE((PyArrayObject*)yb_obj)!=PyArray_SIZE((PyArrayObject*)ab_obj)){
+            PyErr_SetString(PyExc_ValueError,"invalid layered CSR arrays");
+            goto fail_layered;
+        }
+    }
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp i=0;i<n1;i++){
+        int a=aa[i];double value=b[ay[i]]*q1[i]-cs1[a];
+        double total=s1[a]+value;cs1[a]=(total-s1[a])-value;s1[a]=total;
+    }
+    for(npy_intp i=0;i<n2;i++){
+        int a=bb[i];double value=b[by[i]]*q2[i]-cs2[a];
+        double total=s2[a]+value;cs2[a]=(total-s2[a])-value;s2[a]=total;
+    }
+    for(int d=0;d<=checkpoint;d++){
+        npy_int64 *ptr=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(row_layers,d));
+        int *jj=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(yb_layers,d));
+        int *ee=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(ab_layers,d));
+        for(npy_intp i=0;i<n1;i++){
+            double left=b[ay[i]]*q1[i];
+            for(npy_int64 p=ptr[i];p<ptr[i+1];p++){
+                int e=ee[p];double value=left*q2[jj[p]]-ccross[e];
+                double total=cross[e]+value;
+                ccross[e]=(total-cross[e])-value;cross[e]=total;
+            }
+        }
+    }
+    double sm=0.0;
+    for(npy_intp e=0;e<ne;e++){
+        double z=1+s1[ea[e]]+s2[eb[e]]+cross[e];
+        double scale=1+fabs(s1[ea[e]])+fabs(s2[eb[e]])+fabs(cross[e]);
+        if(!isfinite(z)||z<=0||scale>1e10*fmax(fabs(z),1e-300)){
+            bad[e]=1;olz[e]=NAN;me[e]=0;
+        }else{
+            olz[e]=log(z);me[e]=ep[e]/z;
+            row[ea[e]]+=me[e];col[eb[e]]+=me[e];sm+=me[e];
+        }
+    }
+    for(npy_intp i=0;i<n1;i++){o1[i]=b[ay[i]]*(1+q1[i])*row[aa[i]];oy[ay[i]]+=b[ay[i]]*q1[i]*row[aa[i]];}
+    for(npy_intp i=0;i<n2;i++){o2[i]=b[by[i]]*(1+q2[i])*col[bb[i]];oy[by[i]]+=b[by[i]]*q2[i]*col[bb[i]];}
+    for(npy_intp y=0;y<v;y++) oy[y]+=b[y]*sm;
+    for(int d=0;d<=checkpoint;d++){
+        npy_int64 *ptr=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(row_layers,d));
+        int *jj=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(yb_layers,d));
+        int *ee=PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(ab_layers,d));
+        for(npy_intp i=0;i<n1;i++) for(npy_int64 p=ptr[i];p<ptr[i+1];p++){
+            int j=jj[p],e=ee[p],y=ay[i]; double common=b[y]*me[e];
+            o1[i]+=common*(1+q1[i])*q2[j];
+            o2[j]+=common*(1+q2[j])*q1[i];
+            oy[y]+=common*q1[i]*q2[j];
+        }
+    }
+    Py_END_ALLOW_THREADS
+    free(s1);free(s2);free(cs1);free(cs2);free(cross);free(ccross);free(me);free(row);free(col);
+    return Py_BuildValue("NNNNN",my,m1,m2,lz,unstable);
+fail_layered:
+    free(s1);free(s2);free(cs1);free(cs2);free(cross);free(ccross);free(me);free(row);free(col);
+    Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
+}
+
 static PyMethodDef methods[]={
     {"fused_margins",fused_margins,METH_VARARGS,"Fused sparse margins."},
+    {"fused_margins_layered",fused_margins_layered,METH_VARARGS,"Fused birth-layered CSR margins."},
     {"intersection_plan",intersection_plan,METH_VARARGS,"Direct compact intersection plan."},
     {NULL,NULL,0,NULL}
 };

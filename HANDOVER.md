@@ -4542,3 +4542,31 @@ NEXT: implement a small correctness reference for the layered CSR store and
 show that summing layers 0..k gives bit-identical margins/gradients to the
 current checkpoint-specific plan.  Then add a native sequential traversal and
 benchmark it before changing production construction or saved-state formats.
+
+The correctness reference and native sequential traversal are now implemented
+on branch `codex/layered-intersection-graph`.  `LayeredIntersectionGraph`
+stores one CSR layer per birth depth; its row is the global YA-correction
+index, while each edge stores only the YB-correction and AB-edge indices.
+Expansion reconstructs all explicit triangle fields exactly.  A direct NumPy
+reference and the native C traversal reproduce all model-margin families and
+normalizers on independent small problems; the complete calibration test file
+has 40 passing tests.
+
+On the real V1024 final checkpoint (83,702,774 triangles), explicit topology
+uses 1,339,244,384 bytes and the layered graph 756,211,120 bytes.  One native
+sequential evaluation took .610 s for the existing plan and .510 s for the
+stabilized layered graph, a 16% speedup before parallelism.  Construction of
+the old final plan took 1.87 s and conversion to the Python-built layered
+prototype 5.75 s; production must build layers directly rather than convert.
+
+Changing summation order exposed cancellation in the old expanded evaluator.
+The layered kernel now uses compensated signed accumulation, omits edges whose
+cancellation ratio exceeds 1e10, and adds those few edges back with positive
+log-sum-exp.  At the worst real edge, old explicit log Z was 6.725633702,
+initial layered 6.724733477, and direct truth 6.725007924.  Stabilized layered
+equals 6.725007924.  Across the 100 edges with largest old/new differences,
+old maximum/total direct error were 6.26e-4/6.59e-3; stabilized layered error
+was zero at displayed double precision.  NEXT: checkpoint this sequential
+kernel, then add parallel traversal with controlled thread-local reductions;
+do not trade the topology memory saving for unbounded workers-times-margin
+scratch arrays.

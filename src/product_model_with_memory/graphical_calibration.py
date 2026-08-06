@@ -570,6 +570,273 @@ class SparseEdgeBlock:
     intersection_plan: SparseIntersectionPlan
 
 
+@dataclass(frozen=True)
+class LayeredIntersectionGraph:
+    """One CSR support-triangle layer per checkpoint birth depth.
+
+    Rows are global YA-correction indices.  Within a row, each graph edge
+    stores only its YB-correction index and AB-edge index; the YA index and
+    target symbol are implicit in the row and ``problem.active_ya_y``.
+    """
+
+    row_ptr: tuple[np.ndarray, ...]
+    correction_yb: tuple[np.ndarray, ...]
+    edge_ab: tuple[np.ndarray, ...]
+
+    @property
+    def layers(self) -> int:
+        return len(self.row_ptr)
+
+    @property
+    def edges(self) -> int:
+        return sum(len(values) for values in self.edge_ab)
+
+    @property
+    def nbytes(self) -> int:
+        return sum(
+            array.nbytes
+            for family in (self.row_ptr, self.correction_yb, self.edge_ab)
+            for array in family
+        )
+
+
+def layered_intersection_graph_from_plan(
+    problem: SparseGroupedProblem,
+    plan: SparseIntersectionPlan,
+    triangle_birth: np.ndarray,
+    *,
+    layers: int,
+) -> LayeredIntersectionGraph:
+    """Compress one explicit plan into birth-layered YA-row CSR arrays."""
+
+    birth = np.asarray(triangle_birth)
+    if birth.shape != plan.edge.shape:
+        raise ValueError("triangle births and intersection plan disagree")
+    if layers < 1 or np.any(birth < 0) or np.any(birth >= layers):
+        raise ValueError("triangle birth lies outside the layer range")
+    n1 = len(problem.target_ya)
+    row_ptr = []
+    correction_yb = []
+    edge_ab = []
+    for depth in range(layers):
+        selected = np.flatnonzero(birth == depth)
+        first = plan.correction_ya[selected]
+        # Stable grouping retains the original within-row order.
+        order = np.argsort(first, kind="stable")
+        first = first[order]
+        counts = np.bincount(first, minlength=n1)
+        row_ptr.append(np.concatenate([
+            np.array([0], dtype=np.int64),
+            np.cumsum(counts, dtype=np.int64),
+        ]))
+        correction_yb.append(np.asarray(
+            plan.correction_yb[selected][order], dtype=np.int32
+        ))
+        edge_ab.append(np.asarray(plan.edge[selected][order], dtype=np.int32))
+    return LayeredIntersectionGraph(
+        tuple(row_ptr), tuple(correction_yb), tuple(edge_ab)
+    )
+
+
+def intersection_plan_from_layered_graph(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+) -> SparseIntersectionPlan:
+    """Expand active layers as a correctness reference for the native path."""
+
+    if checkpoint < 0 or checkpoint >= graph.layers:
+        raise ValueError("checkpoint lies outside the layered graph")
+    n1 = len(problem.target_ya)
+    first_parts = []
+    second_parts = []
+    edge_parts = []
+    for depth in range(checkpoint + 1):
+        ptr = graph.row_ptr[depth]
+        if ptr.shape != (n1 + 1,):
+            raise ValueError("layer row pointer has the wrong shape")
+        first_parts.append(np.repeat(
+            np.arange(n1, dtype=np.int32), np.diff(ptr)
+        ))
+        second_parts.append(graph.correction_yb[depth])
+        edge_parts.append(graph.edge_ab[depth])
+    first = np.concatenate(first_parts)
+    second = np.concatenate(second_parts)
+    edge = np.concatenate(edge_parts)
+    target = problem.active_ya_y[first].astype(np.int32, copy=False)
+    # Restore the canonical explicit-plan ordering: AB edge, then target.
+    order = np.lexsort((target, edge))
+    return SparseIntersectionPlan(
+        edge[order], target[order], first[order], second[order]
+    )
+
+
+def sparse_factorized_margins_layered_reference(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+) -> SparseFactorizedMargins:
+    """Evaluate active CSR layers directly, without an explicit plan.
+
+    This intentionally simple NumPy implementation is the specification for
+    the native layered traversal.  It assumes ``problem`` and its numerical
+    margins describe the requested checkpoint; the graph supplies only the
+    shared topology.
+    """
+
+    if checkpoint < 0 or checkpoint >= graph.layers:
+        raise ValueError("checkpoint lies outside the layered graph")
+    v = problem.vocabulary_size
+    n1 = len(problem.target_ya)
+    n2 = len(problem.target_yb)
+    log_base = np.asarray(log_base_y) - logsumexp(log_base_y)
+    base = np.exp(log_base)
+    r1 = np.expm1(np.asarray(correction_ya))
+    r2 = np.expm1(np.asarray(correction_yb))
+    if r1.shape != (n1,) or r2.shape != (n2,):
+        raise ValueError("layered correction arrays have the wrong shape")
+    s1 = np.bincount(
+        problem.active_ya_a,
+        weights=base[problem.active_ya_y] * r1,
+        minlength=v,
+    )
+    s2 = np.bincount(
+        problem.active_yb_b,
+        weights=base[problem.active_yb_y] * r2,
+        minlength=v,
+    )
+    cross = np.zeros(len(problem.edge_probability))
+    active_layers: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    for depth in range(checkpoint + 1):
+        first = np.repeat(
+            np.arange(n1, dtype=np.int32), np.diff(graph.row_ptr[depth])
+        )
+        second = graph.correction_yb[depth]
+        edge = graph.edge_ab[depth]
+        active_layers.append((first, second, edge))
+        cross += np.bincount(
+            edge,
+            weights=(
+                base[problem.active_ya_y[first]] * r1[first] * r2[second]
+            ),
+            minlength=len(problem.edge_probability),
+        )
+    z = 1.0 + s1[problem.edge_a] + s2[problem.edge_b] + cross
+    edge_mass = problem.edge_probability / z
+    row_mass = np.bincount(
+        problem.edge_a, weights=edge_mass, minlength=v
+    )
+    column_mass = np.bincount(
+        problem.edge_b, weights=edge_mass, minlength=v
+    )
+    y1 = problem.active_ya_y
+    y2 = problem.active_yb_y
+    active_ya = base[y1] * (1.0 + r1) * row_mass[problem.active_ya_a]
+    active_yb = base[y2] * (1.0 + r2) * column_mass[problem.active_yb_b]
+    target_y = base * float(edge_mass.sum())
+    target_y += np.bincount(
+        y1, weights=base[y1] * r1 * row_mass[problem.active_ya_a],
+        minlength=v,
+    )
+    target_y += np.bincount(
+        y2, weights=base[y2] * r2 * column_mass[problem.active_yb_b],
+        minlength=v,
+    )
+    for first, second, edge in active_layers:
+        y = y1[first]
+        common = base[y] * edge_mass[edge]
+        active_ya += np.bincount(
+            first,
+            weights=common * (1.0 + r1[first]) * r2[second],
+            minlength=n1,
+        )
+        active_yb += np.bincount(
+            second,
+            weights=common * (1.0 + r2[second]) * r1[first],
+            minlength=n2,
+        )
+        target_y += np.bincount(
+            y, weights=common * r1[first] * r2[second], minlength=v
+        )
+    return SparseFactorizedMargins(
+        target_y, active_ya, active_yb, np.log(z)
+    )
+
+
+def sparse_factorized_margins_layered(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+) -> SparseFactorizedMargins:
+    """Evaluate a birth-layered graph with the native sequential kernel."""
+
+    if not (
+        _graphical_margin_c is not None
+        and hasattr(_graphical_margin_c, "fused_margins_layered")
+    ):
+        return sparse_factorized_margins_layered_reference(
+            problem, graph, checkpoint,
+            log_base_y, correction_ya, correction_yb,
+        )
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    normalized_log_base = log_base - logsumexp(log_base)
+    base = np.exp(normalized_log_base)
+    r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
+    r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    target_y, active_ya, active_yb, log_z, unstable = (
+        _graphical_margin_c.fused_margins_layered(
+            np.ascontiguousarray(base),
+            np.ascontiguousarray(r1),
+            np.ascontiguousarray(r2),
+            np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_probability, dtype=np.float64),
+            np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+            tuple(np.ascontiguousarray(x, dtype=np.int64) for x in graph.row_ptr),
+            tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.correction_yb),
+            tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.edge_ab),
+            checkpoint,
+        )
+    )
+    # The expanded 1+S1+S2+cross formula is fast but can lose precision when
+    # large signed corrections cancel.  The native kernel omits and flags
+    # such AB edges; add them back from their positive log-sum-exp form.
+    for edge in np.flatnonzero(unstable):
+        a = problem.edge_a[edge]
+        b = problem.edge_b[edge]
+        selected1 = np.flatnonzero(problem.active_ya_a == a)
+        selected2 = np.flatnonzero(problem.active_yb_b == b)
+        score = normalized_log_base.copy()
+        score[problem.active_ya_y[selected1]] += np.asarray(
+            correction_ya
+        )[selected1]
+        score[problem.active_yb_y[selected2]] += np.asarray(
+            correction_yb
+        )[selected2]
+        direct_log_z = float(logsumexp(score))
+        joint = problem.edge_probability[edge] * np.exp(
+            score - direct_log_z
+        )
+        target_y += joint
+        active_ya[selected1] += joint[problem.active_ya_y[selected1]]
+        active_yb[selected2] += joint[problem.active_yb_y[selected2]]
+        log_z[edge] = direct_log_z
+    if not all(np.all(np.isfinite(array)) for array in (
+        target_y, active_ya, active_yb, log_z
+    )):
+        raise FloatingPointError("layered margin evaluation remained nonfinite")
+    return SparseFactorizedMargins(target_y, active_ya, active_yb, log_z)
+
+
 def build_sparse_intersection_plan(
     problem: SparseGroupedProblem,
     *,

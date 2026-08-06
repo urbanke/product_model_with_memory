@@ -16,6 +16,8 @@ from product_model_with_memory.graphical_calibration import (
     first_pair_warm_start,
     fit_grouped_checkpoints,
     grouped_conditional_ipf,
+    intersection_plan_from_layered_graph,
+    layered_intersection_graph_from_plan,
     pair_midpoint_warm_start,
     pair_product_warm_start,
     project_sparse_layered_pair,
@@ -28,6 +30,8 @@ from product_model_with_memory.graphical_calibration import (
     sparse_factorized_dual_evaluation,
     sparse_factorized_dual_hessian_product,
     sparse_factorized_margins,
+    sparse_factorized_margins_layered,
+    sparse_factorized_margins_layered_reference,
     sparse_factorized_margins_reference,
     sparse_gated_log_probabilities,
     sparse_grouped_newton_cg,
@@ -656,6 +660,104 @@ def test_intersection_plan_respects_memory_limit():
     )
     with pytest.raises(MemoryError):
         build_sparse_intersection_plan(problem, max_intersections=1)
+
+
+def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
+    rng = np.random.default_rng(20260812)
+    v = 7
+    raw = rng.gamma(shape=0.9, scale=1.0, size=(v, v, v))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random((v, v)) < 0.65,
+        rng.random((v, v)) < 0.55,
+    )
+    plan = build_sparse_intersection_plan(problem)
+    layers = 5
+    birth_ya = rng.integers(layers, size=len(problem.target_ya))
+    birth_yb = rng.integers(layers, size=len(problem.target_yb))
+    birth_ab = rng.integers(layers, size=len(problem.edge_probability))
+    triangle_birth = np.maximum.reduce([
+        birth_ya[plan.correction_ya],
+        birth_yb[plan.correction_yb],
+        birth_ab[plan.edge],
+    ])
+    graph = layered_intersection_graph_from_plan(
+        problem, plan, triangle_birth, layers=layers
+    )
+    assert graph.layers == layers
+    assert graph.edges == len(plan.edge)
+    assert graph.nbytes < plan.edge.nbytes * 4 + sum(
+        pointer.nbytes for pointer in graph.row_ptr
+    )
+
+    log_base = rng.normal(scale=0.2, size=v)
+    full_c1 = rng.normal(scale=0.1, size=len(problem.target_ya))
+    full_c2 = rng.normal(scale=0.1, size=len(problem.target_yb))
+    for checkpoint in range(layers):
+        reconstructed = intersection_plan_from_layered_graph(
+            problem, graph, checkpoint
+        )
+        selected = np.flatnonzero(triangle_birth <= checkpoint)
+        target = plan.target_y[selected]
+        edge = plan.edge[selected]
+        order = np.lexsort((target, edge))
+        np.testing.assert_array_equal(reconstructed.edge, edge[order])
+        np.testing.assert_array_equal(reconstructed.target_y, target[order])
+        np.testing.assert_array_equal(
+            reconstructed.correction_ya, plan.correction_ya[selected][order]
+        )
+        np.testing.assert_array_equal(
+            reconstructed.correction_yb, plan.correction_yb[selected][order]
+        )
+
+
+    reconstructed = intersection_plan_from_layered_graph(
+        problem, graph, layers - 1
+    )
+    explicit = sparse_factorized_margins(
+        problem, plan, log_base, full_c1, full_c2
+    )
+    layered = sparse_factorized_margins(
+        problem, reconstructed, log_base, full_c1, full_c2
+    )
+    direct_layered = sparse_factorized_margins_layered_reference(
+        problem, graph, layers - 1, log_base, full_c1, full_c2
+    )
+    native_layered = sparse_factorized_margins_layered(
+        problem, graph, layers - 1, log_base, full_c1, full_c2
+    )
+    np.testing.assert_allclose(layered.target_y, explicit.target_y,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(layered.active_ya, explicit.active_ya,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(layered.active_yb, explicit.active_yb,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(
+        layered.log_normalizer, explicit.log_normalizer,
+        rtol=0.0, atol=2e-15,
+    )
+    np.testing.assert_allclose(direct_layered.target_y, explicit.target_y,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(direct_layered.active_ya, explicit.active_ya,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(direct_layered.active_yb, explicit.active_yb,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(
+        direct_layered.log_normalizer, explicit.log_normalizer,
+        rtol=0.0, atol=2e-15,
+    )
+    np.testing.assert_allclose(native_layered.target_y, explicit.target_y,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(native_layered.active_ya, explicit.active_ya,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(native_layered.active_yb, explicit.active_yb,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(
+        native_layered.log_normalizer, explicit.log_normalizer,
+        rtol=0.0, atol=2e-15,
+    )
 
 
 def test_sampled_sparse_dual_gradient_is_unbiased_edge_by_edge():
