@@ -4508,3 +4508,37 @@ some closer states were also poorly conditioned.  Thus certificate alone does
 not identify the one-step basin; a bounded attempt and exact acceptance test
 are essential.  Parallel Hessian products or a future tighter required
 tolerance could change this assessment.
+
+### 2026-08-06 --- Single depth-layered intersection graph audit
+
+The proposed topology is a bipartite graph whose left nodes are active
+`(y,a)` corrections and right nodes are active `(y,b)` corrections.  A graph
+edge exists when the corresponding `(a,b)` context edge is retained; it does
+not require the empirical triple `(y,a,b)` itself to have occurred.  Such an
+edge is exactly one present intersection/colored support triangle.  Grouping
+edges by their left correction node makes `y` and the left correction index
+implicit: a CSR edge need only store the right-correction index and AB-edge
+index.
+
+`scripts/intersection_topology_audit.py` tested the idea on the real
+V1024/C32 checkpoint chain.  YA, YB and AB supports are exactly monotone over
+all 32 checkpoints.  Giving every pair edge its first active checkpoint and
+every triangle birth depth equal to the maximum of its three pair-edge births
+reconstructs every checkpoint exactly: all 32 cumulative birth counts equal
+the independently recorded intersection-plan lengths.  The final supports
+have 338,237 YA, 537,579 YB and 338,237 AB edges.  There are 213,958,699
+candidate blue-red paths, of which the AB mask retains 83,702,774 triangles.
+
+The present solver constructs 372,522,181 triangle records cumulatively over
+the 32 checkpoints, 4.45 times the final topology.  Its final four-int32 plan
+is 1,339,244,384 bytes (1.247 GiB).  One 32-layer CSR topology with two int32
+values per graph edge and one int64 row-pointer array per layer is estimated
+at 756,211,120 bytes (0.704 GiB), a 43.5% reduction even at the final
+checkpoint, while constructing topology only once.  A node-major two-int32
+plus uint8-depth layout is essentially the same size.  The audit output is
+`output/calibration_v1024_full_c32_compact_w12_validation/intersection_topology_audit.json`.
+
+NEXT: implement a small correctness reference for the layered CSR store and
+show that summing layers 0..k gives bit-identical margins/gradients to the
+current checkpoint-specific plan.  Then add a native sequential traversal and
+benchmark it before changing production construction or saved-state formats.
