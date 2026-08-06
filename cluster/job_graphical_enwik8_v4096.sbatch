@@ -26,7 +26,8 @@ FITTED="$ROOT/fitted_c32_w12"
 mkdir -p "$ROOT"
 
 PY=""
-for cand in "$HOME/anaconda3/envs/pmm/bin/python" \
+for cand in "$(command -v python3 2>/dev/null || true)" \
+            "$HOME/anaconda3/envs/pmm/bin/python" \
             "$HOME/miniforge3/envs/pmm/bin/python" \
             /usr/bin/python3; do
   if [ -x "$cand" ] && "$cand" -c \
@@ -37,7 +38,7 @@ for cand in "$HOME/anaconda3/envs/pmm/bin/python" \
   fi
 done
 [ -n "$PY" ] || {
-  echo "ERROR: the existing pmm Python >=3.11 environment was not found."
+  echo "ERROR: no existing Python >=3.11 with numpy/scipy was found."
   exit 1
 }
 echo "using python: $PY"

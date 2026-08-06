@@ -81,7 +81,8 @@ replicas on 12 workers, and performs exact honest scoring with 31 workers
 (one per predicted interval).  It requests
 220 GB but does not attempt to consume it eagerly.  BLAS/OpenMP inner threading
 is disabled to prevent process oversubscription.  The existing `pmm`
-environment is reused and no packages are installed.  The native C extension
+Python on the submitted environment's `PATH` is reused and no packages are
+installed.  The native C extension
 is compiled in place and verified before the run starts.  The prepared
 `bpe_enwik8` stream must already exist on the server.  Each completed stage is reusable;
 resubmitting skips construction or fitting when its `results.json` exists.

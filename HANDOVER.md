@@ -4377,7 +4377,8 @@ by one worker.
 `cluster/job_graphical_enwik8_v4096.sbatch` is the staged first test of the
 new three-pair pipeline on the EPFL server. Submit only through
 `urbanke@lth.epfl.ch`; it requests node14, 64 CPUs and 220 GB on
-`slurm-cluster`. It reuses the existing Python >=3.11 `pmm` environment and
+`slurm-cluster`. It reuses the existing Python >=3.11 on the submitted
+environment's `PATH` (server reports 3.13.9, numpy 2.3.5, scipy 1.16.3) and
 compiles the native extension in place without installing packages,
 prepares/reuses the 25,793,085-token `bpe_enwik8` stream, constructs V4096/C32
 problems with 64 workers, calibrates with the validated fixed batch of 12
