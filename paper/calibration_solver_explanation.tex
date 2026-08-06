@@ -1,0 +1,558 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,booktabs,hyperref}
+
+\title{Calibration of the Three-Pair Maximum-Entropy Predictor}
+\author{Working explanation}
+\date{5 August 2026}
+
+\begin{document}
+\maketitle
+
+\section{What calibration computes}
+
+Let $Y$ be the token to predict and let $A,B$ be two context tokens.
+At one checkpoint the layered estimator supplies three pairwise
+distributions
+\[
+ \widehat p_{YA}(y,a),\qquad
+ \widehat p_{YB}(y,b),\qquad
+ \widehat p_{AB}(a,b).
+\]
+The purpose of calibration is to find the maximum-entropy joint
+distribution whose three pair margins equal these estimates.  Fixing the
+context-pair margin allows us to write
+\begin{equation}
+ q_\theta(y,a,b)
+ =\widehat p_{AB}(a,b)q_\theta(y\mid a,b),
+ \label{eq:joint}
+\end{equation}
+with conditional distribution
+\begin{equation}
+ q_\theta(y\mid a,b)
+ =\frac{p_0(y)\exp\{c_1(y,a)+c_2(y,b)\}}{Z_{ab}},
+ \qquad
+ Z_{ab}=\sum_zp_0(z)\exp\{c_1(z,a)+c_2(z,b)\}.
+ \label{eq:conditional}
+\end{equation}
+Here $p_0$ is a normalized target baseline, while $c_1$ and $c_2$ are
+the unknown log correction factors.  They must satisfy
+\begin{align}
+ \sum_b\widehat p_{AB}(a,b)q_\theta(y\mid a,b)
+ &=\widehat p_{YA}(y,a),
+ \label{eq:ya-margin}\\
+ \sum_a\widehat p_{AB}(a,b)q_\theta(y\mid a,b)
+ &=\widehat p_{YB}(y,b).
+ \label{eq:yb-margin}
+\end{align}
+These equations explain why the third pair matters.  It supplies the
+actual weights with which the two contexts co-occur when the fitted
+conditional is averaged back to its target--context margins.
+
+\section{Why the factors require a numerical solution}
+
+Every correction changes the normalizers of many context pairs.  Therefore
+the factors cannot be obtained by independently inserting
+$\widehat p(y\mid a)$ and $\widehat p(y\mid b)$ into a closed formula.
+They are the minimizer of the convex dual
+\begin{align}
+ F(\theta)
+ &=\sum_{a,b}\widehat p_{AB}(a,b)\log Z_{ab}
+   -\sum_y\widehat p_Y(y)\ell_y \notag\\
+ &\quad-\sum_{y,a}\widehat p_{YA}(y,a)c_1(y,a)
+       -\sum_{y,b}\widehat p_{YB}(y,b)c_2(y,b),
+ \label{eq:dual}
+\end{align}
+where $p_0$ is the normalized exponential of the baseline parameters
+$\ell_y$.  The gradient is the discrepancy between the margins produced
+by the current factors and the desired margins:
+\[
+ \nabla F(\theta)=
+ \begin{pmatrix}
+  q_Y-\widehat p_Y\\
+  q_{YA}-\widehat p_{YA}\\
+  q_{YB}-\widehat p_{YB}
+ \end{pmatrix}.
+\]
+Thus optimization of the dual and solution of the margin equations are
+the same problem.
+
+At the final $V=4096$ checkpoint the current sparse problem has roughly
+$3.7$ million natural parameters: $4096$ baseline values,
+$1{,}399{,}764$ first-lag corrections, and $2{,}288{,}630$ second-lag
+corrections.  Constructing a Hessian is out of the question, but even one
+objective-and-gradient evaluation is expensive because all observed
+context edges must be normalized and accumulated into three margins.
+
+\section{Sparse intersection evaluation}
+
+A literal evaluation of $Z_{ab}$ sums over all $V$ targets for every
+observed context pair.  To avoid this, define the deviations of the
+multiplicative corrections from one:
+\begin{equation}
+ r_1(y,a)=\exp\{c_1(y,a)\}-1,
+ \qquad
+ r_2(y,b)=\exp\{c_2(y,b)\}-1.
+ \label{eq:r}
+\end{equation}
+Define also
+\begin{equation}
+ S_{1a}=\sum_y p_0(y)r_1(y,a),
+ \qquad
+ S_{2b}=\sum_y p_0(y)r_2(y,b).
+ \label{eq:S}
+\end{equation}
+Since $p_0$ is normalized, expanding the product in
+\eqref{eq:conditional} gives
+\begin{align}
+ Z_{ab}
+ &=\sum_y p_0(y)(1+r_1(y,a))(1+r_2(y,b))\notag\\
+ &=1+S_{1a}+S_{2b}
+   +\sum_y p_0(y)r_1(y,a)r_2(y,b).
+ \label{eq:intersection}
+\end{align}
+The final sum is nonzero only where the two sparse correction rows share
+a target.  We therefore precompute an intersection plan containing
+\[
+ (\text{context-edge index},y,c_1\text{ index},c_2\text{ index})
+\]
+for every nonempty intersection.  This plan produces all normalizers and
+the fitted $Y,YA,YB$ margins without a dense pair or triple table.
+
+The identity is exact mathematically but can suffer floating-point
+cancellation because $r_i$ may be negative and approach $-1$.  Extreme
+trial steps may therefore be unstable even though the original positive
+sum in \eqref{eq:conditional} is well defined.  The current solver uses a
+trust region and a direct sparse-union evaluator for small problems, but a
+fully safeguarded large-problem evaluation remains necessary.
+
+\section{Initialization and warm starts}
+
+The first fit is initialized from the simpler pairwise conditionals
+$\widehat p(y\mid a)$ and $\widehat p(y\mid b)$.  In natural-parameter
+coordinates this gives a pair-product starting point, which is normally
+closer than a unigram initialization.
+
+Subsequent checkpoints are divided into two interleaved chains.  With eight
+checkpoints these are
+\[
+ 0\longrightarrow2\longrightarrow4\longrightarrow6,
+ \qquad
+ 1\longrightarrow3\longrightarrow5\longrightarrow7.
+\]
+For the next problem, factors whose feature keys already existed are copied
+from the preceding member of the same chain.  Newly observed features begin
+at zero.  Only compact feature keys and fitted factors need to survive; the
+complete preceding checkpoint can be released.
+
+Interleaving is a compromise.  It exposes two independent fits to the CPU
+while preserving warm starts.  Creating many more chains would raise
+nominal parallelism but also make each chain colder, increasing the number
+of iterations and potentially losing the wall-clock benefit.
+
+\section{Current hybrid solver}
+
+\subsection{L-BFGS approach phase}
+
+The first phase uses gauge-reduced L-BFGS on the dual
+\eqref{eq:dual}.  Global constants and redundant constants in saturated
+rows are anchored.  A finite displacement region around the warm start
+prevents a line-search proposal from changing log factors by hundreds.
+Within that region the line search forms the adaptive mixture
+\[
+ \theta_{\rm trial}
+ =(1-\alpha)\theta_{\rm old}+\alpha\theta_{\rm proposal},
+ \qquad 0<\alpha\leq1.
+\]
+After an accepted iterate, the solver evaluates the actual grouped margin
+certificate
+\[
+ C(\theta)=\max\left\{
+ \lVert q_Y-\widehat p_Y\rVert_1,
+ \lVert q_{YA}-\widehat p_{YA}\rVert_1,
+ \lVert q_{YB}-\widehat p_{YB}\rVert_1
+ \right\}.
+\]
+It stops once $C(\theta)$ reaches the requested tolerance.  This is more
+appropriate than relying on the optimizer's largest-gradient-component
+test.
+
+\subsection{IPF polishing phase}
+
+If L-BFGS does not reach the desired certificate, iterative proportional
+fitting alternately updates the three factor families.  Schematically,
+\[
+ \ell_y\leftarrow\ell_y+log\frac{\widehat p_Y(y)}{q_Y(y)},
+\]
+\[
+ c_1(y,a)\leftarrow c_1(y,a)
+   +\log\frac{\widehat p_{YA}(y,a)}{q_{YA}(y,a)},
+\]
+and analogously for $c_2$.  Grouped inactive cells require an additional
+row shift so that their aggregate mass is also correct.
+
+One IPF sweep currently performs several complete margin evaluations: one
+before the baseline update, one before each correction-family update, and
+one for the final certificate.  This makes a stable but long IPF tail very
+expensive.
+
+Neither the chosen maximum of three $L^1$ errors nor every intermediate
+numerical path is monotone.  The implementation therefore retains the
+iterate with the best measured certificate and hands that state between
+phases.
+
+\section{Where the time goes}
+
+The provisional full-text8 $V=4096$ run used eight checkpoints.  Its
+construction took $811$ seconds, while calibration took $4801$ seconds out
+of $5621$ seconds total.  Most large checkpoints required about $1100$
+complete margin evaluations.
+
+Each evaluation streams a large intersection plan and performs several
+segmented reductions.  Arithmetic per entry is small, but memory traffic is
+large.  At the largest checkpoints the workers compete for memory bandwidth
+and allocate large partial arrays.  This explains the observed transition
+from broad high-CPU construction plateaus to a long calibration phase with
+only roughly three or four effective Python cores and substantial kernel
+activity.  Merely adding threads will not remove this bottleneck.
+
+\section{Present parallelism and its limitations}
+
+Calibration is already parallelized at two levels.  First, the checkpoints
+are split into independent interleaved warm-start chains.  In the provisional
+$V=4096$ run, two chains were fitted concurrently.  Checkpoints within one
+chain cannot be fitted concurrently in the present scheme, because checkpoint
+$j+2$ is initialized with the fitted factors from checkpoint $j$.
+
+Second, one evaluation of the margins can split the sparse intersection plan
+among worker threads.  In the $V=4096$ run each fit requested five margin
+workers.  The workers independently form intersection contributions and
+parts of the $Y$, $YA$, and $YB$ reductions.  Thus the run could have two
+simultaneous fits, each using up to five workers in its parallel portions.
+The large NumPy kernels execute outside Python's global interpreter lock, so
+these threads can perform useful work concurrently.
+
+This does not mean that the complete calibration uses ten cores continuously.
+Several important parts remain serial:
+\begin{itemize}
+\item L-BFGS chooses each trial point from the result of the preceding
+      objective and gradient evaluation.  Its line search is likewise an
+      adaptive sequence, so evaluations within one solve are not independent.
+\item The $Y$, $YA$, and $YB$ IPF projections must be applied successively;
+      a later projection uses the margins produced after the earlier update.
+\item Some baseline terms, normalizers, assembly of worker results,
+      diagnostics, and factor updates are still computed by the coordinating
+      thread.
+\item In the factorized evaluator every worker presently returns large dense
+      partial reduction arrays.  Their addition is serial and their creation
+      multiplies memory traffic.
+\item Each warm-start chain eventually waits for its slowest large checkpoint,
+      and unequal iteration counts cause load imbalance between chains.
+\end{itemize}
+
+There are two distinct obstacles to further scaling.  The first is
+\emph{algorithmic dependency}: neither consecutive optimizer iterations nor
+consecutive IPF projections can simply be evaluated on separate cores and
+then averaged without changing the method.  Parallel speculative trial
+steps are possible, but only one accepted step advances the solver, so their
+benefit is uncertain.  The second is \emph{memory bandwidth}: a margin
+evaluation performs relatively little arithmetic per byte read.  Once several
+workers saturate the memory subsystem, more cores mainly compete for the same
+data and produce more temporary arrays rather than reducing elapsed time.
+
+The most credible additional parallelism is therefore structural rather than
+merely increasing the thread count.  Workers should own disjoint output
+ranges and write compact partial results, avoiding full-sized replicated
+reductions and a serial merge.  Independent chains, experiments, or
+speculative solver starts can occupy otherwise idle cores.  More importantly,
+incremental IPF or a better-preconditioned second-order method would reduce
+the number of complete margin scans; this attacks the dominant cost even when
+memory bandwidth prevents a large speedup from additional cores.
+
+\section{Most promising acceleration routes}
+
+The largest opportunity is to reduce the number of global passes.
+
+\begin{enumerate}
+\item \textbf{Closer continuation.}  Thirty-two checkpoints make adjacent
+      problems more similar.  Better warm starts may substantially reduce
+      iterations, so 32 checkpoints need not cost four times as much as
+      eight.  Preserving quasi-Newton history or a compact preconditioner
+      across checkpoints should also be investigated.
+
+\item \textbf{Progressive vocabulary.}  Fit successively at
+      $V=256,512,1024,4096,$ and the full vocabulary, transferring factors
+      at each expansion.  This avoids fitting a huge alphabet from a tiny
+      prefix while allowing calibrated prediction to begin early.
+
+\item \textbf{Incremental IPF.}  A first-lag update for context $a$ affects
+      only $AB$ edges incident to $a$; a second-lag update for $b$ affects
+      only edges incident to $b$.  Maintaining affected normalizers and
+      partial margins could replace several full scans by local graph
+      updates.
+
+\item \textbf{Stronger second-order methods.}  The Hessian is a covariance
+      operator for the sufficient statistics.  It should not be stored, but
+      Hessian-vector products, Newton--CG, block-diagonal preconditioners, or
+      the two-pair tree solution as a preconditioner may reduce hundreds of
+      passes to tens.
+
+\item \textbf{Output-sharded reductions.}  Each worker should own disjoint
+      YA/YB output ranges instead of returning complete partial arrays.
+      This reduces memory traffic and is important for the 64-core,
+      240GB server.
+
+\item \textbf{Blockwise intersection plans.}  Streaming or memory-mapping
+      plan blocks can reduce peak memory.  If necessary, one complete
+      checkpoint can be fitted at a time while compact warm starts for both
+      logical chains are retained.
+
+\item \textbf{Precomputation.}  With a fixed corpus, alphabet, and 32
+      checkpoint boundaries, cache count increments, layered profiles and
+      their evaluations, and optionally prepared sparse checkpoint problems.
+      This does not eliminate calibration, but removes repeated construction
+      and makes solver experiments and restarts inexpensive.
+\end{enumerate}
+
+\section{Additional acceleration ideas retained for investigation}
+
+The following proposals are sufficiently well founded to keep on record.
+They are possible changes to the numerical route, not changes to the
+maximum-entropy model or to the final margin certificate.
+
+\subsection{Stochastic approach phase}
+
+The dual gradient is an expectation over observed context pairs
+$(a,b)\sim\widehat p_{AB}$.  Sampling edges with this probability therefore
+gives an unbiased stochastic gradient (or, with a different sampling law, an
+importance-weighted unbiased gradient).  Far from the solution, Adam, SVRG,
+or another stochastic method could use one to five percent of the edges per
+step.  Occasional exact evaluations would monitor progress, and an exact
+IPF, L-BFGS, or Newton phase would still produce the final certificate.
+
+This is promising because it attacks the roughly $1100$ complete passes,
+but it must be tested carefully.  Rare $YA$ and $YB$ features may otherwise
+be visited too infrequently, so stratification by context or feature may be
+needed.  A subsample cannot certify convergence, and normalization over the
+target support is still required for every sampled edge.
+
+The first implementation uses contiguous probability-weighted edge blocks.
+A block is chosen with probability equal to its total $\widehat p_{AB}$ mass
+and is evaluated with the conditional edge distribution inside the block.
+Its gradient is therefore unbiased.  The block is a view into the permanent
+intersection plan rather than a copied random subplan, and independent blocks
+can be evaluated concurrently.  An SVRG control variate uses
+\[
+ \widehat g_b(\theta)-\widehat g_b(\widetilde\theta)
+ +\nabla F(\widetilde\theta),
+\]
+where $\widetilde\theta$ is an occasional exactly evaluated snapshot.  This
+remains unbiased and greatly reduces block-to-block variation near a warm
+start.
+
+In a provisional final-checkpoint $V=4096$ probe, one full gradient took
+$16.14$ seconds on one CPU worker, while a typical zero-copy block gradient
+took about $0.17$ seconds.  Twenty-five four-replica SVRG updates reduced the
+exact gradient $\ell_2$ norm from $0.003472$ to $0.002037$.  Counting both the
+current and snapshot block evaluations, they touched about $0.90$ million
+edge instances, versus $1.40$ million edges in one full pass.  These are
+engineering diagnostics, not final solver timings: exact snapshot passes,
+plan construction, and the subsequent certified handoff must all be included
+in an end-to-end comparison.
+
+A subsequent controlled $V=1024$ last-checkpoint experiment reached the
+actual grouped certificate $0.00912<0.01$ using SVRG plus occasional exact
+certificate evaluations and no old L-BFGS/IPF finishing phase.  The
+stochastic phases took about $279$ seconds in several restartable runs,
+compared with $674$ seconds for the original exact fit of the same checkpoint,
+a provisional $2.4\times$ elapsed-time improvement.  Splitting the run caused
+the fixed plan to be rebuilt more than once, so an integrated run should be
+somewhat faster.  In contrast, handing an insufficiently converged stochastic
+state to the old solver saved only about one percent and is not the proposed
+route.
+
+The statistical batch size and the execution worker count must be separate
+parameters.  An initial comparison inadvertently increased both together and
+therefore changed the optimizer.  In the corrected scaling test, every update
+used the same twelve sampled blocks and produced bit-identical factors and
+certificate traces.  Four workers took $42.92$ seconds, eight took $37.91$
+seconds, and twelve took $35.70$ seconds.  Twelve workers are therefore best
+for this fixed computation on the 15-core laptop, although the modest
+$1.20\times$ gain over four workers shows substantial memory-bandwidth
+contention.  Batch size remains a separate optimization question.  Both
+counts are machine-dependent and must be re-benchmarked on the server;
+elapsed time to the identical certificate, not utilization or nominal
+parallelism, is the selection criterion.
+
+\subsection{Context-owned IPF and two incidence orders}
+
+Within a first-factor projection, the factor rows indexed by distinct
+contexts $a$ can be owned by distinct workers; the analogous statement holds
+for the $b$ rows in the second-factor projection.  Store the static incidence
+plan in two CSR-like orders, one grouped by $a$ and one by $b$.  A worker then
+writes only its owned factor and margin ranges.  This can remove replicated
+full-sized partial arrays and their serial merge.  Shared target-margin
+reductions and the succession of the three projection families remain.
+
+Fusing the normalizer and margin calculations, or maintaining affected
+normalizers incrementally, may also reduce the number of complete evaluations
+per IPF sweep.  Any such implementation must be checked against the present
+Gauss--Seidel IPF map; reusing stale margins silently changes the iteration.
+
+\subsection{Fixed-point and second-order acceleration}
+
+Guarded overrelaxation is cheap to test.  Anderson acceleration is already
+implemented in the code base and should be reassessed on the present large
+sparse problems rather than assumed to provide a particular gain.  Late in
+the solve, Greenkhorn-style updates of only the worst context rows could turn
+global sweeps into local graph updates.  A matrix-free Newton--CG endgame is
+also plausible: Hessian--vector products use the same covariance structure as
+the gradient, while a two-pair tree solution or rowwise Fisher blocks could
+serve as a preconditioner.
+
+Newton--CG is deferred, not discarded.  A transparent matrix-free
+Hessian--vector product has been derived by differentiating the sparse
+factorized margin algebra and checked against centered finite differences;
+it also has the required positive-semidefinite and gauge-null properties on
+the tests.  This gives a precise starting point if a second-order solver is
+revisited.  The current development priority remains the parallel stochastic
+solver with a standard learning-rate scheduler.
+
+\subsection{Continuation across checkpoints}
+
+A single chain uses the immediately preceding checkpoint and requires only
+one cold start.  Once feature supports have been aligned and a common gauge
+has been fixed, a guarded secant extrapolation from the previous two fits may
+be closer still.  Starting later checkpoints from unfinished partial iterates
+is recorded as a more speculative option: it increases concurrency, but also
+duplicates large states, consumes bandwidth, and may discard work when the
+predecessor subsequently moves.
+
+\subsection{Compact and mixed-precision evaluation}
+
+Use 32-bit plan indices wherever their range is sufficient, make one index
+implicit through CSR offsets, and consider delta encoding within sorted runs.
+Plan values and factors can be tested in \texttt{float32}, while sensitive
+normalizers, reductions, objectives, and the final certificate remain in
+\texttt{float64}.  Agreement with the all-double reference, especially near
+the stopping tolerance and on extreme trial steps, is required.
+
+The fast factorized expansion should be used only where it is numerically
+safe.  Shards with corrections near the cancellation boundary can fall back
+to the positive sparse-union log-sum-exp evaluation.  Accelerated hardware
+makes the safe path cheaper but does not remove this numerical requirement.
+
+\subsection{Sparse kernels and the local Apple silicon}
+
+The intersection calculation can be viewed as a sampled weighted product,
+and the margin calculations as sampled products followed by sparse
+reductions.  This vocabulary may help in selecting optimized kernels, but it
+does not by itself replace the current intersection algorithm: the two factor
+matrices are sparse, whereas many standard sampled dense--dense matrix
+multiplication interfaces assume dense operands.
+
+The present laptop reports an Apple M5 Pro with 15 CPU cores, a 16-core GPU,
+and 24 GB of unified memory.  Apple's specification gives this configuration
+307 GB/s unified-memory bandwidth and Neural Accelerators in the GPU cores.
+Metal Performance Shaders supplies optimized matrix multiplication, and
+Apple's newer Metal Performance Primitives expose tensor operations intended
+to use the M5 GPU's neural accelerators.  These facilities make a local GPU
+kernel experiment worthwhile.  They do not guarantee acceleration of our
+irregular sparse gather and segmented-reduction workload, nor is the separate
+Neural Engine a general-purpose target for arbitrary solver code.  The first
+step is therefore a small benchmark of one fixed saved-checkpoint margin
+evaluation, including conversion, precision, memory use, and exact agreement,
+before any solver port.
+
+\subsection{Measured stochastic continuation and the remaining memory peak}
+
+The first full-file test of this strategy used $V=1024$ and 32 geometric
+checkpoints.  Checkpoint problems were constructed once and persisted; a
+single calibration chain then used the pair-product start at the first
+checkpoint and the preceding certified solution thereafter.  Each fit used
+12 parallel block-SVRG samples per Adam update, an exact certificate every
+50 updates, and a standard reduce-on-plateau learning-rate schedule.  An
+exact factorized L-BFGS fallback was available at every checkpoint, starting
+from the best stochastic candidate.
+
+All 32 checkpoints reached grouped margin certificate $0.01$ without exact
+fallback or nonfinite rejection.  Calibration took $142.5$ seconds in total:
+$96.4$ seconds in sampled gradients, $15.7$ seconds in reference-block
+caches, $9.5$ seconds in optimizer updates, and $6.0$ seconds in exact
+certificate evaluations.  This validates the stochastic solver as the
+production first attempt, while retaining exact fitting as a correctness
+backstop.
+
+The $10.25$ GB peak resident set is not an accumulation of checkpoint
+states.  The final saved problem occupies only $29$ MB, and only the current
+and immediately preceding problems coexist during warm-start transfer.  The
+dominant object is instead the final checkpoint's $83{,}702{,}774$-entry
+intersection plan: its four 32-bit index arrays occupy $1.34$ GB, while the
+temporary SciPy sparse products used to construct it raise resident memory
+to $7.78$ GB before stochastic caches and concurrent outputs are counted.
+The next implementation step is therefore a direct or streamed construction
+of those compact arrays, avoiding the sparse-matrix temporaries.  This change
+should increase the alphabet attainable on a 24 GB laptop without changing
+the estimator or the solver trajectory.
+
+That direct construction is now implemented in the native extension.  It
+forms context-row indices for both factors, merge-intersects their sorted
+target lists for each observed edge, counts the matches in one pass, and
+allocates and fills only the four final 32-bit arrays in a second pass.  On an
+intermediate saved $V=1024$ checkpoint with $4{,}332{,}210$ intersections,
+the sparse-product reference required $0.462$ seconds and peaked at $1.13$
+GB, whereas the direct builder required $0.185$ seconds and peaked at $160$
+MB; the final plan itself was $69.3$ MB.  Randomized tests require exact
+array equality with the retained SciPy reference.
+
+The SVRG reference cache has also been made context-sparse.  A block retains
+only the YA and YB correction positions whose contexts occur on its edges,
+rather than two full correction vectors, and uses 32-bit positions.  Current
+RSS and the exact byte sizes of the plan and cache are now recorded at every
+checkpoint.  Finally, a plateau at the minimum learning rate terminates the
+stochastic phase and transfers its best candidate to the exact fallback,
+rather than exhausting an arbitrary maximum update count.
+
+A complete rerun of the same 32-checkpoint chain validates these memory
+changes without a statistical or numerical confound.  All persisted fitted
+arrays, update counts, and certificates agree exactly with the earlier run;
+there are again no exact fallbacks.  Elapsed calibration time is $151.3$
+seconds rather than $142.5$ seconds, while measured peak RSS falls from
+$10.25$ GB to $5.12$ GB.  At the final checkpoint the direct intersection
+plan occupies $1.339$ GB and the context-sparse reference cache $0.776$ GB;
+parent RSS after releasing the active fit is $2.72$ GB.  The remaining gap
+between live-array sizes and RSS is allocator-retained memory, not retained
+checkpoint states.
+
+Predictive scoring retains the positive sparse-union log-sum-exp calculation.
+A faster factorized-normalizer experiment was rejected because cancellation
+changed the aggregate result slightly.  Instead the 31 independent
+checkpoint intervals are distributed across processes that share a
+memory-mapped reduced token stream.  Four workers reproduce every serial
+interval and every honest-code accounting total exactly, reducing elapsed
+scoring time from $256.8$ to $87.7$ seconds ($2.93$-fold).
+
+The subsequent full-file $V=4096$, 32-checkpoint calibration also completed
+without fallback or nonfinite rejection.  Its 20,600 stochastic updates
+took $1330.6$ seconds and peaked at $13.89$ GB including workers.  The final
+plan and cache occupy $4.48$ and $3.19$ GB respectively.  Exact scoring
+revealed a load-balancing issue because intervals grow over time; scheduling
+the longest intervals first and restoring causal order before summation
+reduced four-worker time from $647.7$ to $553.6$ seconds.  Increasing to 8
+and 12 workers reduced this further to $321.6$ and $270.8$ seconds.  All
+rows and totals are exactly identical, so the additional utilization is
+useful reference computation rather than speculative duplicated fitting.
+
+\section{Conclusion}
+
+The dominant task is a large convex moment-matching problem: find the
+natural parameters of a conditional exponential family so that averaging
+against the observed context-pair distribution reproduces two target--lag
+margins.  The sparse intersection identity makes each global pass possible,
+and warm starts plus hybrid L-BFGS/IPF make the solve reliable.  The current
+limitation is the product of two quantities: too many global passes and too
+much memory traffic per pass.  Reducing the pass count, exploiting local
+updates, and partitioning reductions by owned outputs are therefore the
+main routes to a full-vocabulary, 32-checkpoint calculation.
+
+\end{document}

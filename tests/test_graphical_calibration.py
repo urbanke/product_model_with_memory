@@ -1,11 +1,17 @@
 """Checks for the three-pair maximum-entropy calibration."""
 
 import numpy as np
+import pytest
 
 from product_model_with_memory.graphical_calibration import (
     GroupedCheckpoint,
     SparseGroupedProblem,
     SparseGroupedResult,
+    SparseIntersectionPlan,
+    SparseRestrictedMargins,
+    build_sparse_edge_blocks,
+    build_sparse_intersection_plan,
+    check_grouped_feasibility_lp,
     conditional_ipf,
     first_pair_warm_start,
     fit_grouped_checkpoints,
@@ -13,15 +19,25 @@ from product_model_with_memory.graphical_calibration import (
     pair_midpoint_warm_start,
     pair_product_warm_start,
     project_sparse_layered_pair,
+    projected_pair_warm_start,
     restrict_margins_to_observed_contexts,
     restrict_sparse_margins_to_observed_contexts,
+    sample_sparse_grouped_edges,
     second_pair_warm_start,
+    sparse_edge_minibatch,
+    sparse_factorized_dual_evaluation,
+    sparse_factorized_dual_hessian_product,
+    sparse_factorized_margins,
+    sparse_factorized_margins_reference,
     sparse_gated_log_probabilities,
     sparse_grouped_ipf,
     sparse_problem_from_dense,
     sparse_problem_from_projected,
+    sparse_problem_with_edge_distribution,
     sparse_star_log_probabilities,
     star_log_probabilities,
+    stochastic_sparse_dual_approach,
+    stratified_sparse_edge_minibatch,
     transfer_sparse_warm_start,
 )
 from scripts.pairwise_arena import ipf_triangle
@@ -73,6 +89,68 @@ def test_first_pair_warm_start_exactly_matches_ya_margin():
     assert result.grouped_residual_ya_l1 < 2e-14
     assert result.residual_y_l1 < 2e-14
     assert np.array_equal(correction_yb, np.zeros_like(correction_yb))
+
+
+def test_projected_first_pair_start_is_exact_with_inactive_cells():
+    v = 4
+    marginal = np.full(v, 1.0 / v)
+    contexts = np.arange(v)
+    first = project_sparse_layered_pair(
+        marginal,
+        np.full(v, 0.1),
+        np.arange(v),
+        contexts,
+        np.full(v, 0.7),
+        marginal,
+    )
+    second = project_sparse_layered_pair(
+        marginal,
+        np.full(v, 0.1),
+        (np.arange(v) + 1) % v,
+        contexts,
+        np.full(v, 0.7),
+        marginal,
+    )
+    edge_a = np.repeat(np.arange(v), v)
+    edge_b = np.tile(np.arange(v), v)
+    margins = SparseRestrictedMargins(
+        first, second, edge_a, edge_b,
+        np.full(v * v, 1.0 / (v * v)), 1.0,
+    )
+    problem = sparse_problem_from_projected(margins)
+    warm = projected_pair_warm_start(
+        first, second, problem.target_y, "first_pair"
+    )
+    result = sparse_grouped_ipf(
+        problem,
+        max_iterations=0,
+        log_base_y=warm[0],
+        correction_ya=warm[1],
+        correction_yb=warm[2],
+    )
+    assert result.grouped_residual_ya_l1 < 2e-14
+    assert result.residual_y_l1 < 2e-14
+
+
+def test_grouped_feasibility_lp_detects_incompatible_pair_margins():
+    diagonal = np.array([[0.5, 0.0], [0.0, 0.5]])
+    anti_diagonal = np.array([[0.0, 0.5], [0.5, 0.0]])
+    active = np.ones((2, 2), dtype=bool)
+
+    feasible_problem = sparse_problem_from_dense(
+        diagonal, diagonal, diagonal, active, active
+    )
+    feasible = check_grouped_feasibility_lp(feasible_problem)
+    assert feasible.feasible
+    assert feasible.max_equality_residual < 1e-12
+
+    # YA and YB demand Y=A=B, while AB demands A!=B.  Every one-variable
+    # margin is nevertheless the same uniform distribution.
+    impossible_problem = sparse_problem_from_dense(
+        diagonal, diagonal, anti_diagonal, active, active
+    )
+    impossible = check_grouped_feasibility_lp(impossible_problem)
+    assert not impossible.feasible
 
 
 def test_pair_product_warm_start_uses_both_pair_factors():
@@ -341,9 +419,17 @@ def test_matrix_free_grouped_solver_matches_dense_reference():
     problem = sparse_problem_from_dense(
         p_ya, p_yb, p_ab, active_ya, active_yb
     )
-    sparse = sparse_grouped_ipf(problem, tolerance=1e-10)
+    trace = []
+    sparse = sparse_grouped_ipf(
+        problem, tolerance=1e-10, trace=trace, trace_interval=5
+    )
 
     assert dense.converged and sparse.converged
+    assert trace
+    assert trace[-1]["certificate"] < 1e-10
+    assert trace[-1]["limiting_margin"] in {"y", "ya", "yb"}
+    assert np.isfinite(trace[-1]["objective"])
+    assert np.isfinite(trace[-1]["factor_abs_p99"])
     # Compare the sufficient-statistic margins, which uniquely determine
     # this grouped maximum-entropy solution.
     assert sparse.grouped_residual_ya_l1 < 1e-10
@@ -414,12 +500,555 @@ def test_lbfgs_sparse_solver_matches_plain_ipf():
     quasi_newton = sparse_grouped_ipf(
         problem, tolerance=1e-9, solver="lbfgs", max_iterations=2_000
     )
+    unreduced = sparse_grouped_ipf(
+        problem, tolerance=1e-9, solver="lbfgs", max_iterations=2_000,
+        reduce_gauge=False,
+    )
 
-    assert plain.converged and quasi_newton.converged
+    assert plain.converged and quasi_newton.converged and unreduced.converged
     assert quasi_newton.iterations < plain.iterations
+    assert quasi_newton.margin_evaluations > 0
     assert quasi_newton.grouped_residual_ya_l1 < 1e-9
     assert quasi_newton.grouped_residual_yb_l1 < 1e-9
     assert quasi_newton.residual_y_l1 < 1e-9
+    assert max(
+        unreduced.grouped_residual_ya_l1,
+        unreduced.grouped_residual_yb_l1,
+        unreduced.residual_y_l1,
+    ) < 1e-9
+
+
+def test_sharded_edge_normalization_matches_serial_solver():
+    rng = np.random.default_rng(20260808)
+    raw = rng.gamma(shape=1.0, scale=1.0, size=(7, 6, 6))
+    q = raw / raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(q)
+    active_ya = rng.random(p_ya.shape) < 0.4
+    active_yb = rng.random(p_yb.shape) < 0.4
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab, active_ya, active_yb
+    )
+    serial = sparse_grouped_ipf(
+        problem, max_iterations=20, tolerance=1e-30, margin_workers=1
+    )
+    sharded = sparse_grouped_ipf(
+        problem, max_iterations=20, tolerance=1e-30, margin_workers=3
+    )
+    factorized = sparse_grouped_ipf(
+        problem, max_iterations=20, tolerance=1e-30,
+        evaluator="factorized", margin_workers=3,
+    )
+    assert np.max(np.abs(serial.log_base_y - sharded.log_base_y)) < 1e-12
+    assert np.max(
+        np.abs(serial.correction_ya - sharded.correction_ya)
+    ) < 1e-12
+    assert np.max(
+        np.abs(serial.correction_yb - sharded.correction_yb)
+    ) < 1e-12
+    assert abs(
+        serial.grouped_residual_ya_l1 - sharded.grouped_residual_ya_l1
+    ) < 1e-13
+    assert abs(
+        serial.grouped_residual_yb_l1 - sharded.grouped_residual_yb_l1
+    ) < 1e-13
+    assert np.max(
+        np.abs(serial.log_base_y - factorized.log_base_y)
+    ) < 1e-12
+    assert np.max(
+        np.abs(serial.correction_ya - factorized.correction_ya)
+    ) < 1e-12
+    assert np.max(
+        np.abs(serial.correction_yb - factorized.correction_yb)
+    ) < 1e-12
+
+
+def test_intersection_factorized_margins_match_dense_evaluation():
+    rng = np.random.default_rng(20260809)
+    v = 6
+    raw = rng.gamma(shape=1.0, scale=1.0, size=(v, v, v))
+    source = raw / raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(source)
+    active_ya = rng.random((v, v)) < 0.45
+    active_yb = rng.random((v, v)) < 0.45
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab, active_ya, active_yb
+    )
+    log_base = rng.normal(size=v)
+    c1 = rng.normal(scale=0.4, size=len(problem.target_ya))
+    c2 = rng.normal(scale=0.4, size=len(problem.target_yb))
+    got = sparse_factorized_margins_reference(problem, log_base, c1, c2)
+    plan = build_sparse_intersection_plan(problem, edge_chunk_size=7)
+    assert isinstance(plan, SparseIntersectionPlan)
+    vectorized = sparse_factorized_margins(
+        problem, plan, log_base, c1, c2
+    )
+
+    normalized_base = log_base - np.log(np.exp(log_base).sum())
+    score = np.broadcast_to(normalized_base[:, None, None], (v, v, v)).copy()
+    score[problem.active_ya_y, problem.active_ya_a, :] += c1[:, None]
+    score[problem.active_yb_y, :, problem.active_yb_b] += c2[:, None]
+    log_z = np.log(np.exp(score).sum(axis=0))
+    conditional = np.exp(score - log_z[None, :, :])
+    joint = conditional * p_ab[None, :, :]
+    dense_ya, dense_yb, _ = _pair_margins(joint)
+
+    assert np.max(np.abs(got.target_y - joint.sum(axis=(1, 2)))) < 2e-14
+    assert np.max(np.abs(
+        got.active_ya - dense_ya[problem.active_ya_y, problem.active_ya_a]
+    )) < 2e-14
+    assert np.max(np.abs(
+        got.active_yb - dense_yb[problem.active_yb_y, problem.active_yb_b]
+    )) < 2e-14
+    assert np.max(np.abs(
+        got.log_normalizer - log_z[problem.edge_a, problem.edge_b]
+    )) < 2e-14
+    assert np.max(np.abs(vectorized.target_y - got.target_y)) < 2e-14
+    assert np.max(np.abs(vectorized.active_ya - got.active_ya)) < 2e-14
+    assert np.max(np.abs(vectorized.active_yb - got.active_yb)) < 2e-14
+    assert np.max(np.abs(
+        vectorized.log_normalizer - got.log_normalizer
+    )) < 2e-14
+
+
+def test_native_intersection_plan_matches_scipy_reference(monkeypatch):
+    import product_model_with_memory.graphical_calibration as calibration
+
+    if not (
+        calibration._graphical_margin_c is not None
+        and hasattr(calibration._graphical_margin_c, "intersection_plan")
+    ):
+        pytest.skip("native intersection builder is not available")
+    rng = np.random.default_rng(20260810)
+    v = 11
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(v, v, v))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random((v, v)) < 0.55,
+        rng.random((v, v)) < 0.45,
+    )
+    direct = calibration.build_sparse_intersection_plan(problem)
+    monkeypatch.setattr(calibration, "_graphical_margin_c", None)
+    reference = calibration.build_sparse_intersection_plan(
+        problem, edge_chunk_size=7
+    )
+    np.testing.assert_array_equal(direct.edge, reference.edge)
+    np.testing.assert_array_equal(direct.target_y, reference.target_y)
+    np.testing.assert_array_equal(
+        direct.correction_ya, reference.correction_ya
+    )
+    np.testing.assert_array_equal(
+        direct.correction_yb, reference.correction_yb
+    )
+
+
+def test_intersection_plan_respects_memory_limit():
+    rng = np.random.default_rng(20260811)
+    raw = rng.gamma(shape=1.0, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones((5, 5), dtype=bool),
+        np.ones((5, 5), dtype=bool),
+    )
+    with pytest.raises(MemoryError):
+        build_sparse_intersection_plan(problem, max_intersections=1)
+
+
+def test_sampled_sparse_dual_gradient_is_unbiased_edge_by_edge():
+    rng = np.random.default_rng(1701)
+    v = 5
+    raw = rng.gamma(shape=1.3, scale=1.0, size=(v, v, v))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    active_ya = rng.random((v, v)) < 0.55
+    active_yb = rng.random((v, v)) < 0.55
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab, active_ya, active_yb
+    )
+    lb = rng.normal(scale=0.3, size=v)
+    c1 = rng.normal(scale=0.2, size=len(problem.target_ya))
+    c2 = rng.normal(scale=0.2, size=len(problem.target_yb))
+    exact = sparse_factorized_dual_evaluation(problem, lb, c1, c2)
+
+    mean_objective = 0.0
+    mean_gradient = np.zeros_like(exact.gradient())
+    for edge, probability in enumerate(problem.edge_probability):
+        one_edge = sparse_problem_with_edge_distribution(
+            problem, np.array([edge]), np.array([1.0])
+        )
+        sampled = sparse_factorized_dual_evaluation(one_edge, lb, c1, c2)
+        mean_objective += probability * sampled.objective
+        mean_gradient += probability * sampled.gradient()
+
+    assert abs(mean_objective - exact.objective) < 2e-13
+    assert np.max(np.abs(mean_gradient - exact.gradient())) < 2e-13
+
+
+def test_sampled_sparse_dual_empirical_distribution_and_validation():
+    rng = np.random.default_rng(1702)
+    raw = rng.gamma(shape=1.1, scale=1.0, size=(4, 4, 4))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    sampled = sample_sparse_grouped_edges(problem, 20_000, rng)
+    empirical = np.zeros(len(problem.edge_probability))
+    lookup = {
+        (int(a), int(b)): index
+        for index, (a, b) in enumerate(zip(problem.edge_a, problem.edge_b))
+    }
+    for a, b, probability in zip(
+        sampled.edge_a, sampled.edge_b, sampled.edge_probability
+    ):
+        empirical[lookup[int(a), int(b)]] = probability
+    assert np.max(np.abs(empirical - problem.edge_probability)) < 0.012
+    assert np.array_equal(sampled.target_y, problem.target_y)
+    assert np.array_equal(sampled.target_ya, problem.target_ya)
+    assert np.array_equal(sampled.target_yb, problem.target_yb)
+
+
+def test_sparse_edge_minibatch_reuses_exact_intersection_entries():
+    rng = np.random.default_rng(1703)
+    raw = rng.gamma(shape=1.2, scale=1.0, size=(6, 6, 6))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random((6, 6)) < 0.5,
+        rng.random((6, 6)) < 0.5,
+    )
+    full_plan = build_sparse_intersection_plan(problem)
+    sampled, sliced_plan = sparse_edge_minibatch(
+        problem, full_plan, 40, rng
+    )
+    fresh_plan = build_sparse_intersection_plan(sampled)
+    assert np.array_equal(sliced_plan.edge, fresh_plan.edge)
+    assert np.array_equal(sliced_plan.target_y, fresh_plan.target_y)
+    assert np.array_equal(sliced_plan.correction_ya, fresh_plan.correction_ya)
+    assert np.array_equal(sliced_plan.correction_yb, fresh_plan.correction_yb)
+
+    lb = rng.normal(scale=0.2, size=6)
+    c1 = rng.normal(scale=0.1, size=len(problem.target_ya))
+    c2 = rng.normal(scale=0.1, size=len(problem.target_yb))
+    sliced = sparse_factorized_dual_evaluation(
+        sampled, lb, c1, c2, intersection_plan=sliced_plan
+    )
+    fresh = sparse_factorized_dual_evaluation(
+        sampled, lb, c1, c2, intersection_plan=fresh_plan
+    )
+    assert abs(sliced.objective - fresh.objective) < 1e-14
+    assert np.max(np.abs(sliced.gradient() - fresh.gradient())) < 1e-14
+
+
+def test_stratified_sparse_edge_sampling_is_empirically_unbiased():
+    rng = np.random.default_rng(1705)
+    raw = rng.gamma(shape=0.5, scale=1.0, size=(4, 4, 4))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    plan = build_sparse_intersection_plan(problem)
+    lookup = {
+        (int(a), int(b)): edge
+        for edge, (a, b) in enumerate(zip(problem.edge_a, problem.edge_b))
+    }
+    mean = np.zeros(len(problem.edge_probability))
+    repetitions = 2_000
+    for _ in range(repetitions):
+        sampled, _ = stratified_sparse_edge_minibatch(
+            problem, plan, 8, rng, strata=4
+        )
+        for a, b, probability in zip(
+            sampled.edge_a, sampled.edge_b, sampled.edge_probability
+        ):
+            mean[lookup[int(a), int(b)]] += probability / repetitions
+    assert np.max(np.abs(mean - problem.edge_probability)) < 0.006
+
+
+def test_probability_weighted_edge_blocks_reproduce_exact_dual():
+    rng = np.random.default_rng(1706)
+    raw = rng.gamma(shape=0.9, scale=1.0, size=(6, 6, 6))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random((6, 6)) < 0.6,
+        rng.random((6, 6)) < 0.6,
+    )
+    plan = build_sparse_intersection_plan(problem)
+    blocks = build_sparse_edge_blocks(problem, plan, 7)
+    lb = rng.normal(scale=0.2, size=6)
+    c1 = rng.normal(scale=0.1, size=len(problem.target_ya))
+    c2 = rng.normal(scale=0.1, size=len(problem.target_yb))
+    exact = sparse_factorized_dual_evaluation(
+        problem, lb, c1, c2, intersection_plan=plan
+    )
+    objective = 0.0
+    gradient = np.zeros_like(exact.gradient())
+    for block in blocks:
+        evaluation = sparse_factorized_dual_evaluation(
+            block.problem, lb, c1, c2,
+            intersection_plan=block.intersection_plan,
+        )
+        objective += block.probability_mass * evaluation.objective
+        gradient += block.probability_mass * evaluation.gradient()
+    assert abs(sum(block.probability_mass for block in blocks) - 1.0) < 1e-14
+    assert abs(objective - exact.objective) < 2e-13
+    assert np.max(np.abs(gradient - exact.gradient())) < 2e-13
+
+
+def test_factorized_hessian_product_matches_gradient_difference():
+    rng = np.random.default_rng(1711)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(6, 6, 6))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random(p_ya.shape) < 0.65,
+        rng.random(p_yb.shape) < 0.65,
+    )
+    plan = build_sparse_intersection_plan(problem)
+    lb = rng.normal(scale=0.2, size=6)
+    c1 = rng.normal(scale=0.15, size=len(problem.target_ya))
+    c2 = rng.normal(scale=0.15, size=len(problem.target_yb))
+    direction = rng.normal(size=6 + len(c1) + len(c2))
+    product = sparse_factorized_dual_hessian_product(
+        problem, lb, c1, c2, direction, intersection_plan=plan
+    )
+    epsilon = 1e-5
+
+    def gradient_at(offset):
+        vector = np.concatenate([lb, c1, c2]) + offset * direction
+        return sparse_factorized_dual_evaluation(
+            problem,
+            vector[:6], vector[6:6 + len(c1)], vector[6 + len(c1):],
+            intersection_plan=plan,
+        ).gradient()
+
+    difference = (gradient_at(epsilon) - gradient_at(-epsilon)) / (2 * epsilon)
+    assert np.max(np.abs(product - difference)) < 2e-9
+    assert float(direction @ product) >= -1e-12
+    gauge = np.zeros_like(direction)
+    gauge[:6] = 1.0
+    gauge_product = sparse_factorized_dual_hessian_product(
+        problem, lb, c1, c2, gauge, intersection_plan=plan
+    )
+    assert np.max(np.abs(gauge_product)) < 2e-14
+
+
+def test_factorized_margins_stably_recompute_cancelled_edge():
+    raw = np.arange(1, 28, dtype=np.float64).reshape(3, 3, 3)
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    mask1 = np.zeros_like(p_ya, dtype=bool)
+    mask2 = np.zeros_like(p_yb, dtype=bool)
+    mask1[0, 0] = True
+    mask2[0, 0] = True
+    problem = sparse_problem_from_dense(p_ya, p_yb, p_ab, mask1, mask2)
+    plan = build_sparse_intersection_plan(problem)
+    lb = np.log(problem.target_y)
+    c1 = np.array([40.0])
+    c2 = np.array([-40.0])
+    margins = sparse_factorized_margins(problem, plan, lb, c1, c2)
+    assert np.all(np.isfinite(margins.target_y))
+    assert np.all(np.isfinite(margins.active_ya))
+    assert np.all(np.isfinite(margins.active_yb))
+    assert np.all(np.isfinite(margins.log_normalizer))
+    selected = np.flatnonzero(
+        (problem.edge_a == 0) & (problem.edge_b == 0)
+    )
+    assert len(selected) == 1
+    # The two corrections cancel exactly for y=0 on this edge, so its
+    # conditional distribution is the normalized baseline and Z=1.
+    assert margins.log_normalizer[selected[0]] == pytest.approx(
+        0.0, abs=2e-14
+    )
+
+
+def test_stochastic_sparse_approach_improves_exact_dual():
+    rng = np.random.default_rng(1704)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    lb = np.log(problem.target_y)
+    c1 = np.zeros(len(problem.target_ya))
+    c2 = np.zeros(len(problem.target_yb))
+    initial = sparse_factorized_dual_evaluation(problem, lb, c1, c2)
+    result = stochastic_sparse_dual_approach(
+        problem, lb, c1, c2,
+        steps=250, batch_size=250, learning_rate=0.02,
+        exact_interval=25, seed=9, trust_radius=4.0,
+    )
+    final = sparse_factorized_dual_evaluation(
+        problem, result.log_base_y,
+        result.correction_ya, result.correction_yb,
+    )
+    assert final.objective < initial.objective - 1e-3
+    assert result.exact_evaluations == 11
+    assert result.sampled_edges == 62_500
+
+
+def test_block_svrg_approach_improves_exact_dual():
+    rng = np.random.default_rng(1707)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    lb = np.log(problem.target_y)
+    c1 = np.zeros(len(problem.target_ya))
+    c2 = np.zeros(len(problem.target_yb))
+    initial = sparse_factorized_dual_evaluation(problem, lb, c1, c2)
+    result = stochastic_sparse_dual_approach(
+        problem, lb, c1, c2,
+        steps=100, batch_size=1, learning_rate=0.02,
+        exact_interval=25, seed=10, trust_radius=4.0,
+        sampling="blocks", edge_blocks=8, replicas=2,
+        variance_reduction=True,
+    )
+    final = sparse_factorized_dual_evaluation(
+        problem, result.log_base_y,
+        result.correction_ya, result.correction_yb,
+    )
+    assert final.objective < initial.objective - 1e-3
+
+
+def test_stochastic_worker_count_does_not_change_fixed_batch_trajectory():
+    rng = np.random.default_rng(1708)
+    raw = rng.gamma(shape=0.9, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    initial = (
+        np.log(problem.target_y),
+        np.zeros(len(problem.target_ya)),
+        np.zeros(len(problem.target_yb)),
+    )
+    results = [
+        stochastic_sparse_dual_approach(
+            problem, *initial,
+            steps=40, batch_size=1, learning_rate=0.01,
+            exact_interval=10, seed=12, trust_radius=3.0,
+            sampling="blocks", edge_blocks=8, replicas=4,
+            stochastic_workers=workers, variance_reduction=True,
+        )
+        for workers in (1, 2, 4)
+    ]
+    reference = results[0]
+    for result in results[1:]:
+        assert np.array_equal(result.log_base_y, reference.log_base_y)
+        assert np.array_equal(result.correction_ya, reference.correction_ya)
+        assert np.array_equal(result.correction_yb, reference.correction_yb)
+        assert result.trace == reference.trace
+
+
+def test_adam_plateau_scheduler_reduces_rate():
+    rng = np.random.default_rng(1710)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    result = stochastic_sparse_dual_approach(
+        problem,
+        np.log(problem.target_y),
+        np.zeros(len(problem.target_ya)),
+        np.zeros(len(problem.target_yb)),
+        steps=20, batch_size=1, learning_rate=0.03,
+        minimum_learning_rate=0.003, exact_interval=5,
+        seed=13, trust_radius=0.02, sampling="blocks",
+        edge_blocks=8, replicas=2, variance_reduction=True,
+        optimizer="adam_plateau", plateau_patience=1,
+        plateau_relative_threshold=0.99,
+    )
+    reductions = [
+        record for record in result.trace
+        if record["learning_rate_reduced"]
+    ]
+    assert reductions
+    assert float(reductions[0]["step_size"]) == pytest.approx(0.01)
+
+
+def test_adam_plateau_stops_when_minimum_rate_is_exhausted():
+    rng = np.random.default_rng(1711)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    result = stochastic_sparse_dual_approach(
+        problem,
+        np.log(problem.target_y),
+        np.zeros(len(problem.target_ya)),
+        np.zeros(len(problem.target_yb)),
+        steps=100, batch_size=1, learning_rate=0.003,
+        minimum_learning_rate=0.003, exact_interval=5,
+        seed=14, trust_radius=0.02, sampling="blocks",
+        edge_blocks=8, replicas=2, variance_reduction=True,
+        optimizer="adam_plateau", plateau_patience=1,
+        plateau_relative_threshold=0.99,
+    )
+    assert result.steps < 100
+    assert result.trace[-1]["scheduler_exhausted"]
+
+
+def test_native_sparse_margins_match_numpy_reference(monkeypatch):
+    import product_model_with_memory.graphical_calibration as calibration
+
+    native = calibration._graphical_margin_c
+    if native is None:
+        pytest.skip("native margin extension is not built")
+    rng = np.random.default_rng(1709)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(6, 6, 6))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random(p_ya.shape) < 0.7,
+        rng.random(p_yb.shape) < 0.7,
+    )
+    plan = build_sparse_intersection_plan(problem)
+    factors = (
+        rng.normal(size=6),
+        rng.normal(scale=0.2, size=len(problem.target_ya)),
+        rng.normal(scale=0.2, size=len(problem.target_yb)),
+    )
+    actual = sparse_factorized_margins(problem, plan, *factors)
+    monkeypatch.setattr(calibration, "_graphical_margin_c", None)
+    expected = sparse_factorized_margins(problem, plan, *factors)
+    np.testing.assert_allclose(actual.target_y, expected.target_y, rtol=2e-14)
+    np.testing.assert_allclose(actual.active_ya, expected.active_ya, rtol=2e-14)
+    np.testing.assert_allclose(actual.active_yb, expected.active_yb, rtol=2e-14)
+    np.testing.assert_allclose(
+        actual.log_normalizer, expected.log_normalizer, rtol=2e-14
+    )
 
 
 def test_sparse_warm_start_transfers_growing_active_support():

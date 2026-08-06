@@ -57,7 +57,7 @@ bytes, no memory                & $4.1235$ & $5.0802$ & $5.1565$ \\
 LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.8298$ & $2.1135$ & $1.8371$ \\
 context tree (Sec.~\ref{sec:ctree})       & $\mathbf{1.8182}$ & $\mathbf{2.0606}$ & $\mathbf{1.6598}$ \\
-pairwise order two (Sec.~\ref{sec:pairwise}) & \multicolumn{3}{c}{campaign in progress} \\
+calibrated order two (Sec.~\ref{app:calibration}) & $1.9721$ & \multicolumn{2}{c}{campaign in progress} \\
 \midrule
 best published (Table~\ref{tab:files})    & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -1218,16 +1218,35 @@ declared rather than silently assigning a dense table.
 
 The target--lag factors are stored as the layered unigram baseline,
 one global target correction, and corrections only for observed
-target--lag cells.  For a fixed observed context pair, its normalizer
-is the untouched baseline mass plus a log-sum-exp over the union of
-the two sparse correction lists.  The same identity computes fitted
-margins and predictions.  Consequently neither a pair-probability
-table nor a triple table is required by the repeated calibration
-sweeps.  Active cells are matched individually; all inactive cells in
-one lag row form a single grouped constraint.  This grouping, together
-with restriction of the context support, defines the scalable model
-being measured here; it is not claimed to equal the uncoarsened
-full-support triangle.
+target--lag cells.  Define the deviations of the multiplicative
+corrections from one by
+\[
+ r_1(y,a)=\exp\{c_1(y,a)\}-1,
+ \qquad
+ r_2(y,b)=\exp\{c_2(y,b)\}-1,
+\]
+and their baseline-weighted row sums by
+\[
+ S_{1a}=\sum_y p_0(y)r_1(y,a),
+ \qquad
+ S_{2b}=\sum_y p_0(y)r_2(y,b).
+\]
+For an observed context pair $(a,b)$, expanding
+$(1+r_1(y,a))(1+r_2(y,b))$ gives
+\[
+ Z_{ab}=1+S_{1a}+S_{2b}
+       +\sum_y p_0(y)r_1(y,a)r_2(y,b).
+\]
+Thus the repeated margin evaluations
+need only intersections of the two sparse correction rows, not their
+much larger union.  A compiled sparse-intersection plan supplies the
+normalizers and all three margins; its reductions are sharded across
+persistent workers.  Neither a pair-probability table nor a triple
+table is constructed.  Active cells are matched individually; all
+inactive cells in one lag row form a single grouped constraint.  This
+grouping, together with restriction of the context support, defines
+the scalable model being measured here; it is not claimed to equal the
+uncoarsened full-support triangle.
 
 \paragraph{Solver and sequential use.}
 The dual L-BFGS solver approaches the solution rapidly, after which
@@ -1239,6 +1258,13 @@ numerical step.  At geometric checkpoints the sparse factors are
 carried forward: existing corrections are warm-started and newly
 observed cells start at zero.  Splitting the checkpoints into several
 interleaved warm-start chains keeps independent fits busy in parallel.
+Only two complete checkpoints are resident at once: they are fitted,
+written, and released, while compact feature keys and corrections are
+retained for the next warm start in each chain.  Within a fit the dual
+line search mixes the old and proposed natural parameters inside a
+finite displacement region; unrestricted proportional-fitting sweeps
+remain available afterward.  This prevents numerically meaningless
+trial factors without bounding the final estimator.
 The residual remains a numerical diagnostic rather than an oracle for
 held-out loss: at larger alphabets, forcing a slightly smaller residual
 by thousands of extra sweeps can worsen the following block, so we use
@@ -1250,6 +1276,127 @@ grouped evaluator agrees with its dense grouped reference to below
 $2\cdot10^{-9}$ in probability, including support growth and duplicate
 lags.  These checks separate correctness of the implemented sparse
 model from the observed-support approximation just stated.
+
+\paragraph{Full-file measurement and complete accounting.}
+We ran the checkpointed predictor on all $100{,}000{,}000$ characters
+of text8, represented by $19{,}429{,}294$ \texttt{cl100k\_base}
+tokens.  The reduced alphabet has $V=1024$: the $1023$ most frequent
+token types in the file and one escape symbol.  This whole-file choice
+is not free.  We transmit the selected subset with an enumerative code,
+charge the external tokenizer vocabulary, and encode every original
+token behind escape with a sequential Jeffreys--KT code over the
+excluded tokenizer IDs.  The first $2050$ reduced symbols, before the
+first fitted checkpoint, are likewise encoded by a fixed-alphabet KT
+code.  Hence the final column below is a complete code for the original
+character file, not a reduced-alphabet score.
+
+\begin{table}[ht]
+\centering
+\caption{Calibrated pairwise prediction on full text8 at $V=1024$.
+The middle column is diagnostic bits per BPE token.  The last column
+includes the initial prefix, tokenizer and selected-vocabulary
+descriptions, and escaped-token identities, and is in bits per original
+character.}
+\label{tab:calibrated-full-text8}
+\begin{tabular}{lrr}
+\toprule
+predictor & reduced bits/token & complete bits/character \\
+\midrule
+two-pair star rule, \eqref{eq:star} & 5.17342 & 1.98367 \\
+three-pair calibration, \eqref{eq:calibrated} & 5.06203 & 1.96203 \\
+\midrule
+gain from the third pair & 0.11139 & 0.02164 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For the calibrated row, the complete $1.962025$ bits per character
+decompose as follows:
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+component & bits/character \\
+\midrule
+reduced-alphabet prediction, including initial prefix & 0.983516 \\
+tokenizer vocabulary and selected-subset description & 0.062164 \\
+identities of escaped tokens & 0.916345 \\
+\midrule
+total & 1.962025 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The selected subset itself costs only $8{,}229$ bits; almost all of
+the second line is the $6{,}208{,}152$-bit external-tokenizer charge.
+The escape payload is $0.02087$ bits per BPE token above its empirical
+entropy lower bound.  With 32 geometric checkpoints, calibration improves
+all 31 predicted blocks, including the data-poor first block.  The complete
+number is $0.010036$ bits per character below the earlier eight-checkpoint
+measurement ($1.972062$); the denser causal refresh schedule, rather than a
+change in vocabulary accounting, produces the improvement.
+
+These provisional fits used the parallel stochastic dual solver with a
+plateau learning-rate schedule, an exact certificate every 50 updates, and
+an exact L-BFGS fallback if certification failed.  All 32 fits certified at
+grouped margin error below $0.01$ without fallback or nonfinite rejection.
+Reusable checkpoint construction took $871$ seconds with 12 processes;
+calibration alone took $142.5$ seconds with 12 workers, versus $813$ seconds
+for the earlier eight-checkpoint exact run.  Its initial implementation
+peaked at $10.25$ GB.  A subsequent direct two-pass C builder eliminated the
+temporary sparse matrices used to construct the intersection plan, and a
+context-sparse reference cache retained only corrections used by each edge
+block.  A complete validation run reproduced every fitted array and every
+certificate exactly, took $151.3$ seconds, and reduced measured peak RSS to
+$5.12$ GB.  At the final checkpoint the problem arrays occupy $29$ MB, the
+$83{,}702{,}774$-entry compact intersection plan $1.34$ GB, and the compact
+reference cache $0.776$ GB.  Exact predictive scoring of the 31 independent
+checkpoint intervals is also process-parallel: four workers reproduce every
+serial block and accounting total exactly in $87.7$ rather than $256.8$
+seconds, a $2.93$-fold elapsed-time speedup.
+
+\paragraph{Provisional $V=4096$ scaling run.}
+To measure the next computational regime, rather than to set a final
+codelength, we repeated the full-file fit at $V=4096$ with eight
+checkpoints.  A prefix of $2050$ tokens is too sparse for this alphabet;
+the first fit was therefore delayed to $16V=65{,}536$ tokens and the
+earlier symbols remain covered by the initial sequential code.  All eight
+reported fits have marginal certificate below $0.01$.  Construction took
+$811$ seconds, calibration $4801$ seconds, and the complete fit $5621$
+seconds ($93.7$ minutes); peak resident memory was $17.08$ GB.  The final
+checkpoint contains $1{,}399{,}764$ observed context edges, the same number
+of active first-lag corrections, and $2{,}288{,}630$ second-lag
+corrections.  These are deliberately not presented as final compression
+numbers: eight checkpoints make the predictor stale over long blocks, and
+delaying the first fit also costs prediction.  The run establishes that
+$V=4096$ is feasible on the laptop and that calibration, at $86\%$ of fit
+construction-plus-calibration time, is now the dominant scaling problem.
+At the largest checkpoints utilization also becomes memory-bandwidth
+limited, and exploratory dual steps can still trigger cancellation in the
+intersection identity even though the retained solutions are finite and
+certified.  The production target remains the full vocabulary with 32
+checkpoints, preferably with a progressive early vocabulary and cached
+checkpoint profiles.
+
+That 32-checkpoint $V=4096$ target has now been run on the full file using
+the direct intersection builder, context-sparse stochastic cache, and one
+warm-started chain.  All 32 checkpoints certified below $0.01$ using the
+stochastic solver alone, with neither exact fallback nor nonfinite
+rejection.  Calibration took $1330.6$ seconds ($22.2$ minutes) and peaked at
+$13.89$ GB including workers.  At the final checkpoint the intersection
+plan occupies $4.48$ GB and the stochastic reference cache $3.19$ GB.  The
+honest two-part code is $1.861324$ bits per character: $6.928956$ bits per
+BPE token for reduced-alphabet prediction, $0.320795$ for vocabulary
+description, and $2.330236$ for escaped-token identities.  The calibrated
+suffix is $6.923955$ versus $7.094082$ bits per token for the star fallback,
+a pure three-pair gain of $0.170127$.  These remain provisional
+tolerance-$0.01$ figures, but establish both a substantial predictive gain
+over $V=1024$ and laptop feasibility at the denser refresh schedule.
+
+Exact scoring uses the positive log-sum-exp reference calculation and
+parallelizes independent checkpoint intervals.  Longest-interval-first
+scheduling preserves causal output order while avoiding a large serial
+tail.  On this run elapsed scoring time was $553.6$, $321.6$, and $270.8$
+seconds with 4, 8, and 12 workers respectively; every interval and every
+honest-accounting total agrees exactly across the runs.
 
 \section{The table of $\phi$ values: what is stored, what is
 computed, and how it was checked}

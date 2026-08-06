@@ -23,10 +23,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import pairwise
+from time import perf_counter
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import linprog, minimize
+from scipy.sparse import coo_matrix, csr_matrix
 from scipy.special import logsumexp
+
+try:
+    from product_model_with_memory import _graphical_margin_c
+except ImportError:  # Source checkout before the optional extension is built.
+    _graphical_margin_c = None
 
 
 @dataclass(frozen=True)
@@ -450,6 +458,7 @@ class SparseGroupedResult:
     grouped_residual_yb_l1: float
     residual_y_l1: float
     converged: bool
+    margin_evaluations: int = 0
 
 
 @dataclass(frozen=True)
@@ -458,6 +467,1748 @@ class SparseGroupedCheckpoint:
 
     problem: SparseGroupedProblem
     log_base_y: np.ndarray
+    projected_ya: SparseProjectedPair | None = None
+    projected_yb: SparseProjectedPair | None = None
+
+
+@dataclass(frozen=True)
+class GroupedFeasibilityResult:
+    """Small-problem linear feasibility certificate."""
+
+    feasible: bool
+    status: int
+    message: str
+    variables: int
+    equality_constraints: int
+    max_equality_residual: float
+
+
+@dataclass(frozen=True)
+class SparseFactorizedMargins:
+    """Sufficient-statistic margins from intersection-only factor algebra."""
+
+    target_y: np.ndarray
+    active_ya: np.ndarray
+    active_yb: np.ndarray
+    log_normalizer: np.ndarray
+
+
+@dataclass(frozen=True)
+class SparseReferenceMargins:
+    """SVRG block reference with only context-touched corrections."""
+
+    target_y: np.ndarray
+    ya_position: np.ndarray
+    active_ya: np.ndarray
+    yb_position: np.ndarray
+    active_yb: np.ndarray
+
+
+@dataclass(frozen=True)
+class SparseDualEvaluation:
+    """Conditional-dual value and gradient for one edge distribution."""
+
+    objective: float
+    gradient_y: np.ndarray
+    gradient_ya: np.ndarray
+    gradient_yb: np.ndarray
+    certificate: float | None = None
+    residual_y_l1: float | None = None
+    residual_ya_l1: float | None = None
+    residual_yb_l1: float | None = None
+
+    def gradient(self) -> np.ndarray:
+        return np.concatenate([
+            self.gradient_y, self.gradient_ya, self.gradient_yb,
+        ])
+
+
+@dataclass(frozen=True)
+class SparseStochasticResult:
+    """Factors produced by a stochastic approach phase."""
+
+    log_base_y: np.ndarray
+    correction_ya: np.ndarray
+    correction_yb: np.ndarray
+    steps: int
+    sampled_edges: int
+    exact_evaluations: int
+    best_exact_objective: float
+    best_exact_certificate: float
+    trace: tuple[dict[str, float | int], ...]
+    exact_seconds: float = 0.0
+    sampled_gradient_seconds: float = 0.0
+    optimizer_seconds: float = 0.0
+    reference_cache_seconds: float = 0.0
+    intersection_plan_bytes: int = 0
+    reference_cache_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class SparseIntersectionPlan:
+    """Compact correction intersections indexed by retained AB edge."""
+
+    edge: np.ndarray
+    target_y: np.ndarray
+    correction_ya: np.ndarray
+    correction_yb: np.ndarray
+    edge_offset: int = 0
+
+
+@dataclass(frozen=True)
+class SparseEdgeBlock:
+    """Contiguous zero-copy AB-edge and intersection-plan view."""
+
+    probability_mass: float
+    problem: SparseGroupedProblem
+    intersection_plan: SparseIntersectionPlan
+
+
+def build_sparse_intersection_plan(
+    problem: SparseGroupedProblem,
+    *,
+    edge_chunk_size: int = 100_000,
+    max_intersections: int | None = None,
+) -> SparseIntersectionPlan:
+    """Build correction intersections with compiled sparse row products."""
+
+    if edge_chunk_size < 1:
+        raise ValueError("edge_chunk_size must be positive")
+    if (
+        _graphical_margin_c is not None
+        and hasattr(_graphical_margin_c, "intersection_plan")
+    ):
+        edge, target_y, correction_ya, correction_yb = (
+            _graphical_margin_c.intersection_plan(
+                np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+                np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+                np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+                np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+                np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+                np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+                -1 if max_intersections is None else max_intersections,
+            )
+        )
+        return SparseIntersectionPlan(
+            edge, target_y, correction_ya, correction_yb
+        )
+    v = problem.vocabulary_size
+    first = csr_matrix(
+        (
+            np.arange(len(problem.target_ya), dtype=np.int64) + 1,
+            (problem.active_ya_a, problem.active_ya_y),
+        ),
+        shape=(v, v),
+    )
+    second = csr_matrix(
+        (
+            np.arange(len(problem.target_yb), dtype=np.int64) + 1,
+            (problem.active_yb_b, problem.active_yb_y),
+        ),
+        shape=(v, v),
+    )
+    first.sort_indices()
+    second.sort_indices()
+    edge_parts = []
+    y_parts = []
+    first_parts = []
+    second_parts = []
+    total = 0
+    for start in range(0, len(problem.edge_a), edge_chunk_size):
+        stop = min(len(problem.edge_a), start + edge_chunk_size)
+        rows1 = first[problem.edge_a[start:stop]]
+        rows2 = second[problem.edge_b[start:stop]]
+        intersection1 = rows1.multiply(rows2.astype(bool)).tocsr()
+        intersection2 = rows2.multiply(rows1.astype(bool)).tocsr()
+        intersection1.sort_indices()
+        intersection2.sort_indices()
+        if not (
+            np.array_equal(intersection1.indptr, intersection2.indptr)
+            and np.array_equal(intersection1.indices, intersection2.indices)
+        ):
+            raise RuntimeError("sparse intersection products disagree")
+        count = intersection1.nnz
+        total += count
+        if max_intersections is not None and total > max_intersections:
+            raise MemoryError(
+                f"intersection plan exceeds limit {max_intersections}"
+            )
+        edge_parts.append(np.repeat(
+            np.arange(start, stop, dtype=np.int32),
+            np.diff(intersection1.indptr),
+        ))
+        y_parts.append(intersection1.indices.astype(np.int32, copy=False))
+        first_parts.append(
+            (intersection1.data - 1).astype(np.int32, copy=False)
+        )
+        second_parts.append(
+            (intersection2.data - 1).astype(np.int32, copy=False)
+        )
+
+    def combine(parts):
+        return np.concatenate(parts) if parts else np.empty(0, dtype=np.int32)
+
+    return SparseIntersectionPlan(
+        combine(edge_parts), combine(y_parts),
+        combine(first_parts), combine(second_parts),
+    )
+
+
+def sparse_factorized_margins(
+    problem: SparseGroupedProblem,
+    plan: SparseIntersectionPlan,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    *,
+    executor=None,
+    intersection_shards: Sequence[tuple[int, int]] | None = None,
+) -> SparseFactorizedMargins:
+    """Vectorized intersection-only sufficient-statistic evaluation."""
+
+    v = problem.vocabulary_size
+    log_base = np.asarray(log_base_y) - logsumexp(log_base_y)
+    base = np.exp(log_base)
+    r1 = np.expm1(np.asarray(correction_ya))
+    r2 = np.expm1(np.asarray(correction_yb))
+    if _graphical_margin_c is not None:
+        edge = (
+            plan.edge if plan.edge_offset == 0
+            else plan.edge - plan.edge_offset
+        )
+        target_y, active_ya, active_yb, log_z = (
+            _graphical_margin_c.fused_margins(
+                np.ascontiguousarray(base, dtype=np.float64),
+                np.ascontiguousarray(r1, dtype=np.float64),
+                np.ascontiguousarray(r2, dtype=np.float64),
+                np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+                np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+                np.ascontiguousarray(problem.edge_probability, dtype=np.float64),
+                np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+                np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+                np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+                np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+                np.ascontiguousarray(edge, dtype=np.int32),
+                np.ascontiguousarray(plan.target_y, dtype=np.int32),
+                np.ascontiguousarray(plan.correction_ya, dtype=np.int32),
+                np.ascontiguousarray(plan.correction_yb, dtype=np.int32),
+                len(intersection_shards) if intersection_shards else 1,
+            )
+        )
+        if (
+            np.all(np.isfinite(target_y))
+            and np.all(np.isfinite(active_ya))
+            and np.all(np.isfinite(active_yb))
+            and np.all(np.isfinite(log_z))
+        ):
+            return SparseFactorizedMargins(
+                target_y, active_ya, active_yb, log_z
+            )
+        # Rare extreme edges can lose all precision in the expanded
+        # ``1 + S1 + S2 + cross`` normalizer.  Fall through to the
+        # transparent evaluator, which isolates and recomputes only those
+        # edges in log space.
+    s1 = np.bincount(
+        problem.active_ya_a,
+        weights=base[problem.active_ya_y] * r1,
+        minlength=v,
+    )
+    s2 = np.bincount(
+        problem.active_yb_b,
+        weights=base[problem.active_yb_y] * r2,
+        minlength=v,
+    )
+    edge = (
+        plan.edge if plan.edge_offset == 0
+        else plan.edge - plan.edge_offset
+    )
+    y = plan.target_y
+    i1 = plan.correction_ya
+    i2 = plan.correction_yb
+    shards = intersection_shards or [(0, len(edge))]
+
+    def cross_contribution(bounds):
+        lo, hi = bounds
+        return np.bincount(
+            edge[lo:hi],
+            weights=base[y[lo:hi]] * r1[i1[lo:hi]] * r2[i2[lo:hi]],
+            minlength=len(problem.edge_probability),
+        )
+
+    cross_by_edge = np.zeros(len(problem.edge_probability))
+    cross_parts = (
+        map(cross_contribution, shards)
+        if executor is None else executor.map(cross_contribution, shards)
+    )
+    for part in cross_parts:
+        cross_by_edge += part
+    z = (
+        1.0 + s1[problem.edge_a] + s2[problem.edge_b]
+        + cross_by_edge
+    )
+    scale = (
+        1.0 + np.abs(s1[problem.edge_a])
+        + np.abs(s2[problem.edge_b]) + np.abs(cross_by_edge)
+    )
+    unstable = (
+        ~np.isfinite(z) | (z <= 0.0)
+        | (scale > 1e12 * np.maximum(np.abs(z), np.finfo(float).tiny))
+    )
+    m_edge = np.zeros_like(problem.edge_probability)
+    np.divide(
+        problem.edge_probability, z, out=m_edge,
+        where=~unstable,
+    )
+    row_m = np.bincount(problem.edge_a, weights=m_edge, minlength=v)
+    col_m = np.bincount(problem.edge_b, weights=m_edge, minlength=v)
+    active_ya = (
+        base[problem.active_ya_y] * (1.0 + r1)
+        * row_m[problem.active_ya_a]
+    )
+    active_yb = (
+        base[problem.active_yb_y] * (1.0 + r2)
+        * col_m[problem.active_yb_b]
+    )
+    def margin_contribution(bounds):
+        lo, hi = bounds
+        local_edge = edge[lo:hi]
+        local_y = y[lo:hi]
+        local_i1 = i1[lo:hi]
+        local_i2 = i2[lo:hi]
+        common = base[local_y] * m_edge[local_edge]
+        return (
+            np.bincount(
+                local_i1,
+                weights=(common * (1.0 + r1[local_i1]) * r2[local_i2]),
+                minlength=len(r1),
+            ),
+            np.bincount(
+                local_i2,
+                weights=(common * (1.0 + r2[local_i2]) * r1[local_i1]),
+                minlength=len(r2),
+            ),
+            np.bincount(
+                local_y,
+                weights=common * r1[local_i1] * r2[local_i2],
+                minlength=v,
+            ),
+        )
+
+    target_cross = np.zeros(v)
+    margin_parts = (
+        map(margin_contribution, shards)
+        if executor is None else executor.map(margin_contribution, shards)
+    )
+    for part_ya, part_yb, part_y in margin_parts:
+        active_ya += part_ya
+        active_yb += part_yb
+        target_cross += part_y
+    target_y = base * float(m_edge.sum())
+    target_y += np.bincount(
+        problem.active_ya_y,
+        weights=(base[problem.active_ya_y] * r1
+                 * row_m[problem.active_ya_a]),
+        minlength=v,
+    )
+    target_y += np.bincount(
+        problem.active_yb_y,
+        weights=(base[problem.active_yb_y] * r2
+                 * col_m[problem.active_yb_b]),
+        minlength=v,
+    )
+    target_y += target_cross
+    log_z = np.empty_like(z)
+    np.log(z, out=log_z, where=~unstable)
+    for bad_edge in np.flatnonzero(unstable):
+        a = problem.edge_a[bad_edge]
+        b = problem.edge_b[bad_edge]
+        selected1 = np.flatnonzero(problem.active_ya_a == a)
+        selected2 = np.flatnonzero(problem.active_yb_b == b)
+        scores = np.zeros(v)
+        scores[problem.active_ya_y[selected1]] += np.asarray(
+            correction_ya
+        )[selected1]
+        scores[problem.active_yb_y[selected2]] += np.asarray(
+            correction_yb
+        )[selected2]
+        direct_log_z = float(logsumexp(log_base + scores))
+        joint_mass = (
+            problem.edge_probability[bad_edge]
+            * np.exp(log_base + scores - direct_log_z)
+        )
+        target_y += joint_mass
+        active_ya[selected1] += joint_mass[
+            problem.active_ya_y[selected1]
+        ]
+        active_yb[selected2] += joint_mass[
+            problem.active_yb_y[selected2]
+        ]
+        log_z[bad_edge] = direct_log_z
+    return SparseFactorizedMargins(
+        target_y, active_ya, active_yb, log_z
+    )
+
+
+def sparse_factorized_margins_reference(
+    problem: SparseGroupedProblem,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+) -> SparseFactorizedMargins:
+    """Evaluate margins without expanding active unions over AB edges.
+
+    This transparent Python implementation is a correctness reference for
+    the production streamed/heavy-light evaluator.  Its work is proportional
+    to correction intersections plus feature-edge propagation, not to a
+    materialized target union for every AB edge.
+    """
+
+    v = problem.vocabulary_size
+    log_base = np.asarray(log_base_y) - logsumexp(log_base_y)
+    base = np.exp(log_base)
+    r1 = np.expm1(np.asarray(correction_ya))
+    r2 = np.expm1(np.asarray(correction_yb))
+    rows1: list[dict[int, tuple[int, float]]] = [{} for _ in range(v)]
+    rows2: list[dict[int, tuple[int, float]]] = [{} for _ in range(v)]
+    for index, (y, a, value) in enumerate(zip(
+        problem.active_ya_y, problem.active_ya_a, r1
+    )):
+        rows1[int(a)][int(y)] = (index, float(value))
+    for index, (y, b, value) in enumerate(zip(
+        problem.active_yb_y, problem.active_yb_b, r2
+    )):
+        rows2[int(b)][int(y)] = (index, float(value))
+
+    s1 = np.bincount(
+        problem.active_ya_a,
+        weights=base[problem.active_ya_y] * r1,
+        minlength=v,
+    )
+    s2 = np.bincount(
+        problem.active_yb_b,
+        weights=base[problem.active_yb_y] * r2,
+        minlength=v,
+    )
+    z = 1.0 + s1[problem.edge_a] + s2[problem.edge_b]
+    intersections: list[tuple[int, int, float, float]] = []
+    for edge, (a, b) in enumerate(zip(problem.edge_a, problem.edge_b)):
+        first = rows1[int(a)]
+        second = rows2[int(b)]
+        for y in first.keys() & second.keys():
+            value1 = first[y][1]
+            value2 = second[y][1]
+            z[edge] += base[y] * value1 * value2
+            intersections.append((edge, y, value1, value2))
+    m_edge = problem.edge_probability / z
+    row_m = np.bincount(problem.edge_a, weights=m_edge, minlength=v)
+    col_m = np.bincount(problem.edge_b, weights=m_edge, minlength=v)
+
+    active_ya = base[problem.active_ya_y] * (1.0 + r1) * row_m[
+        problem.active_ya_a
+    ]
+    active_yb = base[problem.active_yb_y] * (1.0 + r2) * col_m[
+        problem.active_yb_b
+    ]
+    target_y = base * float(m_edge.sum())
+    target_y += np.bincount(
+        problem.active_ya_y,
+        weights=(base[problem.active_ya_y] * r1
+                 * row_m[problem.active_ya_a]),
+        minlength=v,
+    )
+    target_y += np.bincount(
+        problem.active_yb_y,
+        weights=(base[problem.active_yb_y] * r2
+                 * col_m[problem.active_yb_b]),
+        minlength=v,
+    )
+
+    neighbors_a: list[list[tuple[int, float]]] = [[] for _ in range(v)]
+    neighbors_b: list[list[tuple[int, float]]] = [[] for _ in range(v)]
+    for edge, (a, b) in enumerate(zip(problem.edge_a, problem.edge_b)):
+        neighbors_a[int(a)].append((int(b), float(m_edge[edge])))
+        neighbors_b[int(b)].append((int(a), float(m_edge[edge])))
+    for index, (y, a) in enumerate(zip(
+        problem.active_ya_y, problem.active_ya_a
+    )):
+        extra = sum(
+            mass * rows2[b].get(int(y), (-1, 0.0))[1]
+            for b, mass in neighbors_a[int(a)]
+        )
+        active_ya[index] += base[y] * (1.0 + r1[index]) * extra
+    for index, (y, b) in enumerate(zip(
+        problem.active_yb_y, problem.active_yb_b
+    )):
+        extra = sum(
+            mass * rows1[a].get(int(y), (-1, 0.0))[1]
+            for a, mass in neighbors_b[int(b)]
+        )
+        active_yb[index] += base[y] * (1.0 + r2[index]) * extra
+    for edge, y, value1, value2 in intersections:
+        target_y[y] += base[y] * m_edge[edge] * value1 * value2
+
+    return SparseFactorizedMargins(
+        target_y, active_ya, active_yb, np.log(z)
+    )
+
+
+def sparse_problem_with_edge_distribution(
+    problem: SparseGroupedProblem,
+    edge_indices: np.ndarray,
+    edge_probability: np.ndarray,
+) -> SparseGroupedProblem:
+    """Restrict a problem to edges carrying a supplied probability law.
+
+    The target sufficient-statistic margins deliberately remain those of the
+    complete problem.  Consequently a random edge law whose expectation is
+    ``problem.edge_probability`` gives an unbiased estimate of the complete
+    conditional-dual gradient.
+    """
+
+    indices = np.asarray(edge_indices, dtype=np.int64)
+    probability = np.asarray(edge_probability, dtype=np.float64)
+    if indices.ndim != 1 or probability.shape != indices.shape:
+        raise ValueError("edge indices and probabilities must be 1-D matches")
+    if not len(indices):
+        raise ValueError("an edge distribution must have nonempty support")
+    if np.any(indices < 0) or np.any(indices >= len(problem.edge_probability)):
+        raise ValueError("edge index outside the problem")
+    if not np.isfinite(probability).all() or np.any(probability < 0.0):
+        raise ValueError("edge probabilities must be finite and nonnegative")
+    total = float(probability.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("edge probabilities must have positive mass")
+    probability = probability / total
+    return SparseGroupedProblem(
+        vocabulary_size=problem.vocabulary_size,
+        edge_a=problem.edge_a[indices],
+        edge_b=problem.edge_b[indices],
+        edge_probability=probability,
+        target_y=problem.target_y,
+        active_ya_y=problem.active_ya_y,
+        active_ya_a=problem.active_ya_a,
+        target_ya=problem.target_ya,
+        active_yb_y=problem.active_yb_y,
+        active_yb_b=problem.active_yb_b,
+        target_yb=problem.target_yb,
+    )
+
+
+def sample_sparse_grouped_edges(
+    problem: SparseGroupedProblem,
+    sample_size: int,
+    rng: np.random.Generator,
+) -> SparseGroupedProblem:
+    """Draw an empirical AB-edge distribution from the target edge law."""
+
+    if sample_size < 1:
+        raise ValueError("sample_size must be positive")
+    draws = rng.choice(
+        len(problem.edge_probability),
+        size=sample_size,
+        replace=True,
+        p=problem.edge_probability,
+    )
+    indices, counts = np.unique(draws, return_counts=True)
+    return sparse_problem_with_edge_distribution(
+        problem, indices, counts.astype(np.float64)
+    )
+
+
+def sparse_edge_minibatch(
+    problem: SparseGroupedProblem,
+    intersection_plan: SparseIntersectionPlan,
+    sample_size: int,
+    rng: np.random.Generator,
+) -> tuple[SparseGroupedProblem, SparseIntersectionPlan]:
+    """Sample edges and slice a checkpoint's fixed intersection plan.
+
+    Reusing the plan is essential: rebuilding the sparse row intersections
+    on every stochastic step would erase much of the minibatch saving.
+    """
+
+    if sample_size < 1:
+        raise ValueError("sample_size must be positive")
+    draws = rng.choice(
+        len(problem.edge_probability), size=sample_size, replace=True,
+        p=problem.edge_probability,
+    )
+    original_edges, counts = np.unique(draws, return_counts=True)
+    return sparse_edge_distribution_with_plan(
+        problem, intersection_plan, original_edges,
+        counts.astype(np.float64),
+    )
+
+
+def sparse_edge_distribution_with_plan(
+    problem: SparseGroupedProblem,
+    intersection_plan: SparseIntersectionPlan,
+    edge_indices: np.ndarray,
+    edge_probability: np.ndarray,
+) -> tuple[SparseGroupedProblem, SparseIntersectionPlan]:
+    """Attach a restricted edge distribution to its sliced fixed plan."""
+
+    original_edges = np.asarray(edge_indices, dtype=np.int64)
+    order = np.argsort(original_edges, kind="stable")
+    original_edges = original_edges[order]
+    weights = np.asarray(edge_probability, dtype=np.float64)[order]
+    sampled = sparse_problem_with_edge_distribution(
+        problem, original_edges, weights
+    )
+    plan_edge = intersection_plan.edge
+    starts = np.searchsorted(plan_edge, original_edges, side="left")
+    stops = np.searchsorted(plan_edge, original_edges, side="right")
+    lengths = stops - starts
+    positions = (
+        np.concatenate([
+            np.arange(start, stop, dtype=np.int64)
+            for start, stop in zip(starts, stops) if stop > start
+        ])
+        if int(lengths.sum()) else np.empty(0, dtype=np.int64)
+    )
+    local_edges = np.repeat(
+        np.arange(len(original_edges), dtype=np.int32), lengths
+    )
+    plan = SparseIntersectionPlan(
+        edge=local_edges,
+        target_y=intersection_plan.target_y[positions],
+        correction_ya=intersection_plan.correction_ya[positions],
+        correction_yb=intersection_plan.correction_yb[positions],
+    )
+    return sampled, plan
+
+
+def build_sparse_edge_blocks(
+    problem: SparseGroupedProblem,
+    intersection_plan: SparseIntersectionPlan,
+    blocks: int,
+) -> list[SparseEdgeBlock]:
+    """Partition a fixed plan into approximately equal-work edge blocks."""
+
+    edge_count = len(problem.edge_probability)
+    if blocks < 1:
+        raise ValueError("blocks must be positive")
+    blocks = min(blocks, edge_count)
+    edge_boundaries = np.empty(blocks + 1, dtype=np.int64)
+    edge_boundaries[0] = 0
+    edge_boundaries[-1] = edge_count
+    if blocks > 1:
+        if len(intersection_plan.edge):
+            # Direct lookup at equally spaced plan positions gives cuts with
+            # approximately equal intersection work.
+            positions = np.linspace(
+                0, len(intersection_plan.edge), blocks + 1, dtype=np.int64
+            )
+            edge_boundaries[1:-1] = intersection_plan.edge[
+                np.minimum(positions[1:-1], len(intersection_plan.edge) - 1)
+            ]
+        else:
+            edge_boundaries[1:-1] = np.linspace(
+                0, edge_count, blocks + 1, dtype=np.int64
+            )[1:-1]
+    edge_boundaries = np.unique(edge_boundaries)
+    plan_boundaries = np.searchsorted(
+        intersection_plan.edge, edge_boundaries, side="left"
+    )
+    answer = []
+    for block_index, (edge_lo, edge_hi) in enumerate(
+        pairwise(edge_boundaries)
+    ):
+        edge_lo = int(edge_lo)
+        edge_hi = int(edge_hi)
+        if edge_hi <= edge_lo:
+            continue
+        mass = float(problem.edge_probability[edge_lo:edge_hi].sum())
+        if mass <= 0.0:
+            continue
+        plan_lo = int(plan_boundaries[block_index])
+        plan_hi = int(plan_boundaries[block_index + 1])
+        block_problem = SparseGroupedProblem(
+            vocabulary_size=problem.vocabulary_size,
+            edge_a=problem.edge_a[edge_lo:edge_hi],
+            edge_b=problem.edge_b[edge_lo:edge_hi],
+            edge_probability=(
+                problem.edge_probability[edge_lo:edge_hi] / mass
+            ),
+            target_y=problem.target_y,
+            active_ya_y=problem.active_ya_y,
+            active_ya_a=problem.active_ya_a,
+            target_ya=problem.target_ya,
+            active_yb_y=problem.active_yb_y,
+            active_yb_b=problem.active_yb_b,
+            target_yb=problem.target_yb,
+        )
+        block_plan = SparseIntersectionPlan(
+            edge=intersection_plan.edge[plan_lo:plan_hi],
+            target_y=intersection_plan.target_y[plan_lo:plan_hi],
+            correction_ya=intersection_plan.correction_ya[plan_lo:plan_hi],
+            correction_yb=intersection_plan.correction_yb[plan_lo:plan_hi],
+            edge_offset=edge_lo,
+        )
+        answer.append(SparseEdgeBlock(mass, block_problem, block_plan))
+    return answer
+
+
+def stratified_sparse_edge_minibatch(
+    problem: SparseGroupedProblem,
+    intersection_plan: SparseIntersectionPlan,
+    sample_size: int,
+    rng: np.random.Generator,
+    *,
+    strata: int = 16,
+) -> tuple[SparseGroupedProblem, SparseIntersectionPlan]:
+    """Unbiased probability-rank-stratified AB-edge minibatch.
+
+    Edges are divided into equal-count strata after sorting by target edge
+    probability.  Sampling remains proportional to probability within each
+    stratum, while every nonempty stratum receives draws.  Each stratum's
+    empirical weights sum exactly to its true mass, so the combined objective
+    and gradient remain unbiased without self-normalization.
+    """
+
+    edge_count = len(problem.edge_probability)
+    if sample_size < 1 or strata < 1:
+        raise ValueError("sample size and strata must be positive")
+    strata = min(strata, edge_count, sample_size)
+    ranked = np.argsort(problem.edge_probability, kind="stable")
+    groups = np.array_split(ranked, strata)
+    allocation = np.full(strata, sample_size // strata, dtype=np.int64)
+    allocation[:sample_size % strata] += 1
+    accumulated: dict[int, float] = {}
+    for group, draws_in_group in zip(groups, allocation):
+        group_probability = problem.edge_probability[group]
+        group_mass = float(group_probability.sum())
+        draws = rng.choice(
+            group, size=int(draws_in_group), replace=True,
+            p=group_probability / group_mass,
+        )
+        indices, counts = np.unique(draws, return_counts=True)
+        unit_weight = group_mass / float(draws_in_group)
+        for edge, count in zip(indices, counts):
+            key = int(edge)
+            accumulated[key] = (
+                accumulated.get(key, 0.0) + float(count) * unit_weight
+            )
+    indices = np.fromiter(accumulated, dtype=np.int64)
+    weights = np.fromiter(accumulated.values(), dtype=np.float64)
+    return sparse_edge_distribution_with_plan(
+        problem, intersection_plan, indices, weights
+    )
+
+
+def sparse_factorized_dual_evaluation(
+    problem: SparseGroupedProblem,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    *,
+    intersection_plan: SparseIntersectionPlan | None = None,
+    compute_certificate: bool = False,
+    executor=None,
+    intersection_shards: Sequence[tuple[int, int]] | None = None,
+) -> SparseDualEvaluation:
+    """Evaluate the conditional dual for a full or sampled edge law.
+
+    Sampling changes only the expectation of ``log Z_ab`` and its model
+    sufficient statistics.  The target linear terms are kept exact; this is
+    what makes the sampled gradient unbiased for the complete dual.
+    """
+
+    lb = np.asarray(log_base_y, dtype=np.float64)
+    c1 = np.asarray(correction_ya, dtype=np.float64)
+    c2 = np.asarray(correction_yb, dtype=np.float64)
+    if lb.shape != problem.target_y.shape:
+        raise ValueError("baseline shape does not match target_y")
+    if c1.shape != problem.target_ya.shape:
+        raise ValueError("first correction shape does not match target_ya")
+    if c2.shape != problem.target_yb.shape:
+        raise ValueError("second correction shape does not match target_yb")
+    plan = intersection_plan or build_sparse_intersection_plan(problem)
+    margins = sparse_factorized_margins(
+        problem, plan, lb, c1, c2,
+        executor=executor,
+        intersection_shards=intersection_shards,
+    )
+    normalized_base = lb - logsumexp(lb)
+    objective = (
+        float(problem.edge_probability @ margins.log_normalizer)
+        - float(problem.target_y @ normalized_base)
+        - float(problem.target_ya @ c1)
+        - float(problem.target_yb @ c2)
+    )
+    residual_y = residual_ya = residual_yb = certificate = None
+    if compute_certificate:
+        v = problem.vocabulary_size
+        pa = np.bincount(
+            problem.edge_a, weights=problem.edge_probability, minlength=v
+        )
+        pb = np.bincount(
+            problem.edge_b, weights=problem.edge_probability, minlength=v
+        )
+        current_a = np.bincount(
+            problem.active_ya_a, weights=margins.active_ya, minlength=v
+        )
+        current_b = np.bincount(
+            problem.active_yb_b, weights=margins.active_yb, minlength=v
+        )
+        target_a = np.bincount(
+            problem.active_ya_a, weights=problem.target_ya, minlength=v
+        )
+        target_b = np.bincount(
+            problem.active_yb_b, weights=problem.target_yb, minlength=v
+        )
+        residual_y = float(np.abs(
+            margins.target_y - problem.target_y
+        ).sum())
+        residual_ya = float(np.abs(
+            margins.active_ya - problem.target_ya
+        ).sum() + np.abs((pa - current_a) - (pa - target_a)).sum())
+        residual_yb = float(np.abs(
+            margins.active_yb - problem.target_yb
+        ).sum() + np.abs((pb - current_b) - (pb - target_b)).sum())
+        certificate = max(residual_y, residual_ya, residual_yb)
+    return SparseDualEvaluation(
+        objective=objective,
+        gradient_y=margins.target_y - problem.target_y,
+        gradient_ya=margins.active_ya - problem.target_ya,
+        gradient_yb=margins.active_yb - problem.target_yb,
+        certificate=certificate,
+        residual_y_l1=residual_y,
+        residual_ya_l1=residual_ya,
+        residual_yb_l1=residual_yb,
+    )
+
+
+def sparse_factorized_dual_hessian_product(
+    problem: SparseGroupedProblem,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    direction: np.ndarray,
+    *,
+    intersection_plan: SparseIntersectionPlan | None = None,
+) -> np.ndarray:
+    """Apply the exact dual Hessian using directional factor algebra.
+
+    This is the forward directional derivative of
+    :func:`sparse_factorized_margins`.  It forms neither a Hessian nor a
+    dense ``V x V`` table and is the standard primitive required by a
+    truncated-Newton/Newton--CG solver.
+    """
+
+    v = problem.vocabulary_size
+    n1 = len(problem.target_ya)
+    n2 = len(problem.target_yb)
+    vector = np.asarray(direction, dtype=np.float64)
+    if vector.shape != (v + n1 + n2,):
+        raise ValueError("Hessian direction has the wrong shape")
+    d0 = vector[:v]
+    d1 = vector[v:v + n1]
+    d2 = vector[v + n1:]
+    plan = intersection_plan or build_sparse_intersection_plan(problem)
+
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    log_base = log_base - logsumexp(log_base)
+    base = np.exp(log_base)
+    # The normalized baseline has one global gauge.  Differentiating its
+    # softmax representation removes that gauge exactly.
+    dbase = base * (d0 - float(base @ d0))
+    r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
+    r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    dr1 = (1.0 + r1) * d1
+    dr2 = (1.0 + r2) * d2
+
+    a1 = problem.active_ya_a
+    y1 = problem.active_ya_y
+    b2 = problem.active_yb_b
+    y2 = problem.active_yb_y
+    s1 = np.bincount(a1, weights=base[y1] * r1, minlength=v)
+    s2 = np.bincount(b2, weights=base[y2] * r2, minlength=v)
+    ds1 = np.bincount(
+        a1, weights=dbase[y1] * r1 + base[y1] * dr1, minlength=v
+    )
+    ds2 = np.bincount(
+        b2, weights=dbase[y2] * r2 + base[y2] * dr2, minlength=v
+    )
+
+    edge = plan.edge - plan.edge_offset
+    py = plan.target_y
+    i1 = plan.correction_ya
+    i2 = plan.correction_yb
+    cross_weight = base[py] * r1[i1] * r2[i2]
+    dcross_weight = (
+        dbase[py] * r1[i1] * r2[i2]
+        + base[py] * dr1[i1] * r2[i2]
+        + base[py] * r1[i1] * dr2[i2]
+    )
+    edge_count = len(problem.edge_probability)
+    cross = np.bincount(edge, weights=cross_weight, minlength=edge_count)
+    dcross = np.bincount(
+        edge, weights=dcross_weight, minlength=edge_count
+    )
+    z = 1.0 + s1[problem.edge_a] + s2[problem.edge_b] + cross
+    dz = ds1[problem.edge_a] + ds2[problem.edge_b] + dcross
+    edge_mass = problem.edge_probability / z
+    dedge_mass = -edge_mass * dz / z
+    row = np.bincount(problem.edge_a, weights=edge_mass, minlength=v)
+    col = np.bincount(problem.edge_b, weights=edge_mass, minlength=v)
+    drow = np.bincount(problem.edge_a, weights=dedge_mass, minlength=v)
+    dcol = np.bincount(problem.edge_b, weights=dedge_mass, minlength=v)
+
+    e1 = 1.0 + r1
+    e2 = 1.0 + r2
+    dmargin1 = (
+        (dbase[y1] * e1 + base[y1] * dr1) * row[a1]
+        + base[y1] * e1 * drow[a1]
+    )
+    dmargin2 = (
+        (dbase[y2] * e2 + base[y2] * dr2) * col[b2]
+        + base[y2] * e2 * dcol[b2]
+    )
+    common = base[py] * edge_mass[edge]
+    dcommon = (
+        dbase[py] * edge_mass[edge]
+        + base[py] * dedge_mass[edge]
+    )
+    dmargin1 += np.bincount(
+        i1,
+        weights=(
+            dcommon * e1[i1] * r2[i2]
+            + common * dr1[i1] * r2[i2]
+            + common * e1[i1] * dr2[i2]
+        ),
+        minlength=n1,
+    )
+    dmargin2 += np.bincount(
+        i2,
+        weights=(
+            dcommon * e2[i2] * r1[i1]
+            + common * dr2[i2] * r1[i1]
+            + common * e2[i2] * dr1[i1]
+        ),
+        minlength=n2,
+    )
+
+    dtarget = dbase * float(edge_mass.sum())
+    dtarget += base * float(dedge_mass.sum())
+    dtarget += np.bincount(
+        y1,
+        weights=(
+            (dbase[y1] * r1 + base[y1] * dr1) * row[a1]
+            + base[y1] * r1 * drow[a1]
+        ),
+        minlength=v,
+    )
+    dtarget += np.bincount(
+        y2,
+        weights=(
+            (dbase[y2] * r2 + base[y2] * dr2) * col[b2]
+            + base[y2] * r2 * dcol[b2]
+        ),
+        minlength=v,
+    )
+    dtarget += np.bincount(
+        py,
+        weights=(
+            dcommon * r1[i1] * r2[i2]
+            + common * dr1[i1] * r2[i2]
+            + common * r1[i1] * dr2[i2]
+        ),
+        minlength=v,
+    )
+    return np.concatenate([dtarget, dmargin1, dmargin2])
+
+
+def diagnose_sparse_factorized_normalizers(
+    problem: SparseGroupedProblem,
+    plan: SparseIntersectionPlan,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+) -> dict[str, float | int]:
+    """Describe the worst cancellation in the expanded normalizers."""
+
+    v = problem.vocabulary_size
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    log_base -= logsumexp(log_base)
+    base = np.exp(log_base)
+    c1 = np.asarray(correction_ya, dtype=np.float64)
+    c2 = np.asarray(correction_yb, dtype=np.float64)
+    r1 = np.expm1(c1)
+    r2 = np.expm1(c2)
+    s1 = np.bincount(
+        problem.active_ya_a,
+        weights=base[problem.active_ya_y] * r1,
+        minlength=v,
+    )
+    s2 = np.bincount(
+        problem.active_yb_b,
+        weights=base[problem.active_yb_y] * r2,
+        minlength=v,
+    )
+    edge = plan.edge - plan.edge_offset
+    cross = np.bincount(
+        edge,
+        weights=(
+            base[plan.target_y]
+            * r1[plan.correction_ya]
+            * r2[plan.correction_yb]
+        ),
+        minlength=len(problem.edge_probability),
+    )
+    first_term = s1[problem.edge_a]
+    second_term = s2[problem.edge_b]
+    z = 1.0 + first_term + second_term + cross
+    scale = 1.0 + np.abs(first_term) + np.abs(second_term) + np.abs(cross)
+    ratio = np.divide(
+        scale, np.abs(z), out=np.full_like(scale, np.inf),
+        where=np.isfinite(z) & (z != 0.0),
+    )
+    bad = np.flatnonzero(~np.isfinite(z) | (z <= 0.0))
+    worst = int(bad[0] if len(bad) else np.argmax(ratio))
+    a = int(problem.edge_a[worst])
+    b = int(problem.edge_b[worst])
+    selected1 = np.flatnonzero(problem.active_ya_a == a)
+    selected2 = np.flatnonzero(problem.active_yb_b == b)
+    map1 = {
+        int(problem.active_ya_y[index]): float(c1[index])
+        for index in selected1
+    }
+    map2 = {
+        int(problem.active_yb_y[index]): float(c2[index])
+        for index in selected2
+    }
+    union = np.array(sorted(set(map1) | set(map2)), dtype=np.int64)
+    active_logs = np.array([
+        log_base[y] + map1.get(int(y), 0.0) + map2.get(int(y), 0.0)
+        for y in union
+    ])
+    background = max(0.0, 1.0 - float(base[union].sum()))
+    pieces = active_logs
+    if background > 0.0:
+        pieces = np.append(pieces, np.log(background))
+    direct_log_z = float(logsumexp(pieces))
+    return {
+        "bad_normalizer_count": len(bad),
+        "worst_edge": worst,
+        "worst_a": a,
+        "worst_b": b,
+        "term_one": 1.0,
+        "term_first": float(first_term[worst]),
+        "term_second": float(second_term[worst]),
+        "term_cross": float(cross[worst]),
+        "expanded_z": float(z[worst]),
+        "cancellation_ratio": float(ratio[worst]),
+        "direct_log_z": direct_log_z,
+        "direct_z": float(np.exp(direct_log_z)),
+        "active_union_size": len(union),
+    }
+
+
+def sparse_grouped_newton_cg(
+    problem: SparseGroupedProblem,
+    *,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    max_iterations: int = 200,
+    tolerance: float = 1e-5,
+) -> SparseGroupedResult:
+    """Fit the exact dual with the standard trust-region Newton--CG method.
+
+    The Hessian is never materialized.  ``scipy``'s truncated conjugate
+    gradient iteration receives exact products from
+    :func:`sparse_factorized_dual_hessian_product`.
+    """
+
+    if max_iterations < 1 or tolerance <= 0.0:
+        raise ValueError("invalid Newton-CG convergence settings")
+    v = problem.vocabulary_size
+    n1 = len(problem.target_ya)
+    n2 = len(problem.target_yb)
+    full_initial = np.concatenate([
+        np.asarray(log_base_y, dtype=np.float64),
+        np.asarray(correction_ya, dtype=np.float64),
+        np.asarray(correction_yb, dtype=np.float64),
+    ])
+    if full_initial.shape != (v + n1 + n2,):
+        raise ValueError("initial Newton-CG factors have the wrong shape")
+    plan = build_sparse_intersection_plan(problem)
+
+    # Remove the same exact gauges used by the L-BFGS solver.  Besides the
+    # global baseline constant, a correction row containing all targets has
+    # one constant gauge because it appears in every conditional outcome.
+    free = np.ones(len(full_initial), dtype=bool)
+    free[0] = False
+    for states, offset in (
+        (problem.active_ya_a, v),
+        (problem.active_yb_b, v + n1),
+    ):
+        counts = np.bincount(states, minlength=v)
+        for state in np.flatnonzero(counts == v):
+            free[offset + np.flatnonzero(states == state)[0]] = False
+    fixed = full_initial.copy()
+    best_parameters = full_initial.copy()
+    best_certificate = float("inf")
+    best_residuals = (float("inf"),) * 3
+    evaluations = 0
+
+    class _CertificateReached(Exception):
+        pass
+
+    def expand(reduced: np.ndarray) -> np.ndarray:
+        full = fixed.copy()
+        full[free] = reduced
+        return full
+
+    def objective_gradient(reduced: np.ndarray):
+        nonlocal best_parameters, best_certificate, best_residuals, evaluations
+        full = expand(reduced)
+        evaluation = sparse_factorized_dual_evaluation(
+            problem,
+            full[:v], full[v:v + n1], full[v + n1:],
+            intersection_plan=plan,
+            compute_certificate=True,
+        )
+        evaluations += 1
+        certificate = float(evaluation.certificate)
+        if certificate < best_certificate:
+            best_certificate = certificate
+            best_parameters = full.copy()
+            best_residuals = (
+                float(evaluation.residual_y_l1),
+                float(evaluation.residual_ya_l1),
+                float(evaluation.residual_yb_l1),
+            )
+        return evaluation.objective, evaluation.gradient()[free]
+
+    def hessian_product(reduced: np.ndarray, direction: np.ndarray):
+        full = expand(reduced)
+        full_direction = np.zeros_like(full)
+        full_direction[free] = direction
+        product = sparse_factorized_dual_hessian_product(
+            problem,
+            full[:v], full[v:v + n1], full[v + n1:],
+            full_direction,
+            intersection_plan=plan,
+        )
+        return product[free]
+
+    accepted_iterations = 0
+
+    def stop_at_certificate(_reduced):
+        nonlocal accepted_iterations
+        accepted_iterations += 1
+        if best_certificate <= tolerance:
+            raise _CertificateReached
+
+    try:
+        optimized = minimize(
+            objective_gradient,
+            full_initial[free],
+            method="trust-ncg",
+            jac=True,
+            hessp=hessian_product,
+            callback=stop_at_certificate,
+            options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
+        )
+        iterations = int(optimized.nit)
+    except _CertificateReached:
+        iterations = accepted_iterations
+    return SparseGroupedResult(
+        best_parameters[:v],
+        best_parameters[v:v + n1],
+        best_parameters[v + n1:],
+        iterations,
+        best_residuals[1],
+        best_residuals[2],
+        best_residuals[0],
+        best_certificate <= tolerance,
+        evaluations,
+    )
+
+
+def stochastic_sparse_dual_approach(
+    problem: SparseGroupedProblem,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    *,
+    steps: int,
+    batch_size: int,
+    learning_rate: float = 0.03,
+    exact_interval: int = 50,
+    seed: int = 0,
+    trust_radius: float = 8.0,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    sampling: str = "iid",
+    strata: int = 16,
+    replicas: int = 1,
+    stochastic_workers: int | None = None,
+    edge_blocks: int = 256,
+    variance_reduction: bool = False,
+    certificate_tolerance: float | None = None,
+    exact_margin_workers: int = 1,
+    optimizer: str = "adam",
+    minimum_learning_rate: float = 0.003,
+    plateau_patience: int = 3,
+    plateau_factor: float = 1.0 / 3.0,
+    plateau_relative_threshold: float = 1e-3,
+    bb_min_step: float = 1e-7,
+    bb_max_step: float = 1.0,
+) -> SparseStochasticResult:
+    """Use minibatch Adam only to approach the exact dual optimum.
+
+    Exact evaluations select the returned iterate.  This routine never
+    claims convergence; its output is intended as a warm start for the exact
+    certified solver.
+    """
+
+    if steps < 0 or batch_size < 1 or exact_interval < 1 or replicas < 1:
+        raise ValueError("invalid stochastic schedule")
+    if stochastic_workers is None:
+        stochastic_workers = replicas
+    if stochastic_workers < 1:
+        raise ValueError("stochastic_workers must be positive")
+    if learning_rate <= 0.0 or trust_radius <= 0.0:
+        raise ValueError("learning rate and trust radius must be positive")
+    if not 0.0 <= beta1 < 1.0 or not 0.0 <= beta2 < 1.0:
+        raise ValueError("Adam decay factors must lie in [0, 1)")
+    if sampling not in ("iid", "stratified", "blocks"):
+        raise ValueError("sampling must be 'iid', 'stratified' or 'blocks'")
+    if edge_blocks < 1:
+        raise ValueError("edge_blocks must be positive")
+    if certificate_tolerance is not None and certificate_tolerance <= 0.0:
+        raise ValueError("certificate_tolerance must be positive")
+    if exact_margin_workers < 1:
+        raise ValueError("exact_margin_workers must be positive")
+    if optimizer not in ("adam", "adam_cosine", "adam_plateau", "svrg_bb"):
+        raise ValueError(
+            "optimizer must be 'adam', 'adam_cosine', 'adam_plateau', "
+            "or 'svrg_bb'"
+        )
+    if not 0.0 < minimum_learning_rate <= learning_rate:
+        raise ValueError("minimum learning rate must lie in (0, learning_rate]")
+    if plateau_patience < 1 or not 0.0 < plateau_factor < 1.0:
+        raise ValueError("invalid plateau schedule")
+    if not 0.0 <= plateau_relative_threshold < 1.0:
+        raise ValueError("invalid plateau relative threshold")
+    if not 0.0 < bb_min_step <= bb_max_step:
+        raise ValueError("invalid BB step bounds")
+
+    lb = np.array(log_base_y, dtype=np.float64, copy=True)
+    c1 = np.array(correction_ya, dtype=np.float64, copy=True)
+    c2 = np.array(correction_yb, dtype=np.float64, copy=True)
+    origin = np.concatenate([lb, c1, c2])
+    parameters = origin.copy()
+    first = len(lb)
+    second = first + len(c1)
+    moment = np.zeros_like(parameters)
+    square = np.zeros_like(parameters)
+    rngs = [np.random.default_rng(seed + 1_000_003 * replica)
+            for replica in range(replicas)]
+    full_plan = build_sparse_intersection_plan(problem)
+    exact_executor = (
+        ThreadPoolExecutor(max_workers=exact_margin_workers)
+        if exact_margin_workers > 1 else None
+    )
+    exact_boundaries = np.linspace(
+        0, len(full_plan.edge), exact_margin_workers + 1, dtype=np.int64
+    )
+    exact_shards = [
+        (int(lo), int(hi))
+        for lo, hi in pairwise(np.unique(exact_boundaries)) if hi > lo
+    ]
+    edge_cdf = np.cumsum(problem.edge_probability)
+    edge_cdf[-1] = 1.0
+    ranked_groups: list[np.ndarray] = []
+    group_cdfs: list[np.ndarray] = []
+    group_masses: list[float] = []
+    prepared_blocks: list[SparseEdgeBlock] = []
+    block_cdf = np.empty(0)
+    if sampling == "stratified":
+        effective_strata = min(
+            strata, len(problem.edge_probability), batch_size
+        )
+        ranked = np.argsort(problem.edge_probability, kind="stable")
+        ranked_groups = list(np.array_split(ranked, effective_strata))
+        for group in ranked_groups:
+            probabilities = problem.edge_probability[group]
+            mass = float(probabilities.sum())
+            cdf = np.cumsum(probabilities / mass)
+            cdf[-1] = 1.0
+            group_cdfs.append(cdf)
+            group_masses.append(mass)
+    elif sampling == "blocks":
+        prepared_blocks = build_sparse_edge_blocks(
+            problem, full_plan, edge_blocks
+        )
+        block_cdf = np.cumsum([
+            block.probability_mass for block in prepared_blocks
+        ])
+        block_cdf[-1] = 1.0
+    best = parameters.copy()
+    best_objective = float("inf")
+    best_certificate = float("inf")
+    snapshot_parameters = parameters.copy()
+    snapshot_gradient = np.zeros_like(parameters)
+    exact_evaluations = 0
+    exact_seconds = 0.0
+    sampled_gradient_seconds = 0.0
+    optimizer_seconds = 0.0
+    reference_cache_seconds = 0.0
+    rejected_nonfinite_steps = 0
+    trace: list[dict[str, float | int]] = []
+    current_step_size = learning_rate
+    scheduler_best = float("inf")
+    scheduler_bad_records = 0
+    scheduler_exhausted = False
+    adam_step = 0
+
+    def exact_record(step: int) -> bool:
+        nonlocal best, best_objective, best_certificate, exact_evaluations
+        nonlocal snapshot_parameters, snapshot_gradient, exact_seconds
+        nonlocal current_step_size
+        nonlocal scheduler_best, scheduler_bad_records
+        nonlocal scheduler_exhausted
+        nonlocal adam_step
+        started = perf_counter()
+        evaluation = sparse_factorized_dual_evaluation(
+            problem, parameters[:first], parameters[first:second],
+            parameters[second:], intersection_plan=full_plan,
+            compute_certificate=True,
+            executor=exact_executor,
+            intersection_shards=exact_shards,
+        )
+        exact_evaluations += 1
+        gradient = evaluation.gradient()
+        observed_gradient = gradient.copy()
+        certificate = float(evaluation.certificate)
+        exact_seconds += perf_counter() - started
+        if not (
+            np.isfinite(evaluation.objective)
+            and np.isfinite(certificate)
+            and np.all(np.isfinite(gradient))
+        ):
+            diagnostic = diagnose_sparse_factorized_normalizers(
+                problem, full_plan,
+                parameters[:first], parameters[first:second],
+                parameters[second:],
+            )
+            parameters[:] = snapshot_parameters
+            moment.fill(0.0)
+            square.fill(0.0)
+            adam_step = 0
+            old_step_size = current_step_size
+            current_step_size = max(
+                minimum_learning_rate,
+                current_step_size * plateau_factor,
+            )
+            scheduler_exhausted = old_step_size <= minimum_learning_rate
+            trace.append({
+                "step": step,
+                "exact_objective": float("inf"),
+                "exact_gradient_l2": float("inf"),
+                "exact_gradient_linf": float("inf"),
+                "exact_certificate": float("inf"),
+                "residual_y_l1": float("inf"),
+                "residual_ya_l1": float("inf"),
+                "residual_yb_l1": float("inf"),
+                "step_size": current_step_size,
+                "learning_rate_reduced": True,
+                "scheduler_exhausted": scheduler_exhausted,
+                "rejected_nonfinite": True,
+                **diagnostic,
+            })
+            return scheduler_exhausted
+        if certificate < best_certificate:
+            best_certificate = certificate
+            best_objective = evaluation.objective
+            best = parameters.copy()
+        learning_rate_reduced = False
+        if optimizer == "adam_plateau":
+            if certificate < scheduler_best * (1.0 - plateau_relative_threshold):
+                scheduler_best = certificate
+                scheduler_bad_records = 0
+            elif step > 0:
+                scheduler_bad_records += 1
+                if scheduler_bad_records >= plateau_patience:
+                    if current_step_size > minimum_learning_rate:
+                        current_step_size = max(
+                            minimum_learning_rate,
+                            current_step_size * plateau_factor,
+                        )
+                        learning_rate_reduced = True
+                    else:
+                        scheduler_exhausted = True
+                    scheduler_bad_records = 0
+        if optimizer == "svrg_bb" and variance_reduction and step > 0:
+            displacement = parameters - snapshot_parameters
+            gradient_change = gradient - snapshot_gradient
+            curvature = float(displacement @ gradient_change)
+            squared_distance = float(displacement @ displacement)
+            if (
+                curvature > 0.0
+                and squared_distance > 0.0
+                and np.isfinite(curvature)
+                and np.isfinite(squared_distance)
+            ):
+                proposal = (
+                    squared_distance / curvature / exact_interval
+                )
+                current_step_size = float(np.clip(
+                    proposal, bb_min_step, bb_max_step
+                ))
+        if variance_reduction:
+            snapshot_parameters = parameters.copy()
+            snapshot_gradient = gradient.copy()
+        trace.append({
+            "step": step,
+            "exact_objective": evaluation.objective,
+            "exact_gradient_l2": float(np.linalg.norm(observed_gradient)),
+            "exact_gradient_linf": float(np.max(np.abs(observed_gradient))),
+            "exact_certificate": certificate,
+            "residual_y_l1": float(evaluation.residual_y_l1),
+            "residual_ya_l1": float(evaluation.residual_ya_l1),
+            "residual_yb_l1": float(evaluation.residual_yb_l1),
+            "step_size": current_step_size,
+            "learning_rate_reduced": learning_rate_reduced,
+            "scheduler_exhausted": scheduler_exhausted,
+            "rejected_nonfinite": False,
+        })
+        return (
+            scheduler_exhausted
+            or (
+                certificate_tolerance is not None
+                and certificate <= certificate_tolerance
+            )
+        )
+
+    reached_certificate = exact_record(0)
+    replica_executor = (
+        ThreadPoolExecutor(max_workers=stochastic_workers)
+        if stochastic_workers > 1 else None
+    )
+    reference_block_margins: list[SparseReferenceMargins] = []
+    reference_positions = [
+        (
+            np.flatnonzero(np.isin(
+                problem.active_ya_a, np.unique(block.problem.edge_a)
+            )).astype(np.int32),
+            np.flatnonzero(np.isin(
+                problem.active_yb_b, np.unique(block.problem.edge_b)
+            )).astype(np.int32),
+        )
+        for block in prepared_blocks
+    ]
+
+    def refresh_reference_blocks() -> None:
+        """Cache the fixed SVRG side once instead of once per draw."""
+        nonlocal reference_block_margins, reference_cache_seconds
+        if not (variance_reduction and sampling == "blocks"):
+            return
+
+        def evaluate_reference(item):
+            block, (ya_position, yb_position) = item
+            margins = sparse_factorized_margins(
+                block.problem, block.intersection_plan,
+                snapshot_parameters[:first],
+                snapshot_parameters[first:second],
+                snapshot_parameters[second:],
+            )
+            return SparseReferenceMargins(
+                margins.target_y,
+                ya_position,
+                margins.active_ya[ya_position],
+                yb_position,
+                margins.active_yb[yb_position],
+            )
+
+        started = perf_counter()
+        evaluations = (
+            map(evaluate_reference, zip(prepared_blocks, reference_positions))
+            if replica_executor is None
+            else replica_executor.map(
+                evaluate_reference, zip(prepared_blocks, reference_positions)
+            )
+        )
+        reference_block_margins = list(evaluations)
+        reference_cache_seconds += perf_counter() - started
+
+    refresh_reference_blocks()
+
+    def sampled_gradient(replica: int) -> tuple[np.ndarray, int]:
+        if sampling == "blocks":
+            chosen = int(np.searchsorted(
+                block_cdf, rngs[replica].random(), side="right"
+            ))
+            block = prepared_blocks[chosen]
+            margins = sparse_factorized_margins(
+                block.problem, block.intersection_plan,
+                parameters[:first], parameters[first:second],
+                parameters[second:],
+            )
+            if variance_reduction:
+                reference = reference_block_margins[chosen]
+                # Targets cancel in the SVRG difference.  Forming full dual
+                # evaluations here used to perform two unnecessary target
+                # subtractions, objectives, and gradient concatenations per
+                # replica.  Keep only the changing model margins.
+                gradient = snapshot_gradient.copy()
+                gradient[:first] += margins.target_y - reference.target_y
+                margins.active_ya[reference.ya_position] -= (
+                    reference.active_ya
+                )
+                margins.active_yb[reference.yb_position] -= (
+                    reference.active_yb
+                )
+                gradient[first:second] += margins.active_ya
+                gradient[second:] += margins.active_yb
+            else:
+                gradient = np.concatenate([
+                    margins.target_y - block.problem.target_y,
+                    margins.active_ya - block.problem.target_ya,
+                    margins.active_yb - block.problem.target_yb,
+                ])
+            edges_used = len(block.problem.edge_probability)
+            return gradient, edges_used * (2 if variance_reduction else 1)
+        if sampling == "stratified":
+            allocation = np.full(
+                len(ranked_groups), batch_size // len(ranked_groups),
+                dtype=np.int64,
+            )
+            allocation[:batch_size % len(ranked_groups)] += 1
+            all_edges = []
+            all_weights = []
+            for group, cdf, mass, count in zip(
+                ranked_groups, group_cdfs, group_masses, allocation
+            ):
+                draws = group[np.searchsorted(
+                    cdf, rngs[replica].random(int(count)), side="right"
+                )]
+                edges, multiplicity = np.unique(draws, return_counts=True)
+                all_edges.append(edges)
+                all_weights.append(multiplicity * (mass / float(count)))
+            edges = np.concatenate(all_edges)
+            weights = np.concatenate(all_weights)
+        else:
+            draws = np.searchsorted(
+                edge_cdf, rngs[replica].random(batch_size), side="right"
+            )
+            edges, counts = np.unique(draws, return_counts=True)
+            weights = counts.astype(np.float64)
+        sampled, sampled_plan = sparse_edge_distribution_with_plan(
+            problem, full_plan, edges, weights
+        )
+        gradient = sparse_factorized_dual_evaluation(
+            sampled, parameters[:first], parameters[first:second],
+            parameters[second:], intersection_plan=sampled_plan,
+        ).gradient()
+        if variance_reduction:
+            reference = sparse_factorized_dual_evaluation(
+                sampled,
+                snapshot_parameters[:first],
+                snapshot_parameters[first:second],
+                snapshot_parameters[second:],
+                intersection_plan=sampled_plan,
+            ).gradient()
+            gradient += snapshot_gradient - reference
+        return gradient, batch_size * (2 if variance_reduction else 1)
+
+    sampled_edge_evaluations = 0
+    completed_steps = 0
+    for step in (range(1, steps + 1) if not reached_certificate else ()):
+        completed_steps = step
+        if optimizer == "adam_cosine":
+            progress = (step - 1) / max(1, steps - 1)
+            current_step_size = minimum_learning_rate + 0.5 * (
+                learning_rate - minimum_learning_rate
+            ) * (1.0 + np.cos(np.pi * progress))
+        sampled_started = perf_counter()
+        gradients = (
+            map(sampled_gradient, range(replicas))
+            if replica_executor is None
+            else replica_executor.map(sampled_gradient, range(replicas))
+        )
+        gradient = np.zeros_like(parameters)
+        for contribution, edges_used in gradients:
+            gradient += contribution
+            sampled_edge_evaluations += edges_used
+        gradient /= replicas
+        sampled_gradient_seconds += perf_counter() - sampled_started
+        if not np.all(np.isfinite(gradient)):
+            rejected_nonfinite_steps += 1
+            parameters[:] = snapshot_parameters
+            moment.fill(0.0)
+            square.fill(0.0)
+            adam_step = 0
+            current_step_size = max(
+                minimum_learning_rate,
+                current_step_size * plateau_factor,
+            )
+            if current_step_size <= minimum_learning_rate:
+                break
+            continue
+        optimizer_started = perf_counter()
+        if optimizer == "svrg_bb":
+            parameters -= current_step_size * gradient
+        else:
+            adam_step += 1
+            moment *= beta1
+            moment += (1.0 - beta1) * gradient
+            square *= beta2
+            square += (1.0 - beta2) * gradient * gradient
+            corrected_moment = moment / (1.0 - beta1 ** adam_step)
+            corrected_square = square / (1.0 - beta2 ** adam_step)
+            parameters -= (
+                current_step_size * corrected_moment
+                / (np.sqrt(corrected_square) + 1e-8)
+            )
+        if not np.all(np.isfinite(parameters)):
+            rejected_nonfinite_steps += 1
+            parameters[:] = snapshot_parameters
+            moment.fill(0.0)
+            square.fill(0.0)
+            adam_step = 0
+            current_step_size = max(
+                minimum_learning_rate,
+                current_step_size * plateau_factor,
+            )
+            if current_step_size <= minimum_learning_rate:
+                break
+            continue
+        if optimizer != "adam_plateau":
+            np.clip(
+                parameters, origin - trust_radius, origin + trust_radius,
+                out=parameters,
+            )
+        # Remove the harmless global baseline gauge before the next step.
+        parameters[:first] -= logsumexp(parameters[:first])
+        optimizer_seconds += perf_counter() - optimizer_started
+        if step % exact_interval == 0 or step == steps:
+            if exact_record(step):
+                reached_certificate = True
+                break
+            refresh_reference_blocks()
+
+    if replica_executor is not None:
+        replica_executor.shutdown()
+    if exact_executor is not None:
+        exact_executor.shutdown()
+
+    intersection_plan_bytes = sum(
+        array.nbytes for array in (
+            full_plan.edge,
+            full_plan.target_y,
+            full_plan.correction_ya,
+            full_plan.correction_yb,
+        )
+    )
+    reference_cache_bytes = sum(
+        array.nbytes
+        for reference in reference_block_margins
+        for array in (
+            reference.target_y,
+            reference.ya_position,
+            reference.active_ya,
+            reference.yb_position,
+            reference.active_yb,
+        )
+    )
+
+    return SparseStochasticResult(
+        log_base_y=best[:first].copy(),
+        correction_ya=best[first:second].copy(),
+        correction_yb=best[second:].copy(),
+        steps=completed_steps,
+        sampled_edges=sampled_edge_evaluations,
+        exact_evaluations=exact_evaluations,
+        best_exact_objective=best_objective,
+        best_exact_certificate=best_certificate,
+        trace=tuple(trace),
+        exact_seconds=exact_seconds,
+        sampled_gradient_seconds=sampled_gradient_seconds,
+        optimizer_seconds=optimizer_seconds,
+        reference_cache_seconds=reference_cache_seconds,
+        intersection_plan_bytes=intersection_plan_bytes,
+        reference_cache_bytes=reference_cache_bytes,
+    )
+
+
+def check_grouped_feasibility_lp(
+    problem: SparseGroupedProblem,
+    *,
+    max_variables: int = 2_000_000,
+) -> GroupedFeasibilityResult:
+    """Check grouped-margin feasibility by a small-reference linear program.
+
+    There is one nonnegative variable for every target symbol on every
+    retained AB edge.  This is intentionally a diagnostic reference, not a
+    production large-vocabulary algorithm.
+    """
+
+    v = problem.vocabulary_size
+    edges = len(problem.edge_probability)
+    variables = v * edges
+    if variables > max_variables:
+        raise ValueError(
+            f"feasibility LP has {variables} variables; limit is "
+            f"{max_variables}"
+        )
+    row = []
+    column = []
+    value = []
+    rhs = []
+
+    def add_constraint(columns: np.ndarray, target: float) -> None:
+        constraint = len(rhs)
+        row.extend([constraint] * len(columns))
+        column.extend(columns.tolist())
+        value.extend([1.0] * len(columns))
+        rhs.append(float(target))
+
+    # Fixed AB edge masses.
+    for edge, target in enumerate(problem.edge_probability):
+        add_constraint(edge * v + np.arange(v), target)
+    # Global target marginal.
+    for y, target in enumerate(problem.target_y):
+        add_constraint(np.arange(edges) * v + y, target)
+    # Explicit grouped YA and YB cells.  The inactive aggregate in each
+    # context row follows from its fixed AB marginal minus its active cells.
+    for y, a, target in zip(
+        problem.active_ya_y, problem.active_ya_a, problem.target_ya
+    ):
+        selected = np.flatnonzero(problem.edge_a == a)
+        add_constraint(selected * v + y, target)
+    for y, b, target in zip(
+        problem.active_yb_y, problem.active_yb_b, problem.target_yb
+    ):
+        selected = np.flatnonzero(problem.edge_b == b)
+        add_constraint(selected * v + y, target)
+
+    matrix = coo_matrix(
+        (value, (row, column)), shape=(len(rhs), variables)
+    ).tocsr()
+    result = linprog(
+        np.zeros(variables),
+        A_eq=matrix,
+        b_eq=np.asarray(rhs),
+        bounds=(0.0, None),
+        method="highs",
+    )
+    residual = (
+        float(np.max(np.abs(matrix @ result.x - rhs)))
+        if result.success else float("inf")
+    )
+    return GroupedFeasibilityResult(
+        feasible=bool(result.success),
+        status=int(result.status),
+        message=str(result.message),
+        variables=variables,
+        equality_constraints=len(rhs),
+        max_equality_residual=residual,
+    )
 
 
 def star_log_probabilities(
@@ -640,6 +2391,7 @@ def sparse_gated_log_probabilities(
     ordered_keys = context_key[order]
     starts = np.r_[0, 1 + np.flatnonzero(np.diff(ordered_keys))]
     stops = np.r_[starts[1:], len(order)]
+    unsupported = []
     for start, stop in zip(starts, stops):
         selected = order[start:stop]
         key = ordered_keys[start]
@@ -666,13 +2418,16 @@ def sparse_gated_log_probabilities(
             answer[selected] = log_base[chosen] + extra - log_normalizer
         else:
             if sparse_fallback:
-                answer[selected] = sparse_star_log_probabilities(
-                    p_ya, p_yb, y[selected], a[selected], b[selected]
-                )
+                unsupported.append(selected)
             else:
                 answer[selected] = star_log_probabilities(
                     y[selected], a[selected], b[selected], p_ya, p_yb
                 )
+    if unsupported:
+        selected = np.concatenate(unsupported)
+        answer[selected] = sparse_star_log_probabilities(
+            p_ya, p_yb, y[selected], a[selected], b[selected]
+        )
     return answer
 
 
@@ -775,6 +2530,74 @@ def pair_midpoint_warm_start(
     return log_base, 0.5 * first, 0.5 * second
 
 
+def _projected_pair_factor(pair: SparseProjectedPair) -> np.ndarray:
+    """Return exact active log corrections relative to the pair background."""
+
+    row_background = pair.background[pair.active_context]
+    reference = np.where(row_background > 0.0, row_background, 1.0)
+    multiplier = row_background + pair.delta
+    if np.any(multiplier <= 0.0):
+        raise ValueError("projected active pair cells must be positive")
+    return np.log(multiplier) - np.log(reference)
+
+
+def projected_pair_warm_start(
+    p_ya: SparseProjectedPair,
+    p_yb: SparseProjectedPair,
+    target_y: np.ndarray,
+    initialization: str,
+    *,
+    canonicalize: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Construct exact grouped tree factors from retained sparse pair data."""
+
+    if p_ya.vocabulary_size != p_yb.vocabulary_size:
+        raise ValueError("projected initializer pairs must share a vocabulary")
+    tiny = np.finfo(np.float64).tiny
+    first = _projected_pair_factor(p_ya)
+    second = _projected_pair_factor(p_yb)
+    log_first_base = np.log(np.maximum(p_ya.right, tiny))
+    log_second_base = np.log(np.maximum(p_yb.right, tiny))
+    if initialization == "first_pair":
+        warm = (log_first_base, first, np.zeros_like(second))
+    elif initialization == "second_pair":
+        warm = (log_second_base, np.zeros_like(first), second)
+    elif initialization == "pair_midpoint":
+        warm = (
+            0.5 * (log_first_base + log_second_base),
+            0.5 * first,
+            0.5 * second,
+        )
+    elif initialization == "pair_product":
+        warm = (
+            log_first_base + log_second_base
+            - np.log(np.maximum(target_y, tiny)),
+            first,
+            second,
+        )
+    else:
+        raise ValueError("projected pair start requires a pair initialization")
+
+    log_base, correction_ya, correction_yb = (
+        np.array(component, copy=True) for component in warm
+    )
+    if canonicalize:
+        # Tree differences require one explicit gauge across checkpoints.
+        # Ordinary initialization does not: changing its coordinates can
+        # alter the finite-precision L-BFGS trajectory despite representing
+        # exactly the same conditional distribution.
+        log_base -= logsumexp(log_base)
+        for correction, states in (
+            (correction_ya, p_ya.active_context),
+            (correction_yb, p_yb.active_context),
+        ):
+            counts = np.bincount(states, minlength=p_ya.vocabulary_size)
+            for state in np.flatnonzero(counts == p_ya.vocabulary_size):
+                selected = states == state
+                correction[selected] -= np.max(correction[selected])
+    return log_base, correction_ya, correction_yb
+
+
 def fit_sparse_grouped_checkpoints(
     checkpoints: Sequence[SparseGroupedCheckpoint],
     *,
@@ -784,7 +2607,17 @@ def fit_sparse_grouped_checkpoints(
     tolerance: float = 1e-5,
     solver: str = "lbfgs",
     margin_workers: int = 1,
+    evaluator: str = "union",
+    lbfgs_trust_radius: float = 16.0,
     initialization: str = "unigram",
+    checkpoint_transfer: str = "copy",
+    stochastic_replicas: int = 12,
+    stochastic_edge_blocks: int = 128,
+    stochastic_learning_rate: float = 3e-2,
+    stochastic_minimum_learning_rate: float = 3e-3,
+    stochastic_exact_interval: int = 50,
+    stochastic_trust_radius: float = 8.0,
+    stochastic_seed: int = 71,
 ) -> list[SparseGroupedResult]:
     """Fit causal sparse checkpoints in interleaved warm-start chains.
 
@@ -802,6 +2635,8 @@ def fit_sparse_grouped_checkpoints(
         raise ValueError(
             "unknown initialization strategy"
         )
+    if checkpoint_transfer not in ("copy", "tree_delta"):
+        raise ValueError("checkpoint_transfer must be 'copy' or 'tree_delta'")
     points = list(checkpoints)
     if not points:
         return []
@@ -823,7 +2658,18 @@ def fit_sparse_grouped_checkpoints(
                     initial.correction_yb,
                 )
             elif previous_point is None:
-                if initialization == "first_pair":
+                if (
+                    initialization != "unigram"
+                    and point.projected_ya is not None
+                    and point.projected_yb is not None
+                ):
+                    warm = projected_pair_warm_start(
+                        point.projected_ya,
+                        point.projected_yb,
+                        point.problem.target_y,
+                        initialization,
+                    )
+                elif initialization == "first_pair":
                     warm = first_pair_warm_start(point.problem)
                 elif initialization == "second_pair":
                     warm = second_pair_warm_start(point.problem)
@@ -837,16 +2683,86 @@ def fit_sparse_grouped_checkpoints(
                 warm = transfer_sparse_warm_start(
                     previous_point.problem, previous_result, point.problem
                 )
-            result = sparse_grouped_ipf(
-                point.problem,
-                max_iterations=max_iterations,
-                tolerance=tolerance,
-                log_base_y=warm[0],
-                correction_ya=warm[1],
-                correction_yb=warm[2],
-                solver=solver,
-                margin_workers=margin_workers,
-            )
+                if (
+                    checkpoint_transfer == "tree_delta"
+                    and previous_point.projected_ya is not None
+                    and previous_point.projected_yb is not None
+                    and point.projected_ya is not None
+                    and point.projected_yb is not None
+                ):
+                    previous_tree = projected_pair_warm_start(
+                        previous_point.projected_ya,
+                        previous_point.projected_yb,
+                        previous_point.problem.target_y,
+                        "pair_product",
+                        canonicalize=True,
+                    )
+                    tree_result = SparseGroupedResult(
+                        previous_tree[0], previous_tree[1], previous_tree[2],
+                        0, np.nan, np.nan, np.nan, False,
+                    )
+                    transferred_tree = transfer_sparse_warm_start(
+                        previous_point.problem, tree_result, point.problem
+                    )
+                    current_tree = projected_pair_warm_start(
+                        point.projected_ya,
+                        point.projected_yb,
+                        point.problem.target_y,
+                        "pair_product",
+                        canonicalize=True,
+                    )
+                    warm = tuple(
+                        fitted + current - old
+                        for fitted, current, old in zip(
+                            warm, current_tree, transferred_tree
+                        )
+                    )
+            if solver == "stochastic":
+                stochastic = stochastic_sparse_dual_approach(
+                    point.problem, *warm,
+                    steps=max_iterations,
+                    batch_size=1,
+                    learning_rate=stochastic_learning_rate,
+                    minimum_learning_rate=stochastic_minimum_learning_rate,
+                    exact_interval=stochastic_exact_interval,
+                    seed=stochastic_seed + index,
+                    trust_radius=stochastic_trust_radius,
+                    sampling="blocks",
+                    replicas=stochastic_replicas,
+                    stochastic_workers=margin_workers,
+                    edge_blocks=stochastic_edge_blocks,
+                    variance_reduction=True,
+                    certificate_tolerance=tolerance,
+                    exact_margin_workers=margin_workers,
+                    optimizer="adam_plateau",
+                )
+                record = min(stochastic.trace, key=lambda item: float(
+                    item["exact_certificate"]
+                ))
+                result = SparseGroupedResult(
+                    stochastic.log_base_y,
+                    stochastic.correction_ya,
+                    stochastic.correction_yb,
+                    stochastic.steps,
+                    float(record["residual_ya_l1"]),
+                    float(record["residual_yb_l1"]),
+                    float(record["residual_y_l1"]),
+                    stochastic.best_exact_certificate <= tolerance,
+                    stochastic.exact_evaluations,
+                )
+            else:
+                result = sparse_grouped_ipf(
+                    point.problem,
+                    max_iterations=max_iterations,
+                    tolerance=tolerance,
+                    log_base_y=warm[0],
+                    correction_ya=warm[1],
+                    correction_yb=warm[2],
+                    solver=solver,
+                    margin_workers=margin_workers,
+                    evaluator=evaluator,
+                    lbfgs_trust_radius=lbfgs_trust_radius,
+                )
             answer.append((index, result))
             previous_point = point
             previous_result = result
@@ -1038,6 +2954,14 @@ def sparse_grouped_ipf(
     anderson_history: int = 3,
     dense_fallback_mass: float = 0.99,
     margin_workers: int = 1,
+    trace: list[dict[str, float | int | str]] | None = None,
+    trace_interval: int = 25,
+    reduce_gauge: bool = True,
+    phase_timing: dict[str, float] | None = None,
+    evaluator: str = "union",
+    lbfgs_trust_radius: float = 16.0,
+    _intersection_plan: SparseIntersectionPlan | None = None,
+    _trace_phase: str | None = None,
 ) -> SparseGroupedResult:
     """Matrix-free grouped IPF over observed context-pair edges.
 
@@ -1069,6 +2993,25 @@ def sparse_grouped_ipf(
         raise ValueError("dense_fallback_mass must lie in (0, 1]")
     if margin_workers < 1:
         raise ValueError("margin_workers must be positive")
+    if evaluator not in ("union", "factorized", "auto"):
+        raise ValueError("evaluator must be 'union', 'factorized' or 'auto'")
+    if not np.isfinite(lbfgs_trust_radius) or lbfgs_trust_radius <= 0.0:
+        raise ValueError("lbfgs_trust_radius must be finite and positive")
+    if trace_interval < 1:
+        raise ValueError("trace_interval must be positive")
+
+    if evaluator == "auto":
+        active_per_a = np.bincount(problem.active_ya_a, minlength=v)
+        active_per_b = np.bincount(problem.active_yb_b, minlength=v)
+        union_incidence_upper = int(np.sum(
+            active_per_a[problem.edge_a] + active_per_b[problem.edge_b]
+        ))
+        # For small sparse problems the positive union calculation is both
+        # cheap and immune to cancellation in the intersection identity.
+        # Larger problems use the factorized plan that makes scaling possible.
+        evaluator = (
+            "union" if union_incidence_upper <= 5_000_000 else "factorized"
+        )
 
     lb = (np.log(np.maximum(problem.target_y, np.finfo(float).tiny))
           if log_base_y is None
@@ -1081,14 +3024,19 @@ def sparse_grouped_ipf(
             or c2.shape != problem.target_yb.shape:
         raise ValueError("warm-start factor shapes do not match the problem")
 
+    intersection_plan = (
+        _intersection_plan or build_sparse_intersection_plan(problem)
+        if evaluator == "factorized" else None
+    )
     rows1: list[dict[int, int]] = [{} for _ in range(v)]
     rows2: list[dict[int, int]] = [{} for _ in range(v)]
-    for i, (y, a) in enumerate(zip(problem.active_ya_y,
-                                    problem.active_ya_a)):
-        rows1[int(a)][int(y)] = i
-    for i, (y, b) in enumerate(zip(problem.active_yb_y,
-                                    problem.active_yb_b)):
-        rows2[int(b)][int(y)] = i
+    if evaluator == "union":
+        for i, (y, a) in enumerate(zip(problem.active_ya_y,
+                                        problem.active_ya_a)):
+            rows1[int(a)][int(y)] = i
+        for i, (y, b) in enumerate(zip(problem.active_yb_y,
+                                        problem.active_yb_b)):
+            rows2[int(b)][int(y)] = i
     pa = np.bincount(problem.edge_a, weights=problem.edge_probability,
                      minlength=v)
     pb = np.bincount(problem.edge_b, weights=problem.edge_probability,
@@ -1107,22 +3055,124 @@ def sparse_grouped_ipf(
     union_y = []
     union_i1 = []
     union_i2 = []
-    for edge, (a_, b_) in enumerate(zip(problem.edge_a, problem.edge_b)):
-        r1 = rows1[int(a_)]
-        r2 = rows2[int(b_)]
-        for y in sorted(set(r1) | set(r2)):
-            union_edge.append(edge)
-            union_y.append(y)
-            union_i1.append(r1.get(y, -1))
-            union_i2.append(r2.get(y, -1))
+    if evaluator == "union":
+        for edge, (a_, b_) in enumerate(zip(
+            problem.edge_a, problem.edge_b
+        )):
+            r1 = rows1[int(a_)]
+            r2 = rows2[int(b_)]
+            for y in sorted(set(r1) | set(r2)):
+                union_edge.append(edge)
+                union_y.append(y)
+                union_i1.append(r1.get(y, -1))
+                union_i2.append(r2.get(y, -1))
     ue = np.asarray(union_edge, dtype=np.int64)
     uy = np.asarray(union_y, dtype=np.int64)
     ui1 = np.asarray(union_i1, dtype=np.int64)
     ui2 = np.asarray(union_i2, dtype=np.int64)
     edge_count = len(problem.edge_probability)
     edge_weight = np.asarray(problem.edge_probability)
+    margin_evaluations = 0
+    edge_ptr = np.r_[
+        0, np.cumsum(np.bincount(ue, minlength=edge_count), dtype=np.int64)
+    ]
+    edge_executor = (
+        ThreadPoolExecutor(max_workers=margin_workers)
+        if margin_workers > 1 else None
+    )
+    if edge_executor is None or evaluator != "union":
+        edge_shards = [(0, edge_count)]
+    else:
+        desired = np.linspace(0, len(ue), margin_workers + 1)
+        boundaries = np.searchsorted(edge_ptr, desired, side="left")
+        boundaries[0] = 0
+        boundaries[-1] = edge_count
+        boundaries = np.unique(boundaries)
+        edge_shards = [
+            (int(lo), int(hi))
+            for lo, hi in pairwise(boundaries)
+            if hi > lo
+        ]
+    if intersection_plan is None or edge_executor is None:
+        intersection_shards = None
+    else:
+        boundaries = np.linspace(
+            0, len(intersection_plan.edge), margin_workers + 1,
+            dtype=np.int64,
+        )
+        intersection_shards = [
+            (int(lo), int(hi))
+            for lo, hi in pairwise(np.unique(boundaries))
+            if hi > lo
+        ]
+
+    def reduction_shards(ids, valid, output_size):
+        positions = np.flatnonzero(valid)
+        if edge_executor is None or not len(positions):
+            return []
+        order = positions[np.argsort(ids[positions], kind="stable")]
+        ordered_ids = ids[order]
+        desired = np.linspace(0, len(order), margin_workers + 1)
+        boundaries = np.searchsorted(
+            np.bincount(ordered_ids, minlength=output_size).cumsum(),
+            desired,
+            side="left",
+        )
+        boundaries[0] = 0
+        boundaries[-1] = output_size
+        boundaries = np.unique(boundaries)
+        answer = []
+        for lo, hi in pairwise(boundaries):
+            start = np.searchsorted(ordered_ids, lo, side="left")
+            stop = np.searchsorted(ordered_ids, hi, side="left")
+            if hi > lo:
+                answer.append((int(lo), int(hi), order[start:stop]))
+        return answer
+
+    has1_plan = ui1 >= 0
+    has2_plan = ui2 >= 0
+    reduction_shards_1 = reduction_shards(ui1, has1_plan, len(c1))
+    reduction_shards_2 = reduction_shards(ui2, has2_plan, len(c2))
+    reduction_shards_y = reduction_shards(
+        uy, np.ones(len(uy), dtype=bool), v
+    )
+
+    def shutdown_executor() -> None:
+        nonlocal edge_executor
+        if edge_executor is not None:
+            edge_executor.shutdown()
+            edge_executor = None
+
+    def finish(result: SparseGroupedResult) -> SparseGroupedResult:
+        shutdown_executor()
+        return result
 
     def margins():
+        nonlocal margin_evaluations
+        margin_evaluations += 1
+        margin_started = perf_counter() if phase_timing is not None else 0.0
+
+        def mark(name, started):
+            if phase_timing is not None:
+                phase_timing[name] = (
+                    phase_timing.get(name, 0.0) + perf_counter() - started
+                )
+
+        if intersection_plan is not None:
+            factorized = sparse_factorized_margins(
+                problem, intersection_plan, lb, c1, c2,
+                executor=edge_executor,
+                intersection_shards=intersection_shards,
+            )
+            mark("factorized_seconds", margin_started)
+            mark("margin_total_seconds", margin_started)
+            return (
+                factorized.target_y,
+                factorized.active_ya,
+                factorized.active_yb,
+                factorized.log_normalizer,
+            )
+
         log_base = lb - logsumexp(lb)
         base = np.exp(log_base)
         if not len(ue):
@@ -1136,30 +3186,94 @@ def sparse_grouped_ipf(
         correction[has2] += c2[ui2[has2]]
         term = log_base[uy] + correction
 
-        union_mass = np.bincount(
-            ue, weights=base[uy], minlength=edge_count
-        )
-        edge_max = np.full(edge_count, -np.inf)
-        np.maximum.at(edge_max, ue, term)
-        scaled_sum = np.bincount(
-            ue, weights=np.exp(term - edge_max[ue]), minlength=edge_count
-        )
-        log_corrected = edge_max + np.log(np.maximum(scaled_sum, tiny))
-        with np.errstate(divide="ignore", invalid="ignore"):
-            log_background = np.log1p(-np.minimum(union_mass, 1.0))
-        log_z = np.logaddexp(log_background, log_corrected)
+        def normalize_shard(bounds):
+            lo, hi = bounds
+            start = edge_ptr[lo]
+            stop = edge_ptr[hi]
+            local_edge = ue[start:stop] - lo
+            local_count = hi - lo
+            local_union_mass = np.bincount(
+                local_edge, weights=base[uy[start:stop]],
+                minlength=local_count,
+            )
+            local_max = np.full(local_count, -np.inf)
+            np.maximum.at(local_max, local_edge, term[start:stop])
+            local_scaled = np.bincount(
+                local_edge,
+                weights=np.exp(term[start:stop] - local_max[local_edge]),
+                minlength=local_count,
+            )
+            local_corrected = local_max + np.log(
+                np.maximum(local_scaled, tiny)
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                local_background = np.log1p(
+                    -np.minimum(local_union_mass, 1.0)
+                )
+            local_log_z = np.logaddexp(
+                local_background, local_corrected
+            )
+            probability = np.exp(
+                term[start:stop] - local_log_z[local_edge]
+            )
+            return lo, hi, start, stop, local_union_mass, local_log_z, probability
 
-        corrected_probability = np.exp(term - log_z[ue])
-        m1 = np.bincount(
-            ui1[has1],
-            weights=edge_weight[ue[has1]] * corrected_probability[has1],
-            minlength=len(c1),
+        union_mass = np.empty(edge_count)
+        log_z = np.empty(edge_count)
+        corrected_probability = np.empty(len(ue))
+        phase_started = perf_counter() if phase_timing is not None else 0.0
+        normalized = (
+            map(normalize_shard, edge_shards)
+            if edge_executor is None
+            else edge_executor.map(normalize_shard, edge_shards)
         )
-        m2 = np.bincount(
-            ui2[has2],
-            weights=edge_weight[ue[has2]] * corrected_probability[has2],
-            minlength=len(c2),
-        )
+        for lo, hi, start, stop, local_mass, local_z, probability in normalized:
+            union_mass[lo:hi] = local_mass
+            log_z[lo:hi] = local_z
+            corrected_probability[start:stop] = probability
+        mark("normalization_seconds", phase_started)
+        phase_started = perf_counter() if phase_timing is not None else 0.0
+        if edge_executor is None:
+            m1 = np.bincount(
+                ui1[has1],
+                weights=edge_weight[ue[has1]]
+                * corrected_probability[has1],
+                minlength=len(c1),
+            )
+            m2 = np.bincount(
+                ui2[has2],
+                weights=edge_weight[ue[has2]]
+                * corrected_probability[has2],
+                minlength=len(c2),
+            )
+        else:
+            def reduce_features(task):
+                ids, lo, hi, positions = task
+                return lo, hi, np.bincount(
+                    ids[positions] - lo,
+                    weights=(
+                        edge_weight[ue[positions]]
+                        * corrected_probability[positions]
+                    ),
+                    minlength=hi - lo,
+                )
+
+            tasks = [
+                (ui1, lo, hi, positions)
+                for lo, hi, positions in reduction_shards_1
+            ] + [
+                (ui2, lo, hi, positions)
+                for lo, hi, positions in reduction_shards_2
+            ]
+            reduced = list(edge_executor.map(reduce_features, tasks))
+            m1 = np.zeros(len(c1))
+            m2 = np.zeros(len(c2))
+            split = len(reduction_shards_1)
+            for lo, hi, contribution in reduced[:split]:
+                m1[lo:hi] = contribution
+            for lo, hi, contribution in reduced[split:]:
+                m2[lo:hi] = contribution
+        mark("feature_reduction_seconds", phase_started)
 
         # Stable dense fallback only where the active union contains almost
         # all baseline mass.  Such edges are common only in tiny diagnostics.
@@ -1171,14 +3285,37 @@ def sparse_grouped_ipf(
             edge_weight[analytic] * np.exp(-log_z[analytic])
         ))
         pos_analytic = analytic[ue]
-        uncorrected = np.exp(log_base[uy[pos_analytic]]
-                             - log_z[ue[pos_analytic]])
-        delta = edge_weight[ue[pos_analytic]] * (
-            corrected_probability[pos_analytic] - uncorrected
-        )
-        my = base * background_scale + np.bincount(
-            uy[pos_analytic], weights=delta, minlength=v
-        )
+        phase_started = perf_counter() if phase_timing is not None else 0.0
+        if edge_executor is None:
+            uncorrected = np.exp(
+                log_base[uy[pos_analytic]] - log_z[ue[pos_analytic]]
+            )
+            delta = edge_weight[ue[pos_analytic]] * (
+                corrected_probability[pos_analytic] - uncorrected
+            )
+            my = base * background_scale + np.bincount(
+                uy[pos_analytic], weights=delta, minlength=v
+            )
+        else:
+            def reduce_target(task):
+                lo, hi, positions = task
+                selected = positions[pos_analytic[positions]]
+                uncorrected = np.exp(
+                    log_base[uy[selected]] - log_z[ue[selected]]
+                )
+                delta = edge_weight[ue[selected]] * (
+                    corrected_probability[selected] - uncorrected
+                )
+                return lo, hi, np.bincount(
+                    uy[selected] - lo, weights=delta, minlength=hi - lo
+                )
+
+            my = base * background_scale
+            for lo, hi, contribution in edge_executor.map(
+                reduce_target, reduction_shards_y
+            ):
+                my[lo:hi] += contribution
+        mark("target_reduction_seconds", phase_started)
         fallback_edges = np.flatnonzero(fallback)
         # Bound the temporary dense block.  This path is for edges whose
         # sparse union is already essentially the whole alphabet.
@@ -1206,16 +3343,16 @@ def sparse_grouped_ipf(
             )
             return edge_weight[selected] @ probability
 
+        phase_started = perf_counter() if phase_timing is not None else 0.0
         if margin_workers == 1 or len(blocks) < 2:
             contributions = map(dense_contribution, blocks)
             for contribution in contributions:
                 my += contribution
         else:
-            with ThreadPoolExecutor(
-                max_workers=min(margin_workers, len(blocks))
-            ) as executor:
-                for contribution in executor.map(dense_contribution, blocks):
+            for contribution in edge_executor.map(dense_contribution, blocks):
                     my += contribution
+        mark("dense_fallback_seconds", phase_started)
+        mark("margin_total_seconds", margin_started)
         return my, m1, m2, log_z
 
     def update(correction, target, current, state_ids, state_mass,
@@ -1229,7 +3366,14 @@ def sparse_grouped_ipf(
         wanted_inactive = state_mass - target_active
         current_inactive = state_mass - current_active
         shift = np.zeros(v)
-        has_inactive = wanted_inactive > tiny
+        # Whether an inactive class exists is a structural fact.  Inferring
+        # it from ``state_mass - target_active`` is unstable for saturated
+        # rows: cancellation can leave a fictitious mass around 1e-13 and
+        # produce corrections of hundreds when the current difference
+        # rounds to zero.
+        active_count = np.bincount(state_ids, minlength=v)
+        saturated = active_count == v
+        has_inactive = (~saturated) & (wanted_inactive > tiny)
         shift[has_inactive] = (
             np.log(wanted_inactive[has_inactive])
             - np.log(np.maximum(current_inactive[has_inactive], tiny))
@@ -1237,11 +3381,10 @@ def sparse_grouped_ipf(
         correction -= shift[state_ids]
         # With no inactive class the whole row is explicit.  Fix its harmless
         # row-constant gauge in one segmented maximum.
-        full_states = ~has_inactive
-        if np.any(full_states[state_ids]):
+        if np.any(saturated[state_ids]):
             row_max = np.full(v, -np.inf)
             np.maximum.at(row_max, state_ids, correction)
-            select = full_states[state_ids]
+            select = saturated[state_ids]
             correction[select] -= row_max[state_ids[select]]
 
     grouped_ya = grouped_yb = residual_y = float("inf")
@@ -1270,13 +3413,74 @@ def sparse_grouped_ipf(
         ).sum())
         return residual_y_, grouped_ya_, grouped_yb_
 
-    if solver == "lbfgs":
-        initial = np.concatenate([lb, c1, c2])
-        best_parameters = initial.copy()
-        best_certificate = float("inf")
+    def record_trace(phase, iteration, my, m1, m2, log_z):
+        if trace is None:
+            return
+        residuals = diagnostics(my, m1, m2)
+        log_base = lb - logsumexp(lb)
+        objective = (
+            float(edge_weight @ log_z)
+            - float(problem.target_y @ log_base)
+            - float(problem.target_ya @ c1)
+            - float(problem.target_yb @ c2)
+        )
+        gradient = np.concatenate([
+            my - problem.target_y,
+            m1 - problem.target_ya,
+            m2 - problem.target_yb,
+        ])
+        names = ("y", "ya", "yb")
+        all_factors = np.concatenate([log_base, c1, c2])
+        absolute = np.abs(all_factors)
+        trace.append({
+            "phase": phase,
+            "iteration": int(iteration),
+            "objective": objective,
+            "gradient_l2": float(np.linalg.norm(gradient)),
+            "gradient_linf": float(np.max(np.abs(gradient))),
+            "residual_y_l1": residuals[0],
+            "residual_ya_l1": residuals[1],
+            "residual_yb_l1": residuals[2],
+            "certificate": max(residuals),
+            "limiting_margin": names[int(np.argmax(residuals))],
+            "factor_abs_p50": float(np.quantile(absolute, 0.5)),
+            "factor_abs_p90": float(np.quantile(absolute, 0.9)),
+            "factor_abs_p99": float(np.quantile(absolute, 0.99)),
+            "factor_abs_max": float(np.max(absolute)),
+        })
 
-        def objective_gradient(parameters):
-            nonlocal best_parameters, best_certificate
+    if solver == "lbfgs":
+        full_initial = np.concatenate([lb, c1, c2])
+        free = np.ones(len(full_initial), dtype=bool)
+        if reduce_gauge:
+            # Global baseline constants cancel from every conditional.
+            free[0] = False
+            # A constant added to a structurally saturated correction row
+            # also cancels.  Anchor one explicitly present target per row.
+            for states, offset in (
+                (problem.active_ya_a, n_base),
+                (problem.active_yb_b, n_first),
+            ):
+                counts = np.bincount(states, minlength=v)
+                for state in np.flatnonzero(counts == v):
+                    free[offset + np.flatnonzero(states == state)[0]] = False
+        fixed_parameters = full_initial.copy()
+        initial = full_initial[free]
+        best_parameters = full_initial.copy()
+        best_certificate = float("inf")
+        function_evaluations = 0
+        accepted_iterations = 0
+        last_reduced: np.ndarray | None = None
+        last_certificate = float("inf")
+
+        class _CertificateReached(Exception):
+            pass
+
+        def objective_gradient(reduced_parameters):
+            nonlocal best_parameters, best_certificate, function_evaluations
+            nonlocal last_reduced, last_certificate
+            parameters = fixed_parameters.copy()
+            parameters[free] = reduced_parameters
             lb[:] = parameters[:n_base]
             c1[:] = parameters[n_base:n_first]
             c2[:] = parameters[n_first:]
@@ -1294,27 +3498,61 @@ def sparse_grouped_ipf(
                 m2 - problem.target_yb,
             ])
             certificate = max(diagnostics(my, m1, m2))
+            last_reduced = np.array(reduced_parameters, copy=True)
+            last_certificate = certificate
+            if trace is not None and function_evaluations % trace_interval == 0:
+                record_trace(
+                    _trace_phase or "lbfgs", function_evaluations,
+                    my, m1, m2, log_z,
+                )
+            function_evaluations += 1
             if certificate < best_certificate:
                 best_certificate = certificate
                 best_parameters = parameters.copy()
-            return objective, gradient
+            return objective, gradient[free]
+
+        def stop_at_certificate(accepted_parameters):
+            nonlocal accepted_iterations
+            accepted_iterations += 1
+            if (
+                last_reduced is None
+                or not np.array_equal(accepted_parameters, last_reduced)
+            ):
+                objective_gradient(accepted_parameters)
+            if last_certificate < tolerance:
+                raise _CertificateReached
 
         lbfgs_iterations = min(max_iterations, 1_000)
-        optimized = minimize(
-            objective_gradient,
-            initial,
-            method="L-BFGS-B",
-            jac=True,
-            options={
-                "maxiter": lbfgs_iterations,
-                # scipy stops on the largest gradient component whereas our
-                # certificate is an L1 margin residual over all components.
-                "gtol": tolerance / max(10, len(initial)),
-                "ftol": 0.0,
-                "maxls": 40,
-                "maxfun": lbfgs_iterations * 20,
-            },
-        )
+        try:
+            optimized = minimize(
+                objective_gradient,
+                initial,
+                method="L-BFGS-B",
+                jac=True,
+                callback=stop_at_certificate,
+                # L-BFGS is an approach phase followed, when necessary, by
+                # unrestricted IPF.  A finite displacement region prevents a
+                # line-search trial from changing log factors by hundreds and
+                # overflowing the intersection expansion.  It does not bound
+                # the final estimator: IPF polishing remains unconstrained.
+                bounds=[
+                    (value - lbfgs_trust_radius,
+                     value + lbfgs_trust_radius)
+                    for value in initial
+                ],
+                options={
+                    "maxiter": lbfgs_iterations,
+                    # scipy stops on the largest gradient component whereas
+                    # our certificate is an L1 residual over all components.
+                    "gtol": tolerance / max(10, len(initial)),
+                    "ftol": 0.0,
+                    "maxls": 40,
+                    "maxfun": lbfgs_iterations * 20,
+                },
+            )
+            optimized_iterations = int(optimized.nit)
+        except _CertificateReached:
+            optimized_iterations = accepted_iterations
         # The dual objective may still decrease along nearly flat gauge
         # directions after the actual margin certificate has worsened.  The
         # certificate, not scipy's final iterate, chooses the handoff to IPF.
@@ -1322,10 +3560,17 @@ def sparse_grouped_ipf(
         lb[:] = parameters[:n_base]
         c1[:] = parameters[n_base:n_first]
         c2[:] = parameters[n_first:]
-        my, m1, m2, _ = margins()
+        my, m1, m2, log_z = margins()
         residual_y, grouped_ya, grouped_yb = diagnostics(my, m1, m2)
+        record_trace(
+            "lbfgs_best", optimized_iterations, my, m1, m2, log_z
+        )
         converged = max(residual_y, grouped_ya, grouped_yb) < tolerance
         if not converged:
+            # The polishing solver creates its own persistent pool.  Release
+            # the now-idle L-BFGS pool first rather than retaining two worker
+            # teams per warm chain.
+            shutdown_executor()
             polished = sparse_grouped_ipf(
                 problem,
                 max_iterations=max_iterations,
@@ -1336,28 +3581,39 @@ def sparse_grouped_ipf(
                 solver="ipf",
                 dense_fallback_mass=dense_fallback_mass,
                 margin_workers=margin_workers,
+                trace=trace,
+                trace_interval=trace_interval,
+                reduce_gauge=reduce_gauge,
+                phase_timing=phase_timing,
+                evaluator=evaluator,
+                lbfgs_trust_radius=lbfgs_trust_radius,
+                _intersection_plan=intersection_plan,
+                _trace_phase="ipf_polish",
             )
-            return SparseGroupedResult(
+            return finish(SparseGroupedResult(
                 polished.log_base_y,
                 polished.correction_ya,
                 polished.correction_yb,
-                int(optimized.nit) + polished.iterations,
+                optimized_iterations + polished.iterations,
                 polished.grouped_residual_ya_l1,
                 polished.grouped_residual_yb_l1,
                 polished.residual_y_l1,
                 polished.converged,
-            )
-        return SparseGroupedResult(
-            lb.copy(), c1.copy(), c2.copy(), int(optimized.nit),
-            grouped_ya, grouped_yb, residual_y, converged
-        )
+                margin_evaluations + polished.margin_evaluations,
+            ))
+        return finish(SparseGroupedResult(
+            lb.copy(), c1.copy(), c2.copy(), optimized_iterations,
+            grouped_ya, grouped_yb, residual_y, converged,
+            margin_evaluations,
+        ))
 
     # Alternating projections decrease their own divergence objective, but the
     # user-facing certificate (the largest of three L1 margin errors) need not
     # be monotone.  Preserve the best certified iterate, including the warm
     # start supplied by a preceding L-BFGS phase.
-    my, m1, m2, _ = margins()
+    my, m1, m2, log_z = margins()
     residual_y, grouped_ya, grouped_yb = diagnostics(my, m1, m2)
+    record_trace(_trace_phase or solver, 0, my, m1, m2, log_z)
     iteration_best_certificate = max(residual_y, grouped_ya, grouped_yb)
     iteration_best_state = (lb.copy(), c1.copy(), c2.copy())
     iteration_best_residuals = (residual_y, grouped_ya, grouped_yb)
@@ -1375,18 +3631,26 @@ def sparse_grouped_ipf(
         _, _, m2, _ = margins()
         update(c2, problem.target_yb, m2, problem.active_yb_b,
                pb, target_active_b)
-        my, m1, m2, _ = margins()
+        my, m1, m2, log_z = margins()
         residual_y, grouped_ya, grouped_yb = diagnostics(my, m1, m2)
+        if iteration % trace_interval == 0 or iteration == max_iterations:
+            record_trace(
+                _trace_phase or solver, iteration, my, m1, m2, log_z
+            )
         certificate = max(residual_y, grouped_ya, grouped_yb)
         if certificate < iteration_best_certificate:
             iteration_best_certificate = certificate
             iteration_best_state = (lb.copy(), c1.copy(), c2.copy())
             iteration_best_residuals = (residual_y, grouped_ya, grouped_yb)
         if certificate < tolerance:
-            return SparseGroupedResult(
+            if trace is not None and iteration % trace_interval:
+                record_trace(
+                    _trace_phase or solver, iteration, my, m1, m2, log_z
+                )
+            return finish(SparseGroupedResult(
                 lb, c1, c2, iteration, grouped_ya, grouped_yb,
-                residual_y, True
-            )
+                residual_y, True, margin_evaluations
+            ))
         if solver == "anderson":
             x_mapped = np.concatenate([lb, c1, c2])
             fixed_point_residual = x_mapped - x_before
@@ -1420,10 +3684,10 @@ def sparse_grouped_ipf(
                     previous_x = previous_f = None
     best_lb, best_c1, best_c2 = iteration_best_state
     best_y, best_ya, best_yb = iteration_best_residuals
-    return SparseGroupedResult(
+    return finish(SparseGroupedResult(
         best_lb, best_c1, best_c2, max_iterations, best_ya, best_yb,
-        best_y, False
-    )
+        best_y, False, margin_evaluations
+    ))
 
 
 def conditional_ipf(

@@ -3953,3 +3953,421 @@ averages in natural-parameter space; retain an average only if its
 measured objective/certificate improves. Then continue only the selected
 state serially along that warm checkpoint chain. This can use the
 64-core server without reverting to cold independent checkpoint fits.
+
+SOLVER DIAGNOSTICS / EXACT GROUPED STARTS (later 5 Aug): added optional
+dual/certificate traces with gradient norms, limiting margin and factor
+quantiles, plus exact margin-evaluation counts. A 20-sweep audit exposed
+a real saturated-row bug at V256 checkpoint 6: a structurally full YA
+row had a fictitious 2.0e-13 inactive mass from floating-point
+cancellation, producing factors of 700--1300 and certificate explosions.
+Saturation is now detected exactly from active support count. On the same
+persisted unigram/midpoint states, 20 sweeps now reduce certificates from
+.00461/.00424 to .000952/.000913 while maximum factors remain near 11.
+
+Added a small-reference grouped feasibility LP over retained AB edges.
+It accepts a compatible binary example and rejects the pairwise-consistent
+but jointly impossible requirements Y=A, Y=B, A!=B. All three checkpoints
+of the actual V16 sparse pipeline are feasible, with LP equality residuals
+around 2.5e-13. This is diagnostic only and must not be used at full V.
+
+The earlier first/second/product/midpoint starts were exact only with all
+cells active. SparseGroupedCheckpoint now retains the O(V+active) projected
+pair decompositions, and exact grouped tree factors are constructed from
+their right/background/delta components. A partial-active unit test gives
+YA and Y residuals below 2e-14 before optimization. Tree parameters are
+put in a canonical global and saturated-row gauge.
+
+L-BFGS now removes the obvious exact gauges (one global baseline constant
+and one correction per structurally saturated A/B row). Sparse results
+report margin_evaluations, the comparable work unit across L-BFGS and IPF.
+The focused suite currently passes 26 tests.
+
+EXACT-START BENCHMARKS: on a five-way concurrent V64/n100k screen, total
+margin evaluations were unigram 8,821; first 8,818; second 8,411;
+midpoint 8,506; exact product 8,000. Exact product therefore saved 9.3%
+versus unigram and cut first-checkpoint evaluations from 1,144 to 623.
+On a matched concurrent V256/n1m comparison, gauge-reduced unigram used
+8,886 evaluations/283.25 s/worst certificate .00940; exact product used
+8,017/278.40 s/.00651. Product improves work by 9.8%, although large later
+checkpoints erase most wall-time savings.
+
+Added optional tree_delta checkpoint transfer:
+transfer(fitted previous)+current exact product tree-transfer(previous
+tree). It gives newly active cells data-based factors in a consistent
+gauge. At V64 it used 7,839 evaluations versus 8,000 for copy transfer and
+improved the worst certificate (.000768 versus .000844). A standalone
+V256 tree_delta test was launched next; do not infer its result until its
+results.json exists.
+
+TREE-DELTA FOLLOW-UP: the first V256 delta run canonicalized the initial
+tree as well as the tree difference, confounding the first-checkpoint
+L-BFGS trajectory. Canonicalization is now restricted to difference terms;
+ordinary exact initialization keeps its original coordinates. A corrected
+V64 comparison has identical first-chain starts and worst certificate:
+copy uses 8,000 margin evaluations, tree_delta 7,833 (2.1% saving), mainly
+at intermediate checkpoints. Accepted bpc differs by .00114 at the loose
+1e-3 tolerance, so do not interpret prediction ordering. The confounded
+V256 delta run used 8,409 evaluations/278.99 s/worst .00432; based on its
+extra 536 first-checkpoint evaluations the corrected form may be near
+7,873, but this is an inference and must not be reported as a measured
+V256 result. Tree delta remains optional pending a controlled V256 run or
+a tighter-tolerance comparison.
+
+MAIN SPARSE-MARGIN SHARDING (later 5 Aug): Activity Monitor confirmed the
+calibration phase was essentially one core (one Python process around
+100%, 86% machine idle). The old margin_workers only covered rare dense
+fallbacks. It now creates a persistent pool for each fit, partitions AB
+edges by sparse-union workload, parallelizes conditional normalization,
+and shards YA/YB/Y reductions into disjoint output ranges. Workers return
+only their slices, not full margin vectors, so memory does not multiply by
+the complete active-feature count. Serial versus 3-worker regression
+agrees in factors/residuals to 1e-12.
+
+On the largest persisted V256/n1m checkpoint, fixed 20-sweep timings were:
+1 worker 13.91 s, 2 workers 11.69 s, 4 workers 9.52 s, 6 workers 9.09 s;
+all used 81 margin evaluations and produced the identical .000835443
+certificate. Scaling flattens after four workers, likely from memory
+bandwidth plus remaining serial assembly.
+
+End-to-end V256/n1m exact-product with two warm chains and five persistent
+margin workers per chain: construction 57.08 s, fit 178.70 s, peak RSS
+1.602 GB. The matched serial exact-product fit was 278.40 s, so calibration
+falls 35.8% while predictions/certificates are identical. Total runtime
+falls from about 333 to 236 seconds. This is the first useful inner-fit
+parallelization. Next remove nested idle pools at L-BFGS/IPF handoff,
+profile remaining serial assembly, and benchmark 3--5 workers per chain;
+do not simply raise worker count.
+
+V512/N4M SCALING + SCORING BUG (later 5 Aug): launched exact-product,
+two warm chains, four margin workers at V512/n4m. The eight fitted states
+completed and were persisted, but final scoring spent tens of minutes at
+one core. Stack sampling showed sparse_gated_log_probabilities repeatedly
+called sparse_star_log_probabilities once per unsupported context, and
+the latter rebuilt complete Python pair-row dictionaries every time.
+Stopped the parent after about 40 minutes; calibration states survived.
+Scoring now collects all unsupported records in a block and constructs
+the fallback maps once. A recovery scorer loaded the states and finished
+all 3,997,950 records in 12.58 s:
+- calibrated 4.44282442 bpc
+- star 4.54717605 bpc
+- pure three-pair gain .10435163 bpc
+All seven blocks improve (.01323--.11496); coverage rises 72.09--98.09%.
+The interrupted process's exact construction/fit timing was not persisted
+and cannot be reported. Add checkpoint progress/intermediate results
+before future long server runs.
+
+FULL-TOKEN INCIDENCE AUDIT: bpe_text8 has 19,429,294 tokens, cl100k_base
+alphabet 100,277, 35,767 distinct observed symbols. The definitive run
+uses top_k=100276 so V=100277 while preserving unused vocabulary entries.
+On the full uncollapsed sequence there are 3,663,366 YA cells, 5,732,416
+YB cells and 3,663,366 AB edges. The present per-edge union expansion has
+an upper bound 12,785,967,483 incidences (3,490 per AB edge), impossible
+even on the 240 GB server. A 100k-edge sample estimates actual YA/YB
+correction intersections at mean 116, median 59, p99 879, total about
+426 million. Intersection-only algebra is roughly 30x smaller but still
+too costly for thousands of complete evaluations.
+
+Added and dense-validated an independent intersection-factorized margin
+reference. With exp(c1)=1+r1 and exp(c2)=1+r2,
+Z_ab=1+S1_a+S2_b+sum_y p_y r1_ya r2_yb; margins follow from AB-weighted
+row/column sums plus correction intersections. Random dense tests match Y,
+active YA/YB and every log normalizer below 2e-14 without materializing
+per-edge active unions. Next production architecture must stream or use a
+heavy/light scheme for intersections and drastically reduce full passes
+via continuation, block/incremental updates, or a stronger optimizer.
+
+COMPILED INTERSECTION EVALUATOR (later 5 Aug): the factorized algebra now
+has a production array plan built by chunked SciPy CSR multiplication, not
+Python dictionary intersections. The plan stores edge, target and the two
+active-correction indices for each nonempty intersection. Largest saved
+checkpoints: V256 has 1,068,000 intersections (17.1 MB, .032 s build) and
+V512 has 8,356,483 (133.7 MB, .208 s build). Direct margin evaluations are
+.0228 s and .1780 s respectively. The factorized evaluator is selectable
+in sparse_grouped_ipf, checkpoint fitting, the checkpoint probe and the
+state diagnostic; union remains the default until broader validation.
+The same plan is reused if L-BFGS hands off to IPF polishing.
+
+Controlled V256 continuation from identical saved factors, 50 IPF sweeps
+and 201 margin evaluations: union took 33.19 s inside margins, factorized
+4.54 s (7.3x). Objectives and all final residuals agree at roughly 1e-14;
+both end at certificate .000625539557. At V512, 20 sweeps/81 factorized
+evaluations took 14.26 s inside margins and reached certificate
+.001196591654. This is still single-core, explaining low whole-machine CPU
+use, but it removes much more work than union sharding. Next benchmark a
+complete checkpoint ladder with evaluator=factorized, then parallelize or
+stream its intersection plan and reduce the number of global passes before
+attempting the full-token run.
+
+NUMERICAL SAFEGUARD + MATCHED LADDER (later 5 Aug): a first complete
+factorized ladder exposed overflow only in extreme exploratory L-BFGS
+line-search proposals; the optimizer recovered, but those evaluations are
+not acceptable at full scale. L-BFGS now has a per-phase displacement
+trust region of 16 natural-log units around its warm start. Its ordinary
+line search then adaptively mixes the old and proposed natural parameters;
+IPF polishing remains unrestricted, so this does not cap the estimator.
+The radius is a solver option, not a data-dependent fitted choice.
+
+A clean matched V256/n1m run (exact pair-product start, two interleaved
+chains, tolerance .01) produced no numerical warnings: construction
+56.60 s, fit 41.92 s, peak RSS .599 GB. The prior union/sharded-5 run was
+178.70 s fit and 1.602 GB, so factorization gives a 4.26x complete-fit
+speedup and 63% lower peak memory. All checkpoints meet the requested
+certificate. Most still use about 1,100 margin evaluations because SciPy's
+componentwise stopping rule is much stricter than the grouped L1 margin
+certificate. Next stop L-BFGS at an accepted iterate once that actual
+certificate is met, then measure pass-count reduction before adding inner
+parallelism.
+
+CERTIFICATE-AWARE MIXING (later 5 Aug): L-BFGS now checks the actual grouped
+margin certificate after each accepted line-search iterate and stops as soon
+as it meets the requested tolerance. This is the adaptive old/new natural-
+parameter mixture discussed with the user, inside the numerical trust
+region; it avoids a fixed damping coefficient. The matched V256/n1m ladder
+now fits in 31.00 s (construction 57.80 s, peak .604 GB), versus 41.92 s
+without certificate stopping and 178.70 s for union/sharded-5. Thus current
+fit is 5.76x faster than union. Evaluations across the eight checkpoints are
+109, 155, 318, 400, 517, 609, 773 and 912 rather than about 1,100 each; all
+certificates are below .01. Activity Monitor showed Python around 171%, as
+expected for two single-threaded interleaved warm chains. Do not optimize
+CPU percentage by adding cold chains without timing: earlier work showed
+that extra cold-start iterations can erase nominal parallelism.
+
+V512/N4M EARLY-STOP SCALING (later 5 Aug): the clean factorized run used
+105.30 s construction, 251.97 s fit and 2.303 GB peak RSS. The eight margin-
+evaluation counts were 152, 293, 491, 623, 786, 1102, 1106 and 1099; all
+certificates meet .01. Activity Monitor clearly separates repeated high CPU
+construction peaks (12 layered-estimator workers) from a long flat ~15%
+calibration phase (two single-threaded warm chains). The last three large
+checkpoints genuinely first reach the certificate late in L-BFGS; this is
+not a missed IPF early-stop condition. The next change should parallelize
+intersection reductions inside each factorized evaluation, retaining two
+warm chains rather than adding cold chains.
+
+FACTORIZED INNER PARALLELISM (later 5 Aug): intersection cross-normalizer
+and YA/YB/Y correction reductions are now sharded across a persistent thread
+pool. Partial arrays are reduced by the parent; this adds bounded memory per
+worker and preserves two warm chains. Serial/parallel/union trajectories
+agree within 1e-12 in tests. Largest V512 checkpoint, 20 IPF sweeps/81
+evaluations: factorized time is 11.996, 7.332, 5.749, 4.909 and 4.436 s for
+1--5 workers, respectively (2.70x at five); certificates agree around 3e-14.
+
+The complete matched V512/n4m run with two chains x five inner workers used
+94.53 s construction, 110.74 s fit and 2.814 GB peak RSS. The one-worker
+factorized run used 105.30 s construction, 251.97 s fit and 2.303 GB, so fit
+improves 2.28x and complete construction+fit falls 357.27 -> 205.26 s (42.5%)
+for 22% more peak memory. All checkpoints meet tolerance .01. Recovered
+scoring took 13.62 s: calibrated 4.44009273 bpc, star 4.54717605, pure
+three-pair gain .10708332 bpc; all seven blocks improve. The earlier serial
+fit scored 4.44282442/.10435163, so loose-tolerance solver paths differ by
+.00273 bpc but support the same conclusion. Tighter tolerance must be used
+for final scientific comparisons.
+
+V1024/N8M LAPTOP SCALING (later 5 Aug): doubled vocabulary and sequence
+together, retaining two chains x five inner workers. Construction took
+175.84 s, fit 405.02 s, total 580.86 s (9.68 min), process peak RSS 5.517
+GB; all eight checkpoints meet .01. Largest checkpoint has 232,245 AB/YA
+cells and 366,390 YB corrections. Its exact intersection plan has
+35,508,632 entries, 568.1 MB in four int32 arrays, and builds in 1.16 s.
+System-wide Activity Monitor nevertheless reached 23/24 GB used with 8.4
+GB compressed during the run, so laptop headroom is limited even though
+the parent RSS is moderate. Construction used about 10.7 effective cores;
+later calibration became memory/bandwidth constrained.
+
+Recovered V1024 scoring: 53.64 s, calibrated 5.23486228 bpc, star
+5.36242730, overall pure-three-pair gain .12756502. Six of seven blocks
+improve. The first prefix (only 2,050 tokens, 57.9% context support) loses
+.01380395 bpc; do not tune this away, since it demonstrates the expected
+data scarcity when V grows. Before V2048, add incremental phase/checkpoint
+progress and consider releasing construction intermediates or reducing
+simultaneous worker/chain memory; the factorized plan itself is not yet the
+sole barrier.
+
+TWO-CHECKPOINT STREAMING + FULL V1024 (later 5 Aug): the checkpoint probe
+can now construct, fit, persist and release batches of two checkpoints.
+Only compact encoded YA/YB feature keys and fitted corrections survive for
+the two warm-start chains. A matched V32 smoke test reproduces the former
+all-in-memory iterations/evaluations/residuals exactly. Each completed
+checkpoint is announced and persisted, so long runs are observable and
+recoverable.
+
+V1024 on all 19,429,294 bpe_text8 tokens completed: construction 239.24 s,
+fit 813.33 s, elapsed 1053.85 s (17.56 min), peak parent RSS 5.826 GB. All
+eight certificates are below .01. Final checkpoint has 338,237 AB/YA cells
+and 537,579 YB corrections. Streaming therefore removes checkpoint-count
+memory accumulation; the largest pair is now limited mainly by intersection
+reduction bandwidth (observed about 3.5 effective cores late in the run).
+
+HONEST BPE ACCOUNTING: calibration_score_states now adds the initial prefix
+under a fixed-alphabet Jeffreys/KT code, the external tokenizer vocabulary
+charge from stream metadata, an enumerative selected-subset description,
+and a causal KT payload for original IDs behind escape. Full V1024 results:
+reduced predictive 5.11368479 bits/BPE token; vocabulary description
+.31994890 (6,208,152 tokenizer bits + 8,229 subset bits); escape payload
+4.71630699; honest total 10.14994068 bits/BPE token = 1.97206182 bits per
+original text8 byte/character. Empirical escape oracle is 4.69543894, so
+the causal escape penalty is .02086806 bpt. Calibrated suffix 5.11354447,
+star 5.23696052, pure-three-pair gain .12341605. First tiny block loses
+.01636; all later blocks improve. Current reduce_ids is whole-corpus
+frequency selection; it is made into a valid two-part code by transmitting
+the subset, but also report fixed tokenizer-ID selection as a comparison.
+
+V4096 FULL FEASIBILITY RUN (5 Aug evening): the original 2,050-token start
+was numerically/data sparse (checkpoint certificate .03 and factorized
+cancellation). The accepted test uses first prefix 16V=65,536, eight
+checkpoints, auto union for <=5m incidence upper bound, otherwise parallel
+factorized evaluation, two checkpoint batches x five workers. All eight
+certificates are below .01. Construction 810.92 s, fitting 4801.49 s,
+elapsed 5621.06 s (93.68 min), peak parent RSS 17.080 GB. Final problem has
+1,399,764 AB/YA cells and 2,288,630 YB corrections. Late Activity Monitor
+showed only ~3--4 effective Python cores plus high kernel CPU: the large
+factorized reductions are bandwidth/allocation limited. Several exploratory
+factorized trials still emitted cancellation warnings, although retained
+final states are finite and certified; solve this before production.
+Scoring with the present Python lookup implementation became a separate
+single-core multi-minute bottleneck and was still pending when recorded.
+The run revises laptop expectations: V4096 is feasible but already near a
+safe 24GB ceiling; do not jump to V8192 with two simultaneous full problems.
+
+PRODUCTION SCALING CHECKLIST (agreed with user, 5 Aug): target is full
+tokenizer vocabulary, 32 checkpoints, full text8 and eventually enwik9.
+Priority is computation, especially calibration; 240GB server memory may
+already suffice. Implement/measure in this order: (1) fixed-manifest cache
+for corpus count increments, layered row profiles/evaluations and prepared
+checkpoint problems; strict keys include corpus/tokenizer hashes, V,
+boundaries, l_max, table/code versions; (2) vectorized sorted-array scorer,
+removing Python dictionaries/membership loops; (3) certificate/pass profile
+per optimizer phase and checkpoint; (4) stronger continuation across 32
+nearby checkpoints and progressive V=256->512->1024->4096->full, with all
+vocabulary messages charged; (5) numerically safe factorized dual trial
+steps; (6) output-sharded worker reductions rather than full YA/YB arrays
+per worker; (7) fit one full checkpoint at a time if memory requires it,
+retaining compact starts for both chains; (8) block-stream or memory-map the
+intersection plan for full vocabulary; (9) benchmark thread counts on the
+64-core server, expecting bandwidth rather than core count to limit inner
+scaling. Do not mistake the V4096 eight-checkpoint/16V-start result for the
+final codelength.
+
+## 2026-08-06 --- V1024/C32 stochastic chain succeeds; memory is now the target
+
+The workflow is now split cleanly into reusable checkpoint construction and
+calibration. `scripts/calibration_checkpoint_probe.py --construct-only`
+builds/persists problems without fitting. The full bpe_text8 V1024/C32 build
+is in `output/calibration_problems_v1024_full_c32_jobs12`: 19,429,294 tokens,
+32 geometric checkpoints, 12 layered-estimator processes, 871.05 s total,
+5.44 GB peak RSS, and 449 MB of uncompressed reusable states.
+
+`scripts/calibration_fit_precomputed.py` loads those problems one at a time,
+uses pair-product initialization at checkpoint 0, transfers the preceding
+certified solution thereafter, tries 12-worker block-SVRG/Adam first at every
+checkpoint, reduces the learning rate on an exact-certificate plateau, and
+falls back to exact factorized L-BFGS from the stochastic candidate only if
+needed. Output is
+`output/calibration_v1024_full_c32_stochastic_plateau_w12_fitted`.
+
+MEASURED: all 32 checkpoints certified below .01; zero exact fallbacks, zero
+nonfinite rejections, 20,250 stochastic updates. Calibration-only elapsed
+142.51 s. Breakdown: sampled gradients 96.36 s, reference cache 15.72 s,
+optimizer 9.48 s, exact certificates 5.99 s. CPU utilization ramps upward
+with checkpoint size and reaches respectable ~50% whole-machine peaks. Peak
+RSS was 10.25 GB.
+
+MEMORY DIAGNOSIS: checkpoint accumulation is not the cause. The driver keeps
+only the current and immediately previous problems for transfer. At the final
+checkpoint the stored problem arrays are 29.15 MB. The exact intersection
+plan has 83,702,774 entries and four int32 arrays totaling 1.339 GB, but its
+current SciPy sparse construction peaks at 7.778 GB. Stochastic reference
+caches and concurrent worker outputs add further bounded memory. NEXT TASK:
+construct/stream the compact plan directly, without the large SciPy
+temporaries; then reconsider V2048/V4096 on the 24 GB laptop. Also vectorize
+the serial scorer, which took 256.82 s for 31 blocks.
+
+HONEST C32 SCORE (`.../scoring.json`): calibrated suffix 5.06188255 versus
+star 5.17328182 bits/BPE token, gain .11139928. Complete reduced predictive
+charge 5.06202832 bpt; vocabulary description .31994890; escape payload
+4.71630699; honest total 10.09828421 bpt = 1.96202533 bits per original
+text8 byte/character. The corresponding honest star number is 1.98366714
+bpc. Every one of the 31 predicted blocks improves. Compared with the prior
+C8 honest result 1.97206182, C32 improves by .01003649 bpc. Treat these as
+provisional tolerance-.01 numbers until the final experimental protocol is
+fixed, but the computational and predictive result is unambiguously positive.
+
+### 2026-08-06 memory/scoring implementation pass (while V4096/C32 constructs)
+
+The SciPy sparse-product intersection builder has been replaced, when the C
+extension is available, by a direct two-pass compact builder. It indexes the
+two factor supports by context, merge-intersects their sorted target lists for
+each observed AB edge, counts first, then allocates/fills exactly the four
+final int32 arrays. The SciPy implementation remains the fallback/reference.
+Randomized tests require bit-for-bit equality of all four arrays, and the
+memory-limit guard is tested.
+
+MEASURED on saved V1024 checkpoint 20 (4,332,210 intersections; 69.3 MB final
+plan): SciPy 0.462 s and 1.134 GB peak RSS; direct C 0.185 s and 160.3 MB peak
+RSS. Thus this checkpoint is 2.5x faster and 7.1x lower peak memory. Do the
+final checkpoint benchmark after the concurrent V4096 construction exits;
+do not create its additional 1.34 GB plan while the laptop is pressured.
+
+The block-SVRG reference cache no longer retains full YA/YB vectors for all
+128 blocks. Each cached block stores only corrections whose contexts occur in
+that block, with int32 positions. On checkpoint 20 this is about a 2x cache
+reduction; expect roughly 0.4--0.5 GB saved at final V1024. Sampled worker
+outputs remain full-sized but exist only for the active concurrent calls.
+
+The plateau scheduler now terminates stochastic fitting when it plateaus at
+the minimum learning rate; the calibration-only driver then invokes exact
+fallback. It no longer burns the remaining maximum-step budget. The driver
+also reports current macOS RSS before load/fit, after stochastic fitting, and
+after release, separately from lifetime peak RSS; it records exact plan and
+reference-cache byte counts.
+
+The experimental factorized-normalizer scorer was rejected after the full
+run: although faster, cancellation changed the aggregate codelength slightly.
+The production scorer retains the exact positive sparse-union log-sum-exp
+calculation and parallelizes the 31 independent checkpoint intervals across
+processes reading one memory-mapped reduced stream. Four workers reproduce
+every serial row and the complete honest accounting object exactly in 87.65 s
+versus 256.82 s, a 2.93x elapsed-time speedup.
+
+FULL V1024/C32 MEMORY VALIDATION: the direct plan builder plus compact
+reference cache reproduced all 32 fitted states, update counts and
+certificates exactly; no exact fallback or nonfinite rejection occurred.
+Calibration took 151.27 s versus 142.51 s before (6.2% slower), while measured
+peak RSS fell from 10.25 GB to 5.12 GB. At the final checkpoint the plan is
+1.339 GB, the cache .776 GB, and parent RSS after release 2.72 GB. Thus the
+main memory change is validated and roughly halves peak memory. Python's
+allocator still retains arenas between checkpoints, so RSS after release is
+larger than the live saved problem; checkpoint subprocess isolation remains
+an optional future measure, not a correctness requirement.
+
+Validation state: 37 calibration tests pass; selected source/scripts/tests
+pass Ruff and `git diff --check`. Repository-wide pytest still has an
+unrelated pre-existing collection failure because `tests/test_layered.py`
+imports absent `log_q_lambda_grid`; do not conflate that with this work.
+
+### 2026-08-06 --- Full V4096/C32 calibration and honest score
+
+The reusable problems in `output/calibration_problems_v4096_full_c32_jobs12`
+were fitted sequentially with 12 stochastic workers and one warm-started
+chain into `output/calibration_v4096_full_c32_compact_w12`. All 32
+checkpoints certified below .01; zero exact fallbacks and zero nonfinite
+rejections. Calibration took 1330.63 s (22.18 min), 20,600 updates, and
+13.887 GB measured peak RSS including workers. Final direct plan: 4.477 GB;
+compact reference cache: 3.187 GB. Breakdown: sampled gradients 786.64 s,
+exact certificates 253.73 s, reference caches 114.60 s, optimizer 61.70 s.
+
+HONEST RESULT: calibrated suffix 6.92395455 versus star 7.09408171 bpt,
+pure-three-pair gain .17012716. Reduced predictive 6.92895566 bpt;
+vocabulary description .32079521; escaped payload 2.33023552; honest total
+9.57998639 bpt = 1.86132372 bits/original text8 byte. Treat as provisional
+tolerance-.01, but it improves the analogous V1024/C32 honest result
+1.96202533 by .10070161 bpc.
+
+Exact scoring keeps the positive/log-sum-exp reference path. Intervals are
+now scheduled longest-first across processes reading a shared memory-mapped
+reduced stream, then restored to causal order before accumulation. V4096
+times: old ascending four-worker 647.69 s; LPT four-worker 553.57 s; LPT
+eight-worker 321.63 s; LPT twelve-worker 270.81 s. Every row and accounting
+total is exactly identical. Twelve workers are the current laptop default
+for extraction. Remaining scoring speedup requires splitting large
+intervals into record ranges, since a single large interval is still handled
+by one worker.
