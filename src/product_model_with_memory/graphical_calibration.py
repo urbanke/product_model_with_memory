@@ -21,11 +21,13 @@ dense probability tables.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 
 import numpy as np
@@ -1667,6 +1669,55 @@ def build_sparse_edge_blocks(
     return answer
 
 
+def layered_edge_intersection_counts(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+) -> np.ndarray:
+    """Count active intersection triangles per AB edge without a full plan."""
+
+    if checkpoint < 0 or checkpoint >= graph.layers:
+        raise ValueError("checkpoint lies outside the layered graph")
+    counts = np.zeros(len(problem.edge_probability), dtype=np.int64)
+    n1 = len(problem.target_ya)
+    for depth in range(checkpoint + 1):
+        stop = int(graph.row_ptr[depth][n1])
+        counts += np.bincount(
+            graph.edge_ab[depth][:stop], minlength=len(counts)
+        )
+    return counts
+
+
+def sparse_edge_block_from_bounds(
+    problem: SparseGroupedProblem,
+    edge_lo: int,
+    edge_hi: int,
+) -> SparseEdgeBlock:
+    """Construct one local block and only that block's intersections."""
+
+    if not 0 <= edge_lo < edge_hi <= len(problem.edge_probability):
+        raise ValueError("invalid sparse edge block bounds")
+    mass = float(problem.edge_probability[edge_lo:edge_hi].sum())
+    if mass <= 0.0:
+        raise ValueError("sparse edge block has no probability mass")
+    block_problem = SparseGroupedProblem(
+        vocabulary_size=problem.vocabulary_size,
+        edge_a=problem.edge_a[edge_lo:edge_hi],
+        edge_b=problem.edge_b[edge_lo:edge_hi],
+        edge_probability=problem.edge_probability[edge_lo:edge_hi] / mass,
+        target_y=problem.target_y,
+        active_ya_y=problem.active_ya_y,
+        active_ya_a=problem.active_ya_a,
+        target_ya=problem.target_ya,
+        active_yb_y=problem.active_yb_y,
+        active_yb_b=problem.active_yb_b,
+        target_yb=problem.target_yb,
+    )
+    return SparseEdgeBlock(
+        mass, block_problem, build_sparse_intersection_plan(block_problem)
+    )
+
+
 def stratified_sparse_edge_minibatch(
     problem: SparseGroupedProblem,
     intersection_plan: SparseIntersectionPlan,
@@ -2253,6 +2304,7 @@ def stochastic_sparse_dual_approach(
     bb_max_step: float = 1.0,
     exact_layered_graph: LayeredIntersectionGraph | None = None,
     exact_layered_checkpoint: int | None = None,
+    lazy_block_cache: int = 16,
 ) -> SparseStochasticResult:
     """Use minibatch Adam only to approach the exact dual optimum.
 
@@ -2275,6 +2327,8 @@ def stochastic_sparse_dual_approach(
         raise ValueError("sampling must be 'iid', 'stratified' or 'blocks'")
     if edge_blocks < 1:
         raise ValueError("edge_blocks must be positive")
+    if lazy_block_cache < 1:
+        raise ValueError("lazy_block_cache must be positive")
     if certificate_tolerance is not None and certificate_tolerance <= 0.0:
         raise ValueError("certificate_tolerance must be positive")
     if exact_margin_workers < 1:
@@ -2308,13 +2362,17 @@ def stochastic_sparse_dual_approach(
     square = np.zeros_like(parameters)
     rngs = [np.random.default_rng(seed + 1_000_003 * replica)
             for replica in range(replicas)]
-    full_plan = build_sparse_intersection_plan(problem)
+    lazy_blocks = sampling == "blocks" and exact_layered_graph is not None
+    full_plan = (
+        None if lazy_blocks else build_sparse_intersection_plan(problem)
+    )
     exact_executor = (
         ThreadPoolExecutor(max_workers=exact_margin_workers)
         if exact_margin_workers > 1 and exact_layered_graph is None else None
     )
     exact_boundaries = np.linspace(
-        0, len(full_plan.edge), exact_margin_workers + 1, dtype=np.int64
+        0, 0 if full_plan is None else len(full_plan.edge),
+        exact_margin_workers + 1, dtype=np.int64
     )
     exact_shards = [
         (int(lo), int(hi))
@@ -2326,6 +2384,11 @@ def stochastic_sparse_dual_approach(
     group_cdfs: list[np.ndarray] = []
     group_masses: list[float] = []
     prepared_blocks: list[SparseEdgeBlock] = []
+    block_bounds: list[tuple[int, int]] = []
+    block_masses = np.empty(0)
+    block_cache: OrderedDict[int, SparseEdgeBlock] = OrderedDict()
+    block_cache_lock = Lock()
+    peak_cached_plan_bytes = 0
     block_cdf = np.empty(0)
     if sampling == "stratified":
         effective_strata = min(
@@ -2341,13 +2404,61 @@ def stochastic_sparse_dual_approach(
             group_cdfs.append(cdf)
             group_masses.append(mass)
     elif sampling == "blocks":
-        prepared_blocks = build_sparse_edge_blocks(
-            problem, full_plan, edge_blocks
-        )
-        block_cdf = np.cumsum([
-            block.probability_mass for block in prepared_blocks
-        ])
+        if lazy_blocks:
+            work = layered_edge_intersection_counts(
+                problem, exact_layered_graph, exact_layered_checkpoint
+            ) + 1
+            cumulative = np.r_[0, np.cumsum(work, dtype=np.int64)]
+            targets = np.linspace(0, cumulative[-1], edge_blocks + 1)
+            boundaries = np.unique(np.searchsorted(cumulative, targets))
+            boundaries[0] = 0
+            boundaries[-1] = len(problem.edge_probability)
+            block_bounds = [
+                (int(lo), int(hi)) for lo, hi in pairwise(boundaries)
+                if hi > lo
+            ]
+            block_masses = np.asarray([
+                problem.edge_probability[lo:hi].sum()
+                for lo, hi in block_bounds
+            ])
+        else:
+            prepared_blocks = build_sparse_edge_blocks(
+                problem, full_plan, edge_blocks
+            )
+            block_masses = np.asarray([
+                block.probability_mass for block in prepared_blocks
+            ])
+        block_cdf = np.cumsum(block_masses)
         block_cdf[-1] = 1.0
+
+    def get_block(index: int) -> SparseEdgeBlock:
+        nonlocal peak_cached_plan_bytes
+        if not lazy_blocks:
+            return prepared_blocks[index]
+        with block_cache_lock:
+            cached = block_cache.get(index)
+            if cached is not None:
+                block_cache.move_to_end(index)
+                return cached
+            lo, hi = block_bounds[index]
+            block = sparse_edge_block_from_bounds(problem, lo, hi)
+            block_cache[index] = block
+            while len(block_cache) > lazy_block_cache:
+                block_cache.popitem(last=False)
+            peak_cached_plan_bytes = max(
+                peak_cached_plan_bytes,
+                sum(
+                    array.nbytes
+                    for cached_block in block_cache.values()
+                    for array in (
+                        cached_block.intersection_plan.edge,
+                        cached_block.intersection_plan.target_y,
+                        cached_block.intersection_plan.correction_ya,
+                        cached_block.intersection_plan.correction_yb,
+                    )
+                ),
+            )
+            return block
     best = parameters.copy()
     best_objective = float("inf")
     best_certificate = float("inf")
@@ -2398,7 +2509,9 @@ def stochastic_sparse_dual_approach(
             and np.all(np.isfinite(gradient))
         ):
             diagnostic = diagnose_sparse_factorized_normalizers(
-                problem, full_plan,
+                problem, (
+                    full_plan or build_sparse_intersection_plan(problem)
+                ),
                 parameters[:first], parameters[first:second],
                 parameters[second:],
             )
@@ -2497,26 +2610,81 @@ def stochastic_sparse_dual_approach(
         if stochastic_workers > 1 else None
     )
     reference_block_margins: list[SparseReferenceMargins] = []
-    reference_positions = [
+    reference_positions = [] if lazy_blocks else [
         (
             np.flatnonzero(np.isin(
-                problem.active_ya_a, np.unique(block.problem.edge_a)
+                problem.active_ya_a,
+                np.unique(get_block(index).problem.edge_a)
             )).astype(np.int32),
             np.flatnonzero(np.isin(
-                problem.active_yb_b, np.unique(block.problem.edge_b)
+                problem.active_yb_b,
+                np.unique(get_block(index).problem.edge_b)
             )).astype(np.int32),
         )
-        for block in prepared_blocks
+        for index in range(len(block_masses))
     ]
+    lazy_reference_cache: OrderedDict[int, SparseReferenceMargins] = (
+        OrderedDict()
+    )
+    lazy_reference_lock = Lock()
+    peak_lazy_reference_bytes = 0
+
+    def reference_for_block(index: int) -> SparseReferenceMargins:
+        nonlocal peak_lazy_reference_bytes
+        if not lazy_blocks:
+            return reference_block_margins[index]
+        with lazy_reference_lock:
+            cached = lazy_reference_cache.get(index)
+            if cached is not None:
+                lazy_reference_cache.move_to_end(index)
+                return cached
+            block = get_block(index)
+            ya_position = np.flatnonzero(np.isin(
+                problem.active_ya_a, np.unique(block.problem.edge_a)
+            )).astype(np.int32)
+            yb_position = np.flatnonzero(np.isin(
+                problem.active_yb_b, np.unique(block.problem.edge_b)
+            )).astype(np.int32)
+            margins = sparse_factorized_margins(
+                block.problem, block.intersection_plan,
+                snapshot_parameters[:first],
+                snapshot_parameters[first:second],
+                snapshot_parameters[second:],
+            )
+            reference = SparseReferenceMargins(
+                margins.target_y, ya_position,
+                margins.active_ya[ya_position], yb_position,
+                margins.active_yb[yb_position],
+            )
+            lazy_reference_cache[index] = reference
+            while len(lazy_reference_cache) > lazy_block_cache:
+                lazy_reference_cache.popitem(last=False)
+            peak_lazy_reference_bytes = max(
+                peak_lazy_reference_bytes,
+                sum(
+                    array.nbytes
+                    for item in lazy_reference_cache.values()
+                    for array in (
+                        item.target_y, item.ya_position, item.active_ya,
+                        item.yb_position, item.active_yb,
+                    )
+                ),
+            )
+            return reference
 
     def refresh_reference_blocks() -> None:
         """Cache the fixed SVRG side once instead of once per draw."""
         nonlocal reference_block_margins, reference_cache_seconds
         if not (variance_reduction and sampling == "blocks"):
             return
+        if lazy_blocks:
+            with lazy_reference_lock:
+                lazy_reference_cache.clear()
+            return
 
         def evaluate_reference(item):
-            block, (ya_position, yb_position) = item
+            index, (ya_position, yb_position) = item
+            block = get_block(index)
             margins = sparse_factorized_margins(
                 block.problem, block.intersection_plan,
                 snapshot_parameters[:first],
@@ -2533,10 +2701,10 @@ def stochastic_sparse_dual_approach(
 
         started = perf_counter()
         evaluations = (
-            map(evaluate_reference, zip(prepared_blocks, reference_positions))
+            map(evaluate_reference, enumerate(reference_positions))
             if replica_executor is None
             else replica_executor.map(
-                evaluate_reference, zip(prepared_blocks, reference_positions)
+                evaluate_reference, enumerate(reference_positions)
             )
         )
         reference_block_margins = list(evaluations)
@@ -2549,14 +2717,14 @@ def stochastic_sparse_dual_approach(
             chosen = int(np.searchsorted(
                 block_cdf, rngs[replica].random(), side="right"
             ))
-            block = prepared_blocks[chosen]
+            block = get_block(chosen)
             margins = sparse_factorized_margins(
                 block.problem, block.intersection_plan,
                 parameters[:first], parameters[first:second],
                 parameters[second:],
             )
             if variance_reduction:
-                reference = reference_block_margins[chosen]
+                reference = reference_for_block(chosen)
                 # Targets cancel in the SVRG difference.  Forming full dual
                 # evaluations here used to perform two unnecessary target
                 # subtractions, objectives, and gradient concatenations per
@@ -2703,23 +2871,27 @@ def stochastic_sparse_dual_approach(
     if exact_executor is not None:
         exact_executor.shutdown()
 
-    intersection_plan_bytes = sum(
-        array.nbytes for array in (
-            full_plan.edge,
-            full_plan.target_y,
-            full_plan.correction_ya,
-            full_plan.correction_yb,
+    intersection_plan_bytes = (
+        peak_cached_plan_bytes if full_plan is None else sum(
+            array.nbytes for array in (
+                full_plan.edge,
+                full_plan.target_y,
+                full_plan.correction_ya,
+                full_plan.correction_yb,
+            )
         )
     )
-    reference_cache_bytes = sum(
-        array.nbytes
-        for reference in reference_block_margins
-        for array in (
-            reference.target_y,
-            reference.ya_position,
-            reference.active_ya,
-            reference.yb_position,
-            reference.active_yb,
+    reference_cache_bytes = (
+        peak_lazy_reference_bytes if lazy_blocks else sum(
+            array.nbytes
+            for reference in reference_block_margins
+            for array in (
+                reference.target_y,
+                reference.ya_position,
+                reference.active_ya,
+                reference.yb_position,
+                reference.active_yb,
+            )
         )
     )
 

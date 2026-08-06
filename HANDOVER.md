@@ -4626,3 +4626,26 @@ loads checkpoint problems, aligns them to the persisted birth-major support,
 and warm-starts the complete C32 trajectory.  Sampled block gradients still
 need their own lazy intersections; they must not force construction of the old
 full explicit plan merely to prepare stochastic blocks.
+
+The stochastic exact records now use the shared graph, and a first bounded
+lazy sampled-block implementation removes the old eager setup allocation.
+AB-block boundaries are balanced from per-edge triangle counts obtained by
+scanning the active graph layers.  Local four-index plans and their SVRG
+reference margins are constructed on demand and retained in independent LRU
+caches (default 16 blocks).  All 41 calibration tests pass, including an
+actual parallel stochastic update through the cache-size-one path.
+
+Real checkpoint-23 measurements with 128 blocks and 12 workers quantify the
+tradeoff.  Eager setup retains 165.6 MB of topology plus 212.6 MB of reference
+margins.  A 16-block lazy cache peaked at 20.8 MB plus 24.5 MB in a 10-step
+run: 8.3x less cache memory, with elapsed time 1.15 s versus .93 s.  Over 50
+steps the cache remained 7.9x smaller (47.6 MB versus 378.1 MB) but random
+access caused repeated reconstruction and elapsed time was 3.89 s versus
+1.57 s.  An 8-block cache reached a 16.7x memory reduction but was slower.
+
+NEXT: do not tune this LRU as the final answer.  Add a sampled AB-edge-range
+view to the native layered evaluator so sampled gradients traverse the shared
+graph directly and never reconstruct local four-index plans.  The bounded
+cache remains a correct low-memory fallback and a measured baseline.  After
+that, run the complete V1024/C32 warm-started trajectory from the persisted
+store and compare certificates, elapsed time, and peak memory.

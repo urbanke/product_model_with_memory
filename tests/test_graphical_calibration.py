@@ -813,6 +813,17 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
         stochastic_layered.best_exact_certificate
         - dual_layered.certificate
     ) < 3e-15
+    stochastic_lazy = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=2, batch_size=1, sampling="blocks", edge_blocks=4,
+        replicas=2, stochastic_workers=2, variance_reduction=True,
+        exact_interval=1, exact_margin_workers=2,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+        lazy_block_cache=1,
+    )
+    assert stochastic_lazy.steps == 2
+    assert np.isfinite(stochastic_lazy.best_exact_certificate)
     fitted_explicit = sparse_grouped_ipf(
         problem, solver="lbfgs", evaluator="factorized",
         tolerance=1e-9, max_iterations=2_000,
