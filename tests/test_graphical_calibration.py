@@ -788,6 +788,31 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
         parallel_layered.log_normalizer, native_layered.log_normalizer,
         rtol=0.0, atol=2e-15,
     )
+    dual_explicit = sparse_factorized_dual_evaluation(
+        problem, log_base, full_c1, full_c2,
+        intersection_plan=plan, compute_certificate=True,
+    )
+    dual_layered = sparse_factorized_dual_evaluation(
+        problem, log_base, full_c1, full_c2,
+        layered_graph=graph, layered_checkpoint=layers - 1,
+        margin_workers=4, compute_certificate=True,
+    )
+    np.testing.assert_allclose(
+        dual_layered.gradient(), dual_explicit.gradient(),
+        rtol=0.0, atol=3e-15,
+    )
+    assert abs(dual_layered.objective - dual_explicit.objective) < 3e-15
+    assert abs(dual_layered.certificate - dual_explicit.certificate) < 3e-15
+    stochastic_layered = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=0, batch_size=1, exact_margin_workers=4,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+    )
+    assert abs(
+        stochastic_layered.best_exact_certificate
+        - dual_layered.certificate
+    ) < 3e-15
     fitted_explicit = sparse_grouped_ipf(
         problem, solver="lbfgs", evaluator="factorized",
         tolerance=1e-9, max_iterations=2_000,

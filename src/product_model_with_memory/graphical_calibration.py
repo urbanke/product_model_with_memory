@@ -1724,6 +1724,9 @@ def sparse_factorized_dual_evaluation(
     compute_certificate: bool = False,
     executor=None,
     intersection_shards: Sequence[tuple[int, int]] | None = None,
+    layered_graph: LayeredIntersectionGraph | None = None,
+    layered_checkpoint: int | None = None,
+    margin_workers: int = 1,
 ) -> SparseDualEvaluation:
     """Evaluate the conditional dual for a full or sampled edge law.
 
@@ -1741,12 +1744,22 @@ def sparse_factorized_dual_evaluation(
         raise ValueError("first correction shape does not match target_ya")
     if c2.shape != problem.target_yb.shape:
         raise ValueError("second correction shape does not match target_yb")
-    plan = intersection_plan or build_sparse_intersection_plan(problem)
-    margins = sparse_factorized_margins(
-        problem, plan, lb, c1, c2,
-        executor=executor,
-        intersection_shards=intersection_shards,
-    )
+    if (layered_graph is None) != (layered_checkpoint is None):
+        raise ValueError("layered graph and checkpoint must be supplied together")
+    if layered_graph is not None and intersection_plan is not None:
+        raise ValueError("choose either an intersection plan or layered graph")
+    if layered_graph is not None:
+        margins = sparse_factorized_margins_layered(
+            problem, layered_graph, layered_checkpoint,
+            lb, c1, c2, workers=margin_workers,
+        )
+    else:
+        plan = intersection_plan or build_sparse_intersection_plan(problem)
+        margins = sparse_factorized_margins(
+            problem, plan, lb, c1, c2,
+            executor=executor,
+            intersection_shards=intersection_shards,
+        )
     normalized_base = lb - logsumexp(lb)
     objective = (
         float(problem.edge_probability @ margins.log_normalizer)
@@ -2238,6 +2251,8 @@ def stochastic_sparse_dual_approach(
     plateau_relative_threshold: float = 1e-3,
     bb_min_step: float = 1e-7,
     bb_max_step: float = 1.0,
+    exact_layered_graph: LayeredIntersectionGraph | None = None,
+    exact_layered_checkpoint: int | None = None,
 ) -> SparseStochasticResult:
     """Use minibatch Adam only to approach the exact dual optimum.
 
@@ -2277,6 +2292,10 @@ def stochastic_sparse_dual_approach(
         raise ValueError("invalid plateau relative threshold")
     if not 0.0 < bb_min_step <= bb_max_step:
         raise ValueError("invalid BB step bounds")
+    if (exact_layered_graph is None) != (exact_layered_checkpoint is None):
+        raise ValueError(
+            "exact layered graph and checkpoint must be supplied together"
+        )
 
     lb = np.array(log_base_y, dtype=np.float64, copy=True)
     c1 = np.array(correction_ya, dtype=np.float64, copy=True)
@@ -2292,7 +2311,7 @@ def stochastic_sparse_dual_approach(
     full_plan = build_sparse_intersection_plan(problem)
     exact_executor = (
         ThreadPoolExecutor(max_workers=exact_margin_workers)
-        if exact_margin_workers > 1 else None
+        if exact_margin_workers > 1 and exact_layered_graph is None else None
     )
     exact_boundaries = np.linspace(
         0, len(full_plan.edge), exact_margin_workers + 1, dtype=np.int64
@@ -2357,10 +2376,16 @@ def stochastic_sparse_dual_approach(
         started = perf_counter()
         evaluation = sparse_factorized_dual_evaluation(
             problem, parameters[:first], parameters[first:second],
-            parameters[second:], intersection_plan=full_plan,
+            parameters[second:],
+            intersection_plan=(
+                full_plan if exact_layered_graph is None else None
+            ),
             compute_certificate=True,
             executor=exact_executor,
             intersection_shards=exact_shards,
+            layered_graph=exact_layered_graph,
+            layered_checkpoint=exact_layered_checkpoint,
+            margin_workers=exact_margin_workers,
         )
         exact_evaluations += 1
         gradient = evaluation.gradient()
@@ -3199,6 +3224,8 @@ def fit_sparse_grouped_checkpoints(
     stochastic_exact_interval: int = 50,
     stochastic_trust_radius: float = 8.0,
     stochastic_seed: int = 71,
+    layered_graph: LayeredIntersectionGraph | None = None,
+    layered_checkpoint_indices: Sequence[int] | None = None,
 ) -> list[SparseGroupedResult]:
     """Fit causal sparse checkpoints in interleaved warm-start chains.
 
@@ -3221,6 +3248,16 @@ def fit_sparse_grouped_checkpoints(
     points = list(checkpoints)
     if not points:
         return []
+    if (layered_graph is None) != (layered_checkpoint_indices is None):
+        raise ValueError(
+            "layered graph and checkpoint indices must be supplied together"
+        )
+    layered_indices = (
+        None if layered_checkpoint_indices is None
+        else list(layered_checkpoint_indices)
+    )
+    if layered_indices is not None and len(layered_indices) != len(points):
+        raise ValueError("layered checkpoint indices must match checkpoints")
     starts = None if initial_results is None else list(initial_results)
     if starts is not None and len(starts) != len(points):
         raise ValueError("initial_results must match the checkpoints")
@@ -3316,6 +3353,11 @@ def fit_sparse_grouped_checkpoints(
                     certificate_tolerance=tolerance,
                     exact_margin_workers=margin_workers,
                     optimizer="adam_plateau",
+                    exact_layered_graph=layered_graph,
+                    exact_layered_checkpoint=(
+                        None if layered_indices is None
+                        else layered_indices[index]
+                    ),
                 )
                 record = min(stochastic.trace, key=lambda item: float(
                     item["exact_certificate"]
@@ -3343,6 +3385,11 @@ def fit_sparse_grouped_checkpoints(
                     margin_workers=margin_workers,
                     evaluator=evaluator,
                     lbfgs_trust_radius=lbfgs_trust_radius,
+                    _layered_graph=layered_graph,
+                    _layered_checkpoint=(
+                        None if layered_indices is None
+                        else layered_indices[index]
+                    ),
                 )
             answer.append((index, result))
             previous_point = point
