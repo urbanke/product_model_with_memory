@@ -230,7 +230,7 @@ At fixed $V=16384$, controlled two-worker final-prefix constructions give:
 \begin{center}
 \begin{tabular}{rrrrrr}
 \toprule
-$N$ & construction & peak RSS & $E_{AB}$ & $E_{YB}$ & $T$ \\
+$N$ & construction & reported peak & $E_{AB}$ & $E_{YB}$ & $T$ \\
 \midrule
 4,857,324  & 624.9 s  & 3.67 GB & 1,222,978 & 1,795,605 & 65,600,208 \\
 9,714,647  & 962.3 s  & 4.13 GB & 2,005,070 & 3,063,157 & 170,164,657 \\
@@ -247,13 +247,19 @@ Consequently, saturation of the one-token vocabulary does not by itself
 imply that pair intersections have saturated.  This measured local exponent
 is an interpolation, not an asymptotic law; with fixed finite $V$, all pair
 and triangle supports must eventually saturate.
+On macOS the reported resident statistic is a per-process/resource-usage
+peak, not the simultaneous sum of the parent and worker RSS values.  It is
+comparable across these identically configured runs but must not be used as
+the whole-job memory requirement.  Spot checks showed that aggregate
+concurrent RSS can be larger; future benchmark drivers should sample and sum
+the complete process tree.
 
 The current full V1024/C32 shared-graph calibration took 108.7 seconds with
 12 workers and peaked at 3.71 GiB RSS, versus 142.5 seconds and about 9.55 GiB
 for the preceding compact-plan implementation.  Scoring took 52.3 seconds.
 Upstream construction of its 32 checkpoint states took about 871 seconds.
 For the diagnostic V16384 final prefix, upstream construction with two
-workers took 1507.9 seconds and peaked at 7.17 GB, whereas constructing the
+workers took 1507.9 seconds and reported a 7.17-GB resource peak, whereas constructing the
 one-layer shared intersection graph from that state took 21.4 seconds.
 
 \section{Where improvement is most likely}

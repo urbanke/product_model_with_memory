@@ -4738,7 +4738,7 @@ more triangles, and the last doubling of V produced only 1.14x.  At fixed
 text8 length, support saturation makes calibration topology far from V^2.
 
 The V16384 final state was constructed locally with one checkpoint and two
-workers in 1507.9 s, peak RSS 7.17 GB.  Its one-layer shared graph then built
+workers in 1507.9 s; the driver reported a 7.17-GB resource peak.  Its one-layer shared graph then built
 in 21.4 s.  Controlled N points at the same V and worker count are:
 `N=4,857,324`: 624.9 s, 3.67 GB, 1,222,978 AB edges, 1,795,605 YB edges,
 65,600,208 triangles; `N=9,714,647`: 962.3 s, 4.13 GB, 2,005,070 AB edges,
@@ -4748,6 +4748,11 @@ triangles 2.46--2.59x, locally about N^1.3.  Single-token vocabulary
 saturation therefore does not imply intersection saturation; newly appearing
 pair edges combine to create multiple triangles.  With finite V, all support
 sizes must eventually saturate.
+The macOS `peak_resident_bytes` field is not aggregate process-tree RSS.
+During spot checks the parent plus two simultaneous workers exceeded the
+reported figure.  These peak values are comparable within the controlled
+two-worker series, but a future memory benchmark must sample and sum the full
+process tree before using them for node sizing.
 
 `paper/three_pair_algorithm.tex` is a new five-page current description of
 the Section 7 implementation.  It covers the statistical model, upstream
