@@ -4407,3 +4407,25 @@ the stream path, length, vocabulary, checkpoint edges, projection controls and
 layered-table settings; incompatible partial output is rejected.  Truncated
 checkpoint files are discarded and recomputed.  A two-checkpoint local test
 reused both states and a deliberately changed run configuration was rejected.
+
+### 2026-08-06 --- Full V8192/C32 text8 result and paper placement
+
+The laptop V8192 construction completed in 9361.57 s with four workers.
+Calibration into `output/calibration_v8192_full_c32_compact_w4_r12` completed
+all 32 checkpoints in 4590.82 s with the fixed 12-replica stochastic batch,
+four worker processes and 21,500 updates.  Every certificate is below .01
+(maximum .0098082), with zero exact fallbacks and zero nonfinite rejections;
+peak RSS was 17.915 GB.  Exact positive-log-sum-exp scoring with 12 workers
+took 544.52 s.  The calibrated suffix is 7.87993175 versus 8.07782087 bpt for
+the star rule, a .19788911-bpt gain.  Honest accounting: reduced prediction
+7.89141144, vocabulary .32163113, escape payload 1.20515793, total 9.41820049
+bits/BPE token = 1.82988986 bits/original text8 character.
+
+`paper/main.tex` now places the complete calibrated-pairwise section before
+the `\\appendix` boundary.  The obsolete V4096/C8 discussion and numbers were
+removed.  One expandable two-panel C32 table reports V1024, V4096 and V8192:
+the upper panel gives star, calibrated and third-pair-gain bpt; the lower
+panel gives reduced prediction, vocabulary description, escape payload,
+total bpt and honest bits/original character.  The front scoreboard now uses
+the V8192 result.  The PDF was rebuilt and pages 14--15 were visually checked:
+the table is legible and Appendix A starts after the Section 7 discussion.

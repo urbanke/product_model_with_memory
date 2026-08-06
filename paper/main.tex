@@ -57,7 +57,7 @@ bytes, no memory                & $4.1235$ & $5.0802$ & $5.1565$ \\
 LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.8298$ & $2.1135$ & $1.8371$ \\
 context tree (Sec.~\ref{sec:ctree})       & $\mathbf{1.8182}$ & $\mathbf{2.0606}$ & $\mathbf{1.6598}$ \\
-calibrated order two (Sec.~\ref{app:calibration}) & $1.9721$ & \multicolumn{2}{c}{campaign in progress} \\
+calibrated order two (Sec.~\ref{sec:calibration}) & $1.8299$ & \multicolumn{2}{c}{campaign in progress} \\
 \midrule
 best published (Table~\ref{tab:files})    & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -807,13 +807,13 @@ experiment:
   \bigl[\hat p(y \mid x_{t-\delta})/m(y)\bigr]^{\beta_\delta}$,
   normalized.  The point $\beta_1 = \beta_2 = 1$ is the exact
   conditional of the maximum-entropy joint consistent with the two
-  target--lag pairs (Appendix~\ref{app:calibration}); tempered
+  target--lag pairs (Section~\ref{sec:calibration}); tempered
   exponents discount the double counting of redundant lags.
 \item \emph{Calibrated product}: the conditional of the
   maximum-entropy joint consistent with all \emph{three} pair
   tables; redundancy between the lags is then priced automatically
   rather than by a tempering grid
-  (Appendix~\ref{app:calibration}).
+  (Section~\ref{sec:calibration}).
 \item \emph{References}: the first-order model (the scoreboard
   holder to beat), order-two counts with backoff, and the
   \emph{exact} layered order-two code --- a mixture, so its
@@ -875,6 +875,271 @@ stalls short of its optimum --- the fitter, not the model, sets the
 floor.  The measured table --- the analogue of Table~\ref{tab:ctw}
 for this construction, three files, honest bits per character ---
 will replace this paragraph when the campaign completes.
+
+\section{The calibrated pairwise predictor}
+\label{sec:calibration}
+
+Let $X_0$ be the target symbol and $X_1, X_2$ the two context
+symbols.  Suppose the pair distributions $p(X_0, X_1)$ and
+$p(X_0, X_2)$ are known.  These do not determine the conditional
+$p(x_0 \mid x_1, x_2)$: many joints share the given pairs and they
+disagree about the conditional.  The standard resolution is maximum
+entropy: among all consistent joints, take the one that adds nothing
+else.  For log-loss this choice is also minimax over the consistent
+set.
+
+\paragraph{Two pairs.}  Both constraints involve $X_0$, so the
+maximum-entropy joint factorizes as
+$p(x_0)\,p(x_1 \mid x_0)\,p(x_2 \mid x_0)$ and its conditional is
+closed-form:
+\begin{equation}
+\label{eq:star}
+  p^\ast(x_0 \mid x_1, x_2)
+  \;\propto\;
+  p(x_0)\,
+  \frac{p(x_0 \mid x_1)}{p(x_0)}\,
+  \frac{p(x_0 \mid x_2)}{p(x_0)}.
+\end{equation}
+This is the product rule of Section~\ref{sec:pairwise} at
+$\beta_1 = \beta_2 = 1$.  It is exact if and only if $X_1$ and $X_2$
+are conditionally independent \emph{given} $X_0$; marginal
+independence of the context symbols is neither necessary nor
+sufficient.  When the context symbols carry overlapping information
+about the target, \eqref{eq:star} multiplies the same evidence twice.
+
+\paragraph{Three pairs.}  Suppose additionally $p(X_1, X_2)$ is
+known.  The maximum-entropy joint is now a pairwise field
+\begin{equation*}
+  p^\ast(x_0, x_1, x_2)
+  \;\propto\;
+  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2)\,\psi_{12}(x_1, x_2),
+\end{equation*}
+with the potentials determined by the requirement that all three pair
+margins of $p^\ast$ equal the given tables.  Two facts follow.
+First, since $x_1$ and $x_2$ are observed at prediction time, the
+factor $\psi_{12}$ is a constant and cancels: the conditional still
+factorizes over the lags,
+\begin{equation}
+\label{eq:calibrated}
+  p^\ast(x_0 \mid x_1, x_2)
+  \;\propto\;
+  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2).
+\end{equation}
+Second, the potentials are no longer the pairwise ratios of
+\eqref{eq:star}: they solve a coupled system in which the third
+table participates, and the constraint has a direct reading.  The
+margin conditions state that the product \eqref{eq:calibrated},
+averaged over how the two context symbols actually co-occur (that
+is, over $p(x_2 \mid x_1)$), reproduces each pairwise conditional;
+in \eqref{eq:star} the same average is taken as if the context
+symbols co-occurred only through $X_0$.  Redundancy between the lags
+is thereby discounted in the fitted factors themselves.
+
+The extreme case is instructive.  If $X_2$ is a copy of $X_1$, the
+star rule \eqref{eq:star} squares the evidence, while the calibrated
+conditional \eqref{eq:calibrated} collapses to
+$p(x_0 \mid x_1)$ exactly: the duplicate lag is priced at zero.  If
+instead the lags are conditionally independent given the target, the
+$\psi_{12}$ constraint is inactive and \eqref{eq:calibrated} reduces
+to \eqref{eq:star}.  Between the extremes it interpolates, which is
+the role the tempering exponents $\beta_\delta < 1$ play by hand,
+with one scalar where the calibration uses a full table.
+
+\paragraph{Computation: eliminate the context potential.}
+The ideal three-pair solution can be written without ever storing the
+$V^3$ joint.  Fix the third margin and write
+\begin{equation}
+  q(x_0,x_1,x_2)
+  = \widehat p_{12}(x_1,x_2)\,
+    r(x_0\mid x_1,x_2),
+  \qquad
+  r(x_0\mid x_1,x_2)
+  \propto f_1(x_0,x_1)f_2(x_0,x_2).
+  \label{eq:conditional-calibration}
+\end{equation}
+The factor on the context pair has thereby been eliminated
+analytically: normalization of $r$ supplies whatever
+$\psi_{12}$ is required in the joint.  The two remaining factors are
+chosen so that averaging \eqref{eq:conditional-calibration} against
+$\widehat p_{12}$ reproduces the target--lag margins.  Ordinary
+iterative proportional fitting alternately rescales these factors;
+equivalently one may minimize the convex dual and finish with
+proportional-fitting sweeps whose marginal errors provide the final
+certificate.
+
+\paragraph{Observed-support approximation.}
+There is a scaling distinction between storage and work.  The layered
+estimator supplies pair probabilities without a dense table, but exact
+calibration against its positive $\widehat p_{12}$ still requires an
+average over all $V^2$ context pairs.  Our present implementation makes
+the following explicit, revisitable approximation.  Calibration is
+restricted to context pairs observed in the decoded prefix.  We
+renormalize $\widehat p_{12}$ on that support, then make the smallest
+relative-entropy adjustment of the two target--lag estimates that gives
+them the new lag margins while retaining their common target margin.
+For a context pair not yet observed, prediction falls back to the
+two-pair maximum-entropy rule \eqref{eq:star}.  Thus the third pair is
+used wherever the data have identified its support; the fallback is
+declared rather than silently assigning a dense table.
+
+The target--lag factors are stored as the layered unigram baseline,
+one global target correction, and corrections only for observed
+target--lag cells.  Define the deviations of the multiplicative
+corrections from one by
+\[
+ r_1(y,a)=\exp\{c_1(y,a)\}-1,
+ \qquad
+ r_2(y,b)=\exp\{c_2(y,b)\}-1,
+\]
+and their baseline-weighted row sums by
+\[
+ S_{1a}=\sum_y p_0(y)r_1(y,a),
+ \qquad
+ S_{2b}=\sum_y p_0(y)r_2(y,b).
+\]
+For an observed context pair $(a,b)$, expanding
+$(1+r_1(y,a))(1+r_2(y,b))$ gives
+\[
+ Z_{ab}=1+S_{1a}+S_{2b}
+       +\sum_y p_0(y)r_1(y,a)r_2(y,b).
+\]
+Thus the repeated margin evaluations
+need only intersections of the two sparse correction rows, not their
+much larger union.  A compiled sparse-intersection plan supplies the
+normalizers and all three margins; its reductions are sharded across
+persistent workers.  Neither a pair-probability table nor a triple
+table is constructed.  Active cells are matched individually; all
+inactive cells in one lag row form a single grouped constraint.  This
+grouping, together with restriction of the context support, defines
+the scalable model being measured here; it is not claimed to equal the
+uncoarsened full-support triangle.
+
+\paragraph{Solver and sequential use.}
+The dual L-BFGS solver approaches the solution rapidly, after which
+ordinary proportional-fitting sweeps may polish the margins.  Both
+phases retain the iterate with the best actual certificate, the maximum
+of the three $L^1$ marginal errors, because neither the optimizer's
+stopping test nor that combined certificate is monotone at every
+numerical step.  At geometric checkpoints the sparse factors are
+carried forward: existing corrections are warm-started and newly
+observed cells start at zero.  Splitting the checkpoints into several
+interleaved warm-start chains keeps independent fits busy in parallel.
+Only two complete checkpoints are resident at once: they are fitted,
+written, and released, while compact feature keys and corrections are
+retained for the next warm start in each chain.  Within a fit the dual
+line search mixes the old and proposed natural parameters inside a
+finite displacement region; unrestricted proportional-fitting sweeps
+remain available afterward.  This prevents numerically meaningless
+trial factors without bounding the final estimator.
+The residual remains a numerical diagnostic rather than an oracle for
+held-out loss: at larger alphabets, forcing a slightly smaller residual
+by thousands of extra sweeps can worsen the following block, so we use
+a broad guard and report causal predictive loss as the deciding check.
+
+The conditional solver was checked against literal dense joint IPF and
+against the earlier triangle implementation at small $V$.  The sparse
+grouped evaluator agrees with its dense grouped reference to below
+$2\cdot10^{-9}$ in probability, including support growth and duplicate
+lags.  These checks separate correctness of the implemented sparse
+model from the observed-support approximation just stated.
+
+\paragraph{Full-file measurement and complete accounting.}
+We ran the checkpointed predictor on all $100{,}000{,}000$ characters
+of text8, represented by $19{,}429{,}294$ \texttt{cl100k\_base}
+tokens.  For each $V$, the reduced alphabet consists of the $V-1$ most
+frequent token types in the file and one escape symbol.  This whole-file
+choice is not free.  We transmit the selected subset with an enumerative
+code, charge the external tokenizer vocabulary, and encode every original
+token behind escape with a sequential Jeffreys--KT code over the excluded
+tokenizer IDs.  The reduced symbols before the first fitted checkpoint are
+likewise encoded by a fixed-alphabet KT code.  Thus the final column of
+Table~\ref{tab:calibrated-full-text8} is a complete code for the original
+character file, not a reduced-alphabet score.
+
+\begin{table}[ht]
+\centering
+\caption{Calibrated pairwise prediction on full text8.  Every row uses
+$32$ geometric checkpoints.  The upper panel isolates the predictive gain
+from using all three pairwise margins; its entries are bits per BPE token
+over the fitted suffix.  The lower panel gives the complete honest-code
+accounting.  Its first four numeric columns are bits per BPE token over the
+whole stream; the last is bits per original text8 character.}
+\label{tab:calibrated-full-text8}
+\small
+\begin{tabular}{rrrr}
+\toprule
+$V$ & star rule & three-pair fit & gain from third pair \\
+\midrule
+1024 & 5.173282 & 5.061883 & 0.111399 \\
+4096 & 7.094082 & 6.923955 & 0.170127 \\
+8192 & 8.077821 & 7.879932 & 0.197889 \\
+\bottomrule
+\end{tabular}
+\vspace{0.8em}
+
+\begin{tabular}{rrrrrr}
+\toprule
+$V$ & reduced prediction & vocabulary & escape payload & total & bits/character \\
+\midrule
+1024 & 5.062028 & 0.319949 & 4.716307 & 10.098284 & 1.962025 \\
+4096 & 6.928956 & 0.320795 & 2.330236 &  9.579986 & 1.861324 \\
+8192 & 7.891411 & 0.321631 & 1.205158 &  9.418200 & 1.829890 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The vocabulary column includes the fixed $6{,}208{,}152$-bit external
+tokenizer description and the enumerative description of the selected
+subset.  Increasing $V$ makes the reduced-alphabet prediction harder, but
+sharply reduces the escaped-token payload; over these three runs the latter
+effect dominates.  The honest total falls from $1.962025$ to $1.861324$ and
+then $1.829890$ bits per original character.  Independently, the upper panel
+shows that the third pair remains useful throughout: its gain over the
+two-pair star rule increases from $0.111399$ to $0.197889$ bits per BPE token.
+
+These provisional fits used the parallel stochastic dual solver with a
+plateau learning-rate schedule, an exact certificate every 50 updates, and
+an exact L-BFGS fallback if certification failed.  All 32 fits certified at
+grouped margin error below $0.01$ without fallback or nonfinite rejection.
+At $V=1024$, reusable checkpoint construction took $871$ seconds with 12
+processes and calibration took $151.3$ seconds in the final validation run.
+A direct two-pass C builder eliminated the
+temporary sparse matrices used to construct the intersection plan, and a
+context-sparse reference cache retained only corrections used by each edge
+block.  A complete validation run reproduced every fitted array and every
+certificate exactly, while reducing measured peak RSS from $10.25$ to
+$5.12$ GB.  At the final checkpoint the problem arrays occupy $29$ MB, the
+$83{,}702{,}774$-entry compact intersection plan $1.34$ GB, and the compact
+reference cache $0.776$ GB.  Exact predictive scoring of the 31 independent
+checkpoint intervals is also process-parallel: four workers reproduce every
+serial block and accounting total exactly in $87.7$ rather than $256.8$
+seconds, a $2.93$-fold elapsed-time speedup.
+
+At $V=4096$, the 32-checkpoint fit used
+the direct intersection builder, context-sparse stochastic cache, and one
+warm-started chain.  All 32 checkpoints certified below $0.01$ using the
+stochastic solver alone, with neither exact fallback nor nonfinite
+rejection.  Calibration took $1330.6$ seconds ($22.2$ minutes) and peaked at
+$13.89$ GB including workers.  At the final checkpoint the intersection
+plan occupies $4.48$ GB and the stochastic reference cache $3.19$ GB.
+
+Exact scoring uses the positive log-sum-exp reference calculation and
+parallelizes independent checkpoint intervals.  Longest-interval-first
+scheduling preserves causal output order while avoiding a large serial
+tail.  On this run elapsed scoring time was $553.6$, $321.6$, and $270.8$
+seconds with 4, 8, and 12 workers respectively; every interval and every
+honest-accounting total agrees exactly across the runs.
+
+The $V=8192$ laptop run used four construction/calibration workers while
+retaining the fixed stochastic batch of 12 replicas.  Construction took
+$9362$ seconds, calibration $4591$ seconds ($76.5$ minutes), and exact
+12-worker scoring $544.5$ seconds.  All 32 checkpoints certified below
+$0.01$, again with no exact fallback or nonfinite rejection; calibration
+peaked at $17.91$ GB.  The final intersection plan and compact reference
+cache contain $5.90$ and $4.86$ GB of live arrays respectively.  These are
+provisional tolerance-$0.01$ results, but they demonstrate that increasing
+the working alphabet continues to improve the honest code and remains
+feasible on the 24-GB laptop.
 
 \appendix
 
@@ -1109,294 +1374,6 @@ anywhere here.  Where the assignment is sub-normalised the reported
 codelength is an over-estimate, which is the safe direction; the
 measured deviations carry both signs and do not accumulate
 systematically.
-
-\section{The calibrated pairwise predictor}
-\label{app:calibration}
-
-Let $X_0$ be the target symbol and $X_1, X_2$ the two context
-symbols.  Suppose the pair distributions $p(X_0, X_1)$ and
-$p(X_0, X_2)$ are known.  These do not determine the conditional
-$p(x_0 \mid x_1, x_2)$: many joints share the given pairs and they
-disagree about the conditional.  The standard resolution is maximum
-entropy: among all consistent joints, take the one that adds nothing
-else.  For log-loss this choice is also minimax over the consistent
-set.
-
-\paragraph{Two pairs.}  Both constraints involve $X_0$, so the
-maximum-entropy joint factorizes as
-$p(x_0)\,p(x_1 \mid x_0)\,p(x_2 \mid x_0)$ and its conditional is
-closed-form:
-\begin{equation}
-\label{eq:star}
-  p^\ast(x_0 \mid x_1, x_2)
-  \;\propto\;
-  p(x_0)\,
-  \frac{p(x_0 \mid x_1)}{p(x_0)}\,
-  \frac{p(x_0 \mid x_2)}{p(x_0)}.
-\end{equation}
-This is the product rule of Section~\ref{sec:pairwise} at
-$\beta_1 = \beta_2 = 1$.  It is exact if and only if $X_1$ and $X_2$
-are conditionally independent \emph{given} $X_0$; marginal
-independence of the context symbols is neither necessary nor
-sufficient.  When the context symbols carry overlapping information
-about the target, \eqref{eq:star} multiplies the same evidence twice.
-
-\paragraph{Three pairs.}  Suppose additionally $p(X_1, X_2)$ is
-known.  The maximum-entropy joint is now a pairwise field
-\begin{equation*}
-  p^\ast(x_0, x_1, x_2)
-  \;\propto\;
-  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2)\,\psi_{12}(x_1, x_2),
-\end{equation*}
-with the potentials determined by the requirement that all three pair
-margins of $p^\ast$ equal the given tables.  Two facts follow.
-First, since $x_1$ and $x_2$ are observed at prediction time, the
-factor $\psi_{12}$ is a constant and cancels: the conditional still
-factorizes over the lags,
-\begin{equation}
-\label{eq:calibrated}
-  p^\ast(x_0 \mid x_1, x_2)
-  \;\propto\;
-  \psi_{01}(x_0, x_1)\,\psi_{02}(x_0, x_2).
-\end{equation}
-Second, the potentials are no longer the pairwise ratios of
-\eqref{eq:star}: they solve a coupled system in which the third
-table participates, and the constraint has a direct reading.  The
-margin conditions state that the product \eqref{eq:calibrated},
-averaged over how the two context symbols actually co-occur (that
-is, over $p(x_2 \mid x_1)$), reproduces each pairwise conditional;
-in \eqref{eq:star} the same average is taken as if the context
-symbols co-occurred only through $X_0$.  Redundancy between the lags
-is thereby discounted in the fitted factors themselves.
-
-The extreme case is instructive.  If $X_2$ is a copy of $X_1$, the
-star rule \eqref{eq:star} squares the evidence, while the calibrated
-conditional \eqref{eq:calibrated} collapses to
-$p(x_0 \mid x_1)$ exactly: the duplicate lag is priced at zero.  If
-instead the lags are conditionally independent given the target, the
-$\psi_{12}$ constraint is inactive and \eqref{eq:calibrated} reduces
-to \eqref{eq:star}.  Between the extremes it interpolates, which is
-the role the tempering exponents $\beta_\delta < 1$ play by hand,
-with one scalar where the calibration uses a full table.
-
-\paragraph{Computation: eliminate the context potential.}
-The ideal three-pair solution can be written without ever storing the
-$V^3$ joint.  Fix the third margin and write
-\begin{equation}
-  q(x_0,x_1,x_2)
-  = \widehat p_{12}(x_1,x_2)\,
-    r(x_0\mid x_1,x_2),
-  \qquad
-  r(x_0\mid x_1,x_2)
-  \propto f_1(x_0,x_1)f_2(x_0,x_2).
-  \label{eq:conditional-calibration}
-\end{equation}
-The factor on the context pair has thereby been eliminated
-analytically: normalization of $r$ supplies whatever
-$\psi_{12}$ is required in the joint.  The two remaining factors are
-chosen so that averaging \eqref{eq:conditional-calibration} against
-$\widehat p_{12}$ reproduces the target--lag margins.  Ordinary
-iterative proportional fitting alternately rescales these factors;
-equivalently one may minimize the convex dual and finish with
-proportional-fitting sweeps whose marginal errors provide the final
-certificate.
-
-\paragraph{Observed-support approximation.}
-There is a scaling distinction between storage and work.  The layered
-estimator supplies pair probabilities without a dense table, but exact
-calibration against its positive $\widehat p_{12}$ still requires an
-average over all $V^2$ context pairs.  Our present implementation makes
-the following explicit, revisitable approximation.  Calibration is
-restricted to context pairs observed in the decoded prefix.  We
-renormalize $\widehat p_{12}$ on that support, then make the smallest
-relative-entropy adjustment of the two target--lag estimates that gives
-them the new lag margins while retaining their common target margin.
-For a context pair not yet observed, prediction falls back to the
-two-pair maximum-entropy rule \eqref{eq:star}.  Thus the third pair is
-used wherever the data have identified its support; the fallback is
-declared rather than silently assigning a dense table.
-
-The target--lag factors are stored as the layered unigram baseline,
-one global target correction, and corrections only for observed
-target--lag cells.  Define the deviations of the multiplicative
-corrections from one by
-\[
- r_1(y,a)=\exp\{c_1(y,a)\}-1,
- \qquad
- r_2(y,b)=\exp\{c_2(y,b)\}-1,
-\]
-and their baseline-weighted row sums by
-\[
- S_{1a}=\sum_y p_0(y)r_1(y,a),
- \qquad
- S_{2b}=\sum_y p_0(y)r_2(y,b).
-\]
-For an observed context pair $(a,b)$, expanding
-$(1+r_1(y,a))(1+r_2(y,b))$ gives
-\[
- Z_{ab}=1+S_{1a}+S_{2b}
-       +\sum_y p_0(y)r_1(y,a)r_2(y,b).
-\]
-Thus the repeated margin evaluations
-need only intersections of the two sparse correction rows, not their
-much larger union.  A compiled sparse-intersection plan supplies the
-normalizers and all three margins; its reductions are sharded across
-persistent workers.  Neither a pair-probability table nor a triple
-table is constructed.  Active cells are matched individually; all
-inactive cells in one lag row form a single grouped constraint.  This
-grouping, together with restriction of the context support, defines
-the scalable model being measured here; it is not claimed to equal the
-uncoarsened full-support triangle.
-
-\paragraph{Solver and sequential use.}
-The dual L-BFGS solver approaches the solution rapidly, after which
-ordinary proportional-fitting sweeps may polish the margins.  Both
-phases retain the iterate with the best actual certificate, the maximum
-of the three $L^1$ marginal errors, because neither the optimizer's
-stopping test nor that combined certificate is monotone at every
-numerical step.  At geometric checkpoints the sparse factors are
-carried forward: existing corrections are warm-started and newly
-observed cells start at zero.  Splitting the checkpoints into several
-interleaved warm-start chains keeps independent fits busy in parallel.
-Only two complete checkpoints are resident at once: they are fitted,
-written, and released, while compact feature keys and corrections are
-retained for the next warm start in each chain.  Within a fit the dual
-line search mixes the old and proposed natural parameters inside a
-finite displacement region; unrestricted proportional-fitting sweeps
-remain available afterward.  This prevents numerically meaningless
-trial factors without bounding the final estimator.
-The residual remains a numerical diagnostic rather than an oracle for
-held-out loss: at larger alphabets, forcing a slightly smaller residual
-by thousands of extra sweeps can worsen the following block, so we use
-a broad guard and report causal predictive loss as the deciding check.
-
-The conditional solver was checked against literal dense joint IPF and
-against the earlier triangle implementation at small $V$.  The sparse
-grouped evaluator agrees with its dense grouped reference to below
-$2\cdot10^{-9}$ in probability, including support growth and duplicate
-lags.  These checks separate correctness of the implemented sparse
-model from the observed-support approximation just stated.
-
-\paragraph{Full-file measurement and complete accounting.}
-We ran the checkpointed predictor on all $100{,}000{,}000$ characters
-of text8, represented by $19{,}429{,}294$ \texttt{cl100k\_base}
-tokens.  The reduced alphabet has $V=1024$: the $1023$ most frequent
-token types in the file and one escape symbol.  This whole-file choice
-is not free.  We transmit the selected subset with an enumerative code,
-charge the external tokenizer vocabulary, and encode every original
-token behind escape with a sequential Jeffreys--KT code over the
-excluded tokenizer IDs.  The first $2050$ reduced symbols, before the
-first fitted checkpoint, are likewise encoded by a fixed-alphabet KT
-code.  Hence the final column below is a complete code for the original
-character file, not a reduced-alphabet score.
-
-\begin{table}[ht]
-\centering
-\caption{Calibrated pairwise prediction on full text8 at $V=1024$.
-The middle column is diagnostic bits per BPE token.  The last column
-includes the initial prefix, tokenizer and selected-vocabulary
-descriptions, and escaped-token identities, and is in bits per original
-character.}
-\label{tab:calibrated-full-text8}
-\begin{tabular}{lrr}
-\toprule
-predictor & reduced bits/token & complete bits/character \\
-\midrule
-two-pair star rule, \eqref{eq:star} & 5.17342 & 1.98367 \\
-three-pair calibration, \eqref{eq:calibrated} & 5.06203 & 1.96203 \\
-\midrule
-gain from the third pair & 0.11139 & 0.02164 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-For the calibrated row, the complete $1.962025$ bits per character
-decompose as follows:
-\begin{center}
-\begin{tabular}{lr}
-\toprule
-component & bits/character \\
-\midrule
-reduced-alphabet prediction, including initial prefix & 0.983516 \\
-tokenizer vocabulary and selected-subset description & 0.062164 \\
-identities of escaped tokens & 0.916345 \\
-\midrule
-total & 1.962025 \\
-\bottomrule
-\end{tabular}
-\end{center}
-The selected subset itself costs only $8{,}229$ bits; almost all of
-the second line is the $6{,}208{,}152$-bit external-tokenizer charge.
-The escape payload is $0.02087$ bits per BPE token above its empirical
-entropy lower bound.  With 32 geometric checkpoints, calibration improves
-all 31 predicted blocks, including the data-poor first block.  The complete
-number is $0.010036$ bits per character below the earlier eight-checkpoint
-measurement ($1.972062$); the denser causal refresh schedule, rather than a
-change in vocabulary accounting, produces the improvement.
-
-These provisional fits used the parallel stochastic dual solver with a
-plateau learning-rate schedule, an exact certificate every 50 updates, and
-an exact L-BFGS fallback if certification failed.  All 32 fits certified at
-grouped margin error below $0.01$ without fallback or nonfinite rejection.
-Reusable checkpoint construction took $871$ seconds with 12 processes;
-calibration alone took $142.5$ seconds with 12 workers, versus $813$ seconds
-for the earlier eight-checkpoint exact run.  Its initial implementation
-peaked at $10.25$ GB.  A subsequent direct two-pass C builder eliminated the
-temporary sparse matrices used to construct the intersection plan, and a
-context-sparse reference cache retained only corrections used by each edge
-block.  A complete validation run reproduced every fitted array and every
-certificate exactly, took $151.3$ seconds, and reduced measured peak RSS to
-$5.12$ GB.  At the final checkpoint the problem arrays occupy $29$ MB, the
-$83{,}702{,}774$-entry compact intersection plan $1.34$ GB, and the compact
-reference cache $0.776$ GB.  Exact predictive scoring of the 31 independent
-checkpoint intervals is also process-parallel: four workers reproduce every
-serial block and accounting total exactly in $87.7$ rather than $256.8$
-seconds, a $2.93$-fold elapsed-time speedup.
-
-\paragraph{Provisional $V=4096$ scaling run.}
-To measure the next computational regime, rather than to set a final
-codelength, we repeated the full-file fit at $V=4096$ with eight
-checkpoints.  A prefix of $2050$ tokens is too sparse for this alphabet;
-the first fit was therefore delayed to $16V=65{,}536$ tokens and the
-earlier symbols remain covered by the initial sequential code.  All eight
-reported fits have marginal certificate below $0.01$.  Construction took
-$811$ seconds, calibration $4801$ seconds, and the complete fit $5621$
-seconds ($93.7$ minutes); peak resident memory was $17.08$ GB.  The final
-checkpoint contains $1{,}399{,}764$ observed context edges, the same number
-of active first-lag corrections, and $2{,}288{,}630$ second-lag
-corrections.  These are deliberately not presented as final compression
-numbers: eight checkpoints make the predictor stale over long blocks, and
-delaying the first fit also costs prediction.  The run establishes that
-$V=4096$ is feasible on the laptop and that calibration, at $86\%$ of fit
-construction-plus-calibration time, is now the dominant scaling problem.
-At the largest checkpoints utilization also becomes memory-bandwidth
-limited, and exploratory dual steps can still trigger cancellation in the
-intersection identity even though the retained solutions are finite and
-certified.  The production target remains the full vocabulary with 32
-checkpoints, preferably with a progressive early vocabulary and cached
-checkpoint profiles.
-
-That 32-checkpoint $V=4096$ target has now been run on the full file using
-the direct intersection builder, context-sparse stochastic cache, and one
-warm-started chain.  All 32 checkpoints certified below $0.01$ using the
-stochastic solver alone, with neither exact fallback nor nonfinite
-rejection.  Calibration took $1330.6$ seconds ($22.2$ minutes) and peaked at
-$13.89$ GB including workers.  At the final checkpoint the intersection
-plan occupies $4.48$ GB and the stochastic reference cache $3.19$ GB.  The
-honest two-part code is $1.861324$ bits per character: $6.928956$ bits per
-BPE token for reduced-alphabet prediction, $0.320795$ for vocabulary
-description, and $2.330236$ for escaped-token identities.  The calibrated
-suffix is $6.923955$ versus $7.094082$ bits per token for the star fallback,
-a pure three-pair gain of $0.170127$.  These remain provisional
-tolerance-$0.01$ figures, but establish both a substantial predictive gain
-over $V=1024$ and laptop feasibility at the denser refresh schedule.
-
-Exact scoring uses the positive log-sum-exp reference calculation and
-parallelizes independent checkpoint intervals.  Longest-interval-first
-scheduling preserves causal output order while avoiding a large serial
-tail.  On this run elapsed scoring time was $553.6$, $321.6$, and $270.8$
-seconds with 4, 8, and 12 workers respectively; every interval and every
-honest-accounting total agrees exactly across the runs.
 
 \section{The table of $\phi$ values: what is stored, what is
 computed, and how it was checked}
@@ -1706,7 +1683,7 @@ the joint factorizes and this reduces exactly to the product rule at
 exponent one; adding lag--lag constraints is the principled cure for
 the double counting that made that rule lose, because redundancy
 among the lags is then priced into the factors
-(Appendix~\ref{app:calibration} proves the two-lag case).  Which
+(Section~\ref{sec:calibration} proves the two-lag case).  Which
 constraints to include is not tuned either: it is a latent choice ---
 a family of constraint sets, mixed with a prior, exactly as the
 current family of members is mixed.
@@ -1719,7 +1696,7 @@ checkpointed control.
 
 \emph{Fit with our scheme.}  This \emph{is} our scheme, extended.
 The calibrated member is this route with the smallest interesting
-constraint set; Appendix~\ref{app:calibration} is its two-lag theory;
+constraint set; Section~\ref{sec:calibration} is its two-lag theory;
 the tables come from the same smoothed count estimators as everything
 else.  What the generalization adds is reach: more lags at additive
 cost, lag--lag constraints, selected triples where synergy is
