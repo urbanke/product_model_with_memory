@@ -4379,8 +4379,10 @@ new three-pair pipeline on the EPFL server. Submit only through
 `urbanke@lth.epfl.ch`; it requests node14, 64 CPUs and 220 GB on
 `slurm-cluster`. It verifies Python >=3.12 and the native extension,
 prepares/reuses the 25,793,085-token `bpe_enwik8` stream, constructs V4096/C32
-problems with 64 workers, calibrates with 48 replicas/workers, and exact-scores
-with 31 workers. BLAS inner threading is forced to one. Stages are restartable
+problems with 64 workers, calibrates with the validated fixed batch of 12
+replicas/workers, and exact-scores with 31 workers. Increasing replicas merely
+to occupy cores would change the stochastic algorithm and repeat the batch-size
+mistake diagnosed on the laptop. BLAS inner threading is forced to one. Stages are restartable
 through separate `results.json` files under
 `output/calibration_enwik8_v4096_server`. First-time environment command:
 `conda create -y -n pmm312 python=3.12 numpy scipy pip`; install `tiktoken`

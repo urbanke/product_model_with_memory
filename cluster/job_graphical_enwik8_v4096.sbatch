@@ -22,7 +22,7 @@ export NUMEXPR_NUM_THREADS=1
 ROOT=output/calibration_enwik8_v4096_server
 STREAM=output/streams/bpe_enwik8
 PROBLEMS="$ROOT/problems_c32_jobs64"
-FITTED="$ROOT/fitted_c32_w48"
+FITTED="$ROOT/fitted_c32_w12"
 mkdir -p "$ROOT"
 
 PY=""
@@ -76,11 +76,11 @@ else
   echo "reusing $PROBLEMS"
 fi
 
-echo "=== calibrate with 48 replicas/workers ==="
+echo "=== calibrate with matched 12-replica batch and 12 workers ==="
 if [ ! -f "$FITTED/results.json" ]; then
   srun -c 64 "$PY" scripts/calibration_fit_precomputed.py \
     --problems "$PROBLEMS" --out "$FITTED" \
-    --steps 4000 --workers 48 --replicas 48 --edge-blocks 256 \
+    --steps 4000 --workers 12 --replicas 12 --edge-blocks 128 \
     --learning-rate 0.03 --minimum-learning-rate 0.003 \
     --exact-interval 50 --trust-radius 8.0 --tolerance 0.01
 else

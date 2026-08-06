@@ -78,8 +78,9 @@ The staged V4096/C32 server experiment uses the 64-core, high-memory node:
     sbatch cluster/job_graphical_enwik8_v4096.sbatch
 
 It prepares/reuses `output/streams/bpe_enwik8`, constructs reusable problems
-with 64 workers, calibrates with 48 stochastic replicas/workers, and performs
-exact honest scoring with 31 workers (one per predicted interval).  It requests
+with 64 workers, calibrates with the validated fixed batch of 12 stochastic
+replicas on 12 workers, and performs exact honest scoring with 31 workers
+(one per predicted interval).  It requests
 220 GB but does not attempt to consume it eagerly.  BLAS/OpenMP inner threading
 is disabled to prevent process oversubscription.  The native C extension is
 built and verified before the run starts.  Each completed stage is reusable;
