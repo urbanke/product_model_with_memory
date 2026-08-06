@@ -1060,30 +1060,29 @@ character file, not a reduced-alphabet score.
 \centering
 \caption{Calibrated pairwise prediction on full text8.  Every row uses
 $32$ geometric checkpoints.  The upper panel isolates the predictive gain
-from using all three pairwise margins; its entries are bits per BPE token
-over the fitted suffix.  The lower panel gives the complete honest-code
-accounting.  Its first four numeric columns are bits per BPE token over the
-whole stream; the last is bits per original text8 character.}
+from using all three pairwise margins over the fitted suffix.  The lower
+panel gives the complete honest-code accounting.  Every numeric entry in
+both panels is in bits per original text8 character.}
 \label{tab:calibrated-full-text8}
 \small
 \begin{tabular}{rrrr}
 \toprule
 $V$ & star rule & three-pair fit & gain from third pair \\
 \midrule
-1024 & 5.173282 & 5.061883 & 0.111399 \\
-4096 & 7.094082 & 6.923955 & 0.170127 \\
-8192 & 8.077821 & 7.879932 & 0.197889 \\
+1024 & 1.005026 & 0.983384 & 0.021642 \\
+4096 & 1.373681 & 1.340738 & 0.032943 \\
+8192 & 1.558876 & 1.520687 & 0.038189 \\
 \bottomrule
 \end{tabular}
 \vspace{0.8em}
 
-\begin{tabular}{rrrrrr}
+\begin{tabular}{rrrrr}
 \toprule
-$V$ & reduced prediction & vocabulary & escape payload & total & bits/character \\
+$V$ & reduced prediction & vocabulary & escape payload & honest total \\
 \midrule
-1024 & 5.062028 & 0.319949 & 4.716307 & 10.098284 & 1.962025 \\
-4096 & 6.928956 & 0.320795 & 2.330236 &  9.579986 & 1.861324 \\
-8192 & 7.891411 & 0.321631 & 1.205158 &  9.418200 & 1.829890 \\
+1024 & 0.983516 & 0.062164 & 0.916345 & 1.962025 \\
+4096 & 1.346247 & 0.062328 & 0.452748 & 1.861324 \\
+8192 & 1.533246 & 0.062491 & 0.234154 & 1.829890 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1095,7 +1094,8 @@ sharply reduces the escaped-token payload; over these three runs the latter
 effect dominates.  The honest total falls from $1.962025$ to $1.861324$ and
 then $1.829890$ bits per original character.  Independently, the upper panel
 shows that the third pair remains useful throughout: its gain over the
-two-pair star rule increases from $0.111399$ to $0.197889$ bits per BPE token.
+two-pair star rule increases from $0.021642$ to $0.038189$ bits per original
+character.
 
 These provisional fits used the parallel stochastic dual solver with a
 plateau learning-rate schedule, an exact certificate every 50 updates, and

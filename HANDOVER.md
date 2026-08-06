@@ -4423,9 +4423,10 @@ bits/BPE token = 1.82988986 bits/original text8 character.
 
 `paper/main.tex` now places the complete calibrated-pairwise section before
 the `\\appendix` boundary.  The obsolete V4096/C8 discussion and numbers were
-removed.  One expandable two-panel C32 table reports V1024, V4096 and V8192:
-the upper panel gives star, calibrated and third-pair-gain bpt; the lower
-panel gives reduced prediction, vocabulary description, escape payload,
-total bpt and honest bits/original character.  The front scoreboard now uses
+removed.  One expandable two-panel C32 table reports V1024, V4096 and V8192.
+Both panels use bits per original character: the upper gives the fitted-suffix
+contributions of the star rule, calibrated rule and third-pair gain; the lower
+gives reduced prediction, vocabulary description, escape payload and their
+honest total.  The front scoreboard now uses
 the V8192 result.  The PDF was rebuilt and pages 14--15 were visually checked:
 the table is legible and Appendix A starts after the Section 7 discussion.
