@@ -421,11 +421,16 @@ def project_sparse_layered_pair(
             active_y, weights=delta * left[active_context], minlength=v
         )
     )
-    if max(
+    final_residual = max(
         float(np.abs(final_context - desired_context).sum()),
         float(np.abs(final_target - target_marginal).sum()),
-    ) >= tolerance * 10:
-        raise RuntimeError("sparse pair-margin projection did not converge")
+    )
+    if final_residual >= tolerance * 10:
+        raise RuntimeError(
+            "sparse pair-margin projection did not converge: "
+            f"residual={final_residual:.6g}, tolerance={tolerance:.6g}, "
+            f"iterations={max_iterations}"
+        )
     return result
 
 

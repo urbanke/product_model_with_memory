@@ -4389,3 +4389,11 @@ through separate `results.json` files under
 `output/calibration_enwik8_v4096_server`. The prepared `bpe_enwik8` stream
 must already exist; the job stops instead of installing `tiktoken`. The laptop concurrently builds
 V8192/text8 problems with four workers; do not confuse the two runs.
+
+Server job 2186 constructed checkpoints 0--16, then the sparse Y--lag-2
+Sinkhorn projection at checkpoint 17 exhausted its old 10,000-iteration,
+1e-12 tolerance. This was not memory failure (MaxRSS 24.8 GB). The projection
+controls are now explicit; the enwik8 job uses tolerance 1e-10 and at most
+100,000 iterations. The permitted final pair-margin discrepancy is still at
+most about 1e-9 L1, eight orders below the .01 calibration certificate.
+Failures now report achieved residual/tolerance/iterations.

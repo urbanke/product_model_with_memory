@@ -62,6 +62,7 @@ if [ ! -f "$PROBLEMS/results.json" ]; then
     --margin-workers 1 --solver lbfgs --evaluator union \
     --initialization unigram --checkpoint-transfer copy \
     --jobs 64 --iterations 2000 --tolerance 0.0001 \
+    --projection-tolerance 1e-10 --projection-iterations 100000 \
     --sparse-upstream --stream-checkpoints --uncompressed-states \
     --construct-only --out "$PROBLEMS"
 else

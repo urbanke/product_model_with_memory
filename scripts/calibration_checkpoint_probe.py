@@ -136,6 +136,14 @@ def main() -> None:
         help="use exact fallback immediately when the warm start is farther away",
     )
     parser.add_argument("--tolerance", type=float, default=1e-4)
+    parser.add_argument(
+        "--projection-tolerance", type=float, default=1e-12,
+        help="L1 tolerance for sparse pair-margin Sinkhorn projections",
+    )
+    parser.add_argument(
+        "--projection-iterations", type=int, default=10_000,
+        help="maximum Sinkhorn iterations for sparse pair projections",
+    )
     parser.add_argument("--reference-tolerance", type=float)
     parser.add_argument("--reference-iterations", type=int, default=5_000)
     parser.add_argument("--sparse-upstream", action="store_true")
@@ -336,6 +344,8 @@ def main() -> None:
                     contexts,
                     np.exp2(table["val"]),
                     marginal,
+                    max_iterations=args.projection_iterations,
+                    tolerance=args.projection_tolerance,
                 )
 
             p_ya = projected_pair(sparse_tables[0])
@@ -343,7 +353,9 @@ def main() -> None:
             observed_a = keys12 // v
             observed_b = keys12 % v
             restricted = restrict_sparse_margins_to_observed_contexts(
-                p_ya, p_yb, observed_a, observed_b
+                p_ya, p_yb, observed_a, observed_b,
+                max_iterations=args.projection_iterations,
+                tolerance=args.projection_tolerance,
             )
             problem = sparse_problem_from_projected(restricted)
         else:
