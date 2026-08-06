@@ -178,6 +178,76 @@ fail_layer_graph:
     Py_XDECREF(ptr_tuple);Py_XDECREF(yb_tuple);Py_XDECREF(ab_tuple);return NULL;
 }
 
+static PyObject *ab_major_intersection_graph(PyObject *self, PyObject *args) {
+    PyArrayObject *edge_a,*edge_b,*ya_y,*ya_a,*yb_y,*yb_b;
+    PyArrayObject *birth_ya,*birth_yb,*birth_ab;
+    if(!PyArg_ParseTuple(args,"O!O!O!O!O!O!O!O!O!",
+        &PyArray_Type,&edge_a,&PyArray_Type,&edge_b,
+        &PyArray_Type,&ya_y,&PyArray_Type,&ya_a,
+        &PyArray_Type,&yb_y,&PyArray_Type,&yb_b,
+        &PyArray_Type,&birth_ya,&PyArray_Type,&birth_yb,
+        &PyArray_Type,&birth_ab))return NULL;
+    npy_intp ne=PyArray_SIZE(edge_a),n1=PyArray_SIZE(ya_y),n2=PyArray_SIZE(yb_y),v=0,total=0;
+    if(PyArray_SIZE(edge_b)!=ne||PyArray_SIZE(birth_ab)!=ne||
+       PyArray_SIZE(ya_a)!=n1||PyArray_SIZE(birth_ya)!=n1||
+       PyArray_SIZE(yb_b)!=n2||PyArray_SIZE(birth_yb)!=n2){
+        PyErr_SetString(PyExc_ValueError,"invalid AB-major graph inputs");return NULL;
+    }
+    int *ea=PyArray_DATA(edge_a),*eb=PyArray_DATA(edge_b);
+    int *ay=PyArray_DATA(ya_y),*aa=PyArray_DATA(ya_a);
+    int *by=PyArray_DATA(yb_y),*bb=PyArray_DATA(yb_b);
+    npy_uint8 *d1=PyArray_DATA(birth_ya),*d2=PyArray_DATA(birth_yb),*de=PyArray_DATA(birth_ab);
+    for(npy_intp i=0;i<ne;i++){if(ea[i]+1>v)v=ea[i]+1;if(eb[i]+1>v)v=eb[i]+1;}
+    for(npy_intp i=0;i<n1;i++)if(aa[i]+1>v)v=aa[i]+1;
+    for(npy_intp i=0;i<n2;i++)if(bb[i]+1>v)v=bb[i]+1;
+    npy_intp *p1=calloc((size_t)v+1,sizeof(*p1)),*p2=calloc((size_t)v+1,sizeof(*p2));
+    npy_intp *position=malloc(((size_t)v+1)*sizeof(*position));
+    ActivePair *r1=malloc((size_t)n1*sizeof(*r1)),*r2=malloc((size_t)n2*sizeof(*r2));
+    PyArrayObject *ptr=NULL,*o1=NULL,*o2=NULL,*od=NULL;
+    if(!p1||!p2||!position||(!r1&&n1)||(!r2&&n2)){PyErr_NoMemory();goto fail_ab_graph;}
+    for(npy_intp i=0;i<n1;i++)p1[aa[i]+1]++;
+    for(npy_intp i=0;i<n2;i++)p2[bb[i]+1]++;
+    for(npy_intp a=0;a<v;a++){p1[a+1]+=p1[a];p2[a+1]+=p2[a];}
+    memcpy(position,p1,((size_t)v+1)*sizeof(*position));
+    for(npy_intp i=0;i<n1;i++){npy_intp j=position[aa[i]]++;r1[j]=(ActivePair){ay[i],(int)i};}
+    memcpy(position,p2,((size_t)v+1)*sizeof(*position));
+    for(npy_intp i=0;i<n2;i++){npy_intp j=position[bb[i]]++;r2[j]=(ActivePair){by[i],(int)i};}
+    for(npy_intp a=0;a<v;a++){
+        qsort(r1+p1[a],(size_t)(p1[a+1]-p1[a]),sizeof(*r1),compare_active_pair);
+        qsort(r2+p2[a],(size_t)(p2[a+1]-p2[a]),sizeof(*r2),compare_active_pair);
+    }
+    npy_intp pdims[1]={ne+1};ptr=(PyArrayObject*)PyArray_ZEROS(1,pdims,NPY_INT64,0);
+    if(!ptr){goto fail_ab_graph;}npy_int64 *raw=PyArray_DATA(ptr);
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp e=0;e<ne;e++){
+        npy_intp i=p1[ea[e]],ie=p1[ea[e]+1],j=p2[eb[e]],je=p2[eb[e]+1],count=0;
+        while(i<ie&&j<je){if(r1[i].y<r2[j].y)i++;else if(r2[j].y<r1[i].y)j++;else{count++;i++;j++;}}
+        raw[e+1]=count;
+    }
+    for(npy_intp e=0;e<ne;e++)raw[e+1]+=raw[e];total=raw[ne];
+    Py_END_ALLOW_THREADS
+    npy_intp dims[1]={total};
+    o1=(PyArrayObject*)PyArray_EMPTY(1,dims,NPY_INT32,0);
+    o2=(PyArrayObject*)PyArray_EMPTY(1,dims,NPY_INT32,0);
+    od=(PyArrayObject*)PyArray_EMPTY(1,dims,NPY_UINT8,0);
+    if(!o1||!o2||!od){PyErr_NoMemory();goto fail_ab_graph;}
+    int *out1=PyArray_DATA(o1),*out2=PyArray_DATA(o2);npy_uint8 *outd=PyArray_DATA(od);
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp e=0;e<ne;e++){
+        npy_intp i=p1[ea[e]],ie=p1[ea[e]+1],j=p2[eb[e]],je=p2[eb[e]+1],out=raw[e];
+        while(i<ie&&j<je){
+            if(r1[i].y<r2[j].y)i++;else if(r2[j].y<r1[i].y)j++;
+            else{int left=r1[i].index,right=r2[j].index,depth=d1[left];if(d2[right]>depth)depth=d2[right];if(de[e]>depth)depth=de[e];out1[out]=left;out2[out]=right;outd[out]=(npy_uint8)depth;out++;i++;j++;}
+        }
+    }
+    Py_END_ALLOW_THREADS
+    free(p1);free(p2);free(position);free(r1);free(r2);
+    return Py_BuildValue("NNNN",ptr,o1,o2,od);
+fail_ab_graph:
+    free(p1);free(p2);free(position);free(r1);free(r2);
+    Py_XDECREF(ptr);Py_XDECREF(o1);Py_XDECREF(o2);Py_XDECREF(od);return NULL;
+}
+
 typedef struct {
     npy_intp lo, hi, v, n1, n2;
     const double *b, *q1, *q2, *me;
@@ -459,7 +529,61 @@ fail_layered:
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
 }
 
+static PyObject *fused_margins_ab_major(PyObject *self, PyObject *args) {
+    PyArrayObject *base,*r1,*r2,*edge_a,*edge_b,*edge_p,*ya_y,*ya_a,*yb_y,*yb_b;
+    PyArrayObject *edge_ptr,*ix1,*ix2,*birth;
+    int checkpoint;long long edge_offset;
+    if(!PyArg_ParseTuple(args,"O!O!O!O!O!O!O!O!O!O!O!O!O!O!iL",
+        &PyArray_Type,&base,&PyArray_Type,&r1,&PyArray_Type,&r2,
+        &PyArray_Type,&edge_a,&PyArray_Type,&edge_b,&PyArray_Type,&edge_p,
+        &PyArray_Type,&ya_y,&PyArray_Type,&ya_a,&PyArray_Type,&yb_y,&PyArray_Type,&yb_b,
+        &PyArray_Type,&edge_ptr,&PyArray_Type,&ix1,&PyArray_Type,&ix2,&PyArray_Type,&birth,
+        &checkpoint,&edge_offset))return NULL;
+    npy_intp v=PyArray_SIZE(base),n1=PyArray_SIZE(r1),n2=PyArray_SIZE(r2),ne=PyArray_SIZE(edge_p);
+    if(edge_offset<0||edge_offset+ne+1>PyArray_SIZE(edge_ptr)||
+       PyArray_SIZE(edge_a)!=ne||PyArray_SIZE(edge_b)!=ne||
+       PyArray_SIZE(ix1)!=PyArray_SIZE(ix2)||PyArray_SIZE(ix1)!=PyArray_SIZE(birth)){
+        PyErr_SetString(PyExc_ValueError,"invalid AB-major margin inputs");return NULL;
+    }
+    npy_intp dims[1];dims[0]=v;PyArrayObject *my=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n1;PyArrayObject *m1=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n2;PyArrayObject *m2=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=ne;PyArrayObject *lz=(PyArrayObject*)PyArray_EMPTY(1,dims,NPY_DOUBLE,0);
+    PyArrayObject *unstable=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_UINT8,0);
+    double *s1=calloc((size_t)v,sizeof(double)),*s2=calloc((size_t)v,sizeof(double));
+    double *cs1=calloc((size_t)v,sizeof(double)),*cs2=calloc((size_t)v,sizeof(double));
+    double *me=malloc((size_t)ne*sizeof(double)),*row=calloc((size_t)v,sizeof(double)),*col=calloc((size_t)v,sizeof(double));
+    if(!my||!m1||!m2||!lz||!unstable||!s1||!s2||!cs1||!cs2||!me||!row||!col){PyErr_NoMemory();goto fail_ab_margin;}
+    double *b=PyArray_DATA(base),*q1=PyArray_DATA(r1),*q2=PyArray_DATA(r2),*ep=PyArray_DATA(edge_p);
+    double *oy=PyArray_DATA(my),*o1=PyArray_DATA(m1),*o2=PyArray_DATA(m2),*olz=PyArray_DATA(lz);
+    int *ea=PyArray_DATA(edge_a),*eb=PyArray_DATA(edge_b),*ay=PyArray_DATA(ya_y),*aa=PyArray_DATA(ya_a),*by=PyArray_DATA(yb_y),*bb=PyArray_DATA(yb_b);
+    npy_int64 *ptr=PyArray_DATA(edge_ptr);int *first=PyArray_DATA(ix1),*second=PyArray_DATA(ix2);npy_uint8 *depth=PyArray_DATA(birth),*bad=PyArray_DATA(unstable);
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp i=0;i<n1;i++){int a=aa[i];double value=b[ay[i]]*q1[i]-cs1[a],total=s1[a]+value;cs1[a]=(total-s1[a])-value;s1[a]=total;}
+    for(npy_intp i=0;i<n2;i++){int a=bb[i];double value=b[by[i]]*q2[i]-cs2[a],total=s2[a]+value;cs2[a]=(total-s2[a])-value;s2[a]=total;}
+    double sm=0.0;
+    for(npy_intp e=0;e<ne;e++){
+        npy_intp ge=(npy_intp)edge_offset+e;double cross=0.0,cc=0.0;
+        for(npy_int64 p=ptr[ge];p<ptr[ge+1];p++)if(depth[p]<=checkpoint){int i=first[p],j=second[p];double value=b[ay[i]]*q1[i]*q2[j]-cc,total=cross+value;cc=(total-cross)-value;cross=total;}
+        double z=1+s1[ea[e]]+s2[eb[e]]+cross,scale=1+fabs(s1[ea[e]])+fabs(s2[eb[e]])+fabs(cross);
+        if(!isfinite(z)||z<=0||scale>1e10*fmax(fabs(z),1e-300)){bad[e]=1;olz[e]=NAN;me[e]=0;}
+        else{olz[e]=log(z);me[e]=ep[e]/z;row[ea[e]]+=me[e];col[eb[e]]+=me[e];sm+=me[e];}
+    }
+    for(npy_intp i=0;i<n1;i++){o1[i]=b[ay[i]]*(1+q1[i])*row[aa[i]];oy[ay[i]]+=b[ay[i]]*q1[i]*row[aa[i]];}
+    for(npy_intp i=0;i<n2;i++){o2[i]=b[by[i]]*(1+q2[i])*col[bb[i]];oy[by[i]]+=b[by[i]]*q2[i]*col[bb[i]];}
+    for(npy_intp y=0;y<v;y++)oy[y]+=b[y]*sm;
+    for(npy_intp e=0;e<ne;e++)if(me[e]!=0){npy_intp ge=(npy_intp)edge_offset+e;for(npy_int64 p=ptr[ge];p<ptr[ge+1];p++)if(depth[p]<=checkpoint){int i=first[p],j=second[p],y=ay[i];double common=b[y]*me[e];o1[i]+=common*(1+q1[i])*q2[j];o2[j]+=common*(1+q2[j])*q1[i];oy[y]+=common*q1[i]*q2[j];}}
+    Py_END_ALLOW_THREADS
+    free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
+    return Py_BuildValue("NNNNN",my,m1,m2,lz,unstable);
+fail_ab_margin:
+    free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
+    Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
+}
+
 static PyMethodDef methods[]={
+    {"ab_major_intersection_graph",ab_major_intersection_graph,METH_VARARGS,"Direct birth-tagged AB-major graph."},
+    {"fused_margins_ab_major",fused_margins_ab_major,METH_VARARGS,"Fused AB-major block margins."},
     {"fused_margins",fused_margins,METH_VARARGS,"Fused sparse margins."},
     {"fused_margins_layered",fused_margins_layered,METH_VARARGS,"Fused birth-layered CSR margins."},
     {"intersection_plan",intersection_plan,METH_VARARGS,"Direct compact intersection plan."},

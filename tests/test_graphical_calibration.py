@@ -10,6 +10,7 @@ from product_model_with_memory.graphical_calibration import (
     SparseIntersectionPlan,
     SparseRestrictedMargins,
     build_sparse_edge_blocks,
+    build_ab_major_intersection_graph,
     build_sparse_intersection_plan,
     build_layered_intersection_graph,
     birth_major_sparse_support,
@@ -21,6 +22,7 @@ from product_model_with_memory.graphical_calibration import (
     grouped_conditional_ipf,
     intersection_plan_from_layered_graph,
     layered_intersection_graph_from_plan,
+    load_ab_major_intersection_graph,
     load_layered_intersection_graph,
     pair_midpoint_warm_start,
     pair_product_warm_start,
@@ -30,11 +32,14 @@ from product_model_with_memory.graphical_calibration import (
     restrict_sparse_margins_to_observed_contexts,
     sample_sparse_grouped_edges,
     save_layered_intersection_graph,
+    save_ab_major_intersection_graph,
     second_pair_warm_start,
     sparse_edge_minibatch,
+    sparse_edge_block_from_bounds,
     sparse_factorized_dual_evaluation,
     sparse_factorized_dual_hessian_product,
     sparse_factorized_margins,
+    sparse_factorized_margins_ab_major,
     sparse_factorized_margins_layered,
     sparse_factorized_margins_layered_reference,
     sparse_factorized_margins_reference,
@@ -667,7 +672,9 @@ def test_intersection_plan_respects_memory_limit():
         build_sparse_intersection_plan(problem, max_intersections=1)
 
 
-def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
+def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
+    tmp_path,
+):
     rng = np.random.default_rng(20260812)
     v = 7
     raw = rng.gamma(shape=0.9, scale=1.0, size=(v, v, v))
@@ -694,6 +701,26 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
     direct_graph = build_layered_intersection_graph(
         problem, birth_ya, birth_yb, birth_ab, layers=layers
     )
+    ab_graph = build_ab_major_intersection_graph(
+        problem, birth_ya, birth_yb, birth_ab
+    )
+    save_ab_major_intersection_graph(ab_graph, tmp_path / "ab_graph")
+    mapped_ab = load_ab_major_intersection_graph(tmp_path / "ab_graph")
+    assert mapped_ab.edges == ab_graph.edges
+    assert all(isinstance(array, np.memmap) for array in (
+        mapped_ab.edge_ptr, mapped_ab.correction_ya,
+        mapped_ab.correction_yb, mapped_ab.birth,
+    ))
+    np.testing.assert_array_equal(
+        np.diff(ab_graph.edge_ptr),
+        np.bincount(plan.edge, minlength=len(problem.edge_probability)),
+    )
+    np.testing.assert_array_equal(ab_graph.correction_ya, plan.correction_ya)
+    np.testing.assert_array_equal(ab_graph.correction_yb, plan.correction_yb)
+    np.testing.assert_array_equal(ab_graph.birth, triangle_birth)
+    assert ab_graph.nbytes < sum(array.nbytes for array in (
+        plan.edge, plan.target_y, plan.correction_ya, plan.correction_yb
+    ))
     for expected, actual in zip(graph.row_ptr, direct_graph.row_ptr):
         np.testing.assert_array_equal(actual, expected)
     for expected, actual in zip(
@@ -748,6 +775,10 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
         problem, graph, layers - 1, log_base, full_c1, full_c2,
         workers=4,
     )
+    ab_major = sparse_factorized_margins_ab_major(
+        problem, ab_graph, layers - 1, 0,
+        log_base, full_c1, full_c2,
+    )
     np.testing.assert_allclose(layered.target_y, explicit.target_y,
                                rtol=0.0, atol=2e-15)
     np.testing.assert_allclose(layered.active_ya, explicit.active_ya,
@@ -788,6 +819,32 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
         parallel_layered.log_normalizer, native_layered.log_normalizer,
         rtol=0.0, atol=2e-15,
     )
+    np.testing.assert_allclose(ab_major.target_y, explicit.target_y,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(ab_major.active_ya, explicit.active_ya,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(ab_major.active_yb, explicit.active_yb,
+                               rtol=0.0, atol=2e-15)
+    np.testing.assert_allclose(ab_major.log_normalizer,
+                               explicit.log_normalizer,
+                               rtol=0.0, atol=2e-15)
+    edge_lo, edge_hi = 5, 19
+    block = sparse_edge_block_from_bounds(problem, edge_lo, edge_hi)
+    explicit_block = sparse_factorized_margins(
+        block.problem, block.intersection_plan,
+        log_base, full_c1, full_c2,
+    )
+    ab_block = sparse_factorized_margins_ab_major(
+        block.problem, ab_graph, layers - 1, edge_lo,
+        log_base, full_c1, full_c2,
+    )
+    for actual, expected in zip(
+        (ab_block.target_y, ab_block.active_ya, ab_block.active_yb,
+         ab_block.log_normalizer),
+        (explicit_block.target_y, explicit_block.active_ya,
+         explicit_block.active_yb, explicit_block.log_normalizer),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-15)
     dual_explicit = sparse_factorized_dual_evaluation(
         problem, log_base, full_c1, full_c2,
         intersection_plan=plan, compute_certificate=True,
@@ -824,6 +881,19 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
     )
     assert stochastic_lazy.steps == 2
     assert np.isfinite(stochastic_lazy.best_exact_certificate)
+    stochastic_ab = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=2, batch_size=1, sampling="blocks", edge_blocks=4,
+        replicas=2, stochastic_workers=2, variance_reduction=True,
+        exact_interval=1, exact_margin_workers=2,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+        sampled_ab_major_graph=ab_graph,
+        lazy_block_cache=1,
+    )
+    assert stochastic_ab.steps == 2
+    assert stochastic_ab.intersection_plan_bytes == 0
+    assert np.isfinite(stochastic_ab.best_exact_certificate)
     fitted_explicit = sparse_grouped_ipf(
         problem, solver="lbfgs", evaluator="factorized",
         tolerance=1e-9, max_iterations=2_000,

@@ -4659,3 +4659,26 @@ and 92.8 MB, versus eager 1.50 s and 378.1 MB: about 1.49x elapsed time for
 4.1x less cache memory.  Thus cache size is a useful explicit operating knob,
 but direct sampled traversal remains the route to removing reconstruction
 work rather than merely trading it against memory.
+
+That direct route is now implemented as `ABMajorIntersectionGraph`.  It stores
+an AB-edge pointer plus `(YA index, YB index, birth depth)` per triangle; AB
+and target `y` are implicit.  Native construction matches the old explicit
+plan exactly and builds the real V1024/C32 graph in 1.22 s.  Its size is
+756,030,870 bytes (0.704 GiB), essentially identical to the YA-major layered
+graph.  It has uncompressed save/load support and is memory-mapped by default.
+
+The native AB-major evaluator accepts a contiguous sampled AB range and
+checkpoint depth.  It matches the explicit evaluator for full and interior
+block problems in all margin families and normalizers.  In the real
+checkpoint-23 50-step/128-block/12-worker probe, eager sampling took .946 s
+and retained 165.6 MB topology plus 212.6 MB references.  Memory-mapped
+AB-major sampling took 1.020 s, retained zero topology cache and 26.2 MB of
+bounded reference cache, and used the corrected stabilized exact certificate.
+Thus direct sampling removes about 352 MB of checkpoint-local cached arrays
+at essentially unchanged elapsed time.
+
+NEXT: benchmark and parallelize full exact evaluation in AB-major order.  If
+it matches the YA-major layered evaluator's speed under a bounded scratch
+budget, keep only the AB-major shared graph rather than persisting two 0.704
+GiB layouts.  Then integrate AB-major persistence into the offline C32 fitting
+driver and run the complete V1024 trajectory.

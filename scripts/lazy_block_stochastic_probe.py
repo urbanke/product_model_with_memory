@@ -20,7 +20,10 @@ from product_model_with_memory.graphical_calibration import (
     BirthMajorSparseSupport,
     SparseGroupedProblem,
     checkpoint_in_birth_major_support,
+    build_ab_major_intersection_graph,
     load_layered_intersection_graph,
+    load_ab_major_intersection_graph,
+    save_ab_major_intersection_graph,
     stochastic_sparse_dual_approach,
 )
 
@@ -76,9 +79,22 @@ def main() -> None:
             problem.active_yb_b, problem.vocabulary_size,
         )
     graph = load_layered_intersection_graph(store / "graph")
+    ab_path = store / "ab_graph"
+    if (ab_path / "manifest.json").exists():
+        ab_graph = load_ab_major_intersection_graph(ab_path)
+    else:
+        ab_graph = build_ab_major_intersection_graph(
+            final, support.birth_ya, support.birth_yb, support.birth_ab
+        )
+        save_ab_major_intersection_graph(ab_graph, ab_path)
+        ab_graph = load_ab_major_intersection_graph(ab_path)
 
     rows = []
-    for name, layered in (("eager", False), ("lazy", True)):
+    for name, layered, direct_ab in (
+        ("eager", False, False),
+        ("lazy", True, False),
+        ("ab_major", True, True),
+    ):
         started = time.perf_counter()
         result = stochastic_sparse_dual_approach(
             problem, log_base, c1, c2,
@@ -89,6 +105,7 @@ def main() -> None:
             exact_margin_workers=args.workers,
             exact_layered_graph=graph if layered else None,
             exact_layered_checkpoint=args.checkpoint if layered else None,
+            sampled_ab_major_graph=ab_graph if direct_ab else None,
             lazy_block_cache=args.cache,
         )
         rows.append({

@@ -605,6 +605,69 @@ class LayeredIntersectionGraph:
 
 
 @dataclass(frozen=True)
+class ABMajorIntersectionGraph:
+    """Shared triangles contiguous by AB edge, with explicit birth depth."""
+
+    edge_ptr: np.ndarray
+    correction_ya: np.ndarray
+    correction_yb: np.ndarray
+    birth: np.ndarray
+
+    @property
+    def edges(self) -> int:
+        return len(self.correction_ya)
+
+    @property
+    def nbytes(self) -> int:
+        return sum(array.nbytes for array in (
+            self.edge_ptr, self.correction_ya, self.correction_yb, self.birth
+        ))
+
+
+def save_ab_major_intersection_graph(
+    graph: ABMajorIntersectionGraph,
+    directory: str | Path,
+) -> None:
+    """Persist an AB-major graph as independently memory-mappable arrays."""
+
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, array in (
+        ("edge_ptr", graph.edge_ptr),
+        ("correction_ya", graph.correction_ya),
+        ("correction_yb", graph.correction_yb),
+        ("birth", graph.birth),
+    ):
+        np.save(destination / f"{name}.npy", array)
+    temporary = destination / "manifest.json.tmp"
+    temporary.write_text(json.dumps({
+        "version": 1, "edges": graph.edges, "bytes": graph.nbytes,
+    }, indent=2))
+    temporary.replace(destination / "manifest.json")
+
+
+def load_ab_major_intersection_graph(
+    directory: str | Path,
+    *,
+    mmap_mode: str | None = "r",
+) -> ABMajorIntersectionGraph:
+    """Load a persisted AB-major graph, memory-mapped by default."""
+
+    source = Path(directory)
+    manifest = json.loads((source / "manifest.json").read_text())
+    if manifest.get("version") != 1:
+        raise ValueError("unsupported AB-major graph manifest")
+    graph = ABMajorIntersectionGraph(*(
+        np.load(source / f"{name}.npy", mmap_mode=mmap_mode,
+                allow_pickle=False)
+        for name in ("edge_ptr", "correction_ya", "correction_yb", "birth")
+    ))
+    if graph.edges != int(manifest.get("edges", -1)):
+        raise ValueError("AB-major graph edge count differs from manifest")
+    return graph
+
+
+@dataclass(frozen=True)
 class BirthMajorSparseSupport:
     """Final sparse problem ordered so checkpoint supports are prefixes."""
 
@@ -869,6 +932,58 @@ def build_layered_intersection_graph(
     )
 
 
+def build_ab_major_intersection_graph(
+    problem: SparseGroupedProblem,
+    birth_ya: np.ndarray,
+    birth_yb: np.ndarray,
+    birth_ab: np.ndarray,
+) -> ABMajorIntersectionGraph:
+    """Build the shared topology contiguously by retained AB edge."""
+
+    first_birth = np.asarray(birth_ya, dtype=np.uint8)
+    second_birth = np.asarray(birth_yb, dtype=np.uint8)
+    context_birth = np.asarray(birth_ab, dtype=np.uint8)
+    if (
+        first_birth.shape != problem.target_ya.shape
+        or second_birth.shape != problem.target_yb.shape
+        or context_birth.shape != problem.edge_probability.shape
+    ):
+        raise ValueError("pair-edge births and sparse problem disagree")
+    if not (
+        _graphical_margin_c is not None
+        and hasattr(_graphical_margin_c, "ab_major_intersection_graph")
+    ):
+        plan = build_sparse_intersection_plan(problem)
+        counts = np.bincount(
+            plan.edge, minlength=len(problem.edge_probability)
+        )
+        birth = np.maximum.reduce([
+            first_birth[plan.correction_ya],
+            second_birth[plan.correction_yb],
+            context_birth[plan.edge],
+        ])
+        return ABMajorIntersectionGraph(
+            np.r_[0, np.cumsum(counts, dtype=np.int64)],
+            np.asarray(plan.correction_ya, dtype=np.int32),
+            np.asarray(plan.correction_yb, dtype=np.int32),
+            np.asarray(birth, dtype=np.uint8),
+        )
+    ptr, first, second, birth = (
+        _graphical_margin_c.ab_major_intersection_graph(
+            np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+            np.ascontiguousarray(first_birth),
+            np.ascontiguousarray(second_birth),
+            np.ascontiguousarray(context_birth),
+        )
+    )
+    return ABMajorIntersectionGraph(ptr, first, second, birth)
+
+
 def intersection_plan_from_layered_graph(
     problem: SparseGroupedProblem,
     graph: LayeredIntersectionGraph,
@@ -1081,6 +1196,68 @@ def sparse_factorized_margins_layered(
         target_y, active_ya, active_yb, log_z
     )):
         raise FloatingPointError("layered margin evaluation remained nonfinite")
+    return SparseFactorizedMargins(target_y, active_ya, active_yb, log_z)
+
+
+def sparse_factorized_margins_ab_major(
+    problem: SparseGroupedProblem,
+    graph: ABMajorIntersectionGraph,
+    checkpoint: int,
+    edge_offset: int,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+) -> SparseFactorizedMargins:
+    """Evaluate one contiguous AB-edge range from the shared AB-major graph."""
+
+    if checkpoint < 0 or edge_offset < 0:
+        raise ValueError("invalid AB-major checkpoint or edge offset")
+    ne = len(problem.edge_probability)
+    if edge_offset + ne + 1 > len(graph.edge_ptr):
+        raise ValueError("AB-major edge range lies outside the graph")
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    normalized_log_base = log_base - logsumexp(log_base)
+    base = np.exp(normalized_log_base)
+    c1 = np.asarray(correction_ya, dtype=np.float64)
+    c2 = np.asarray(correction_yb, dtype=np.float64)
+    target_y, active_ya, active_yb, log_z, unstable = (
+        _graphical_margin_c.fused_margins_ab_major(
+            np.ascontiguousarray(base), np.ascontiguousarray(np.expm1(c1)),
+            np.ascontiguousarray(np.expm1(c2)),
+            np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_probability, dtype=np.float64),
+            np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+            np.ascontiguousarray(graph.edge_ptr, dtype=np.int64),
+            np.ascontiguousarray(graph.correction_ya, dtype=np.int32),
+            np.ascontiguousarray(graph.correction_yb, dtype=np.int32),
+            np.ascontiguousarray(graph.birth, dtype=np.uint8),
+            checkpoint, edge_offset,
+        )
+    )
+    for edge in np.flatnonzero(unstable):
+        a = problem.edge_a[edge]
+        b = problem.edge_b[edge]
+        selected1 = np.flatnonzero(problem.active_ya_a == a)
+        selected2 = np.flatnonzero(problem.active_yb_b == b)
+        score = normalized_log_base.copy()
+        score[problem.active_ya_y[selected1]] += c1[selected1]
+        score[problem.active_yb_y[selected2]] += c2[selected2]
+        direct_log_z = float(logsumexp(score))
+        joint = problem.edge_probability[edge] * np.exp(
+            score - direct_log_z
+        )
+        target_y += joint
+        active_ya[selected1] += joint[problem.active_ya_y[selected1]]
+        active_yb[selected2] += joint[problem.active_yb_y[selected2]]
+        log_z[edge] = direct_log_z
+    if not all(np.all(np.isfinite(array)) for array in (
+        target_y, active_ya, active_yb, log_z
+    )):
+        raise FloatingPointError("AB-major margin evaluation remained nonfinite")
     return SparseFactorizedMargins(target_y, active_ya, active_yb, log_z)
 
 
@@ -1692,6 +1869,8 @@ def sparse_edge_block_from_bounds(
     problem: SparseGroupedProblem,
     edge_lo: int,
     edge_hi: int,
+    *,
+    build_plan: bool = True,
 ) -> SparseEdgeBlock:
     """Construct one local block and only that block's intersections."""
 
@@ -1713,9 +1892,13 @@ def sparse_edge_block_from_bounds(
         active_yb_b=problem.active_yb_b,
         target_yb=problem.target_yb,
     )
-    return SparseEdgeBlock(
-        mass, block_problem, build_sparse_intersection_plan(block_problem)
+    plan = (
+        build_sparse_intersection_plan(block_problem) if build_plan
+        else SparseIntersectionPlan(
+            *(np.empty(0, dtype=np.int32) for _ in range(4))
+        )
     )
+    return SparseEdgeBlock(mass, block_problem, plan)
 
 
 def stratified_sparse_edge_minibatch(
@@ -2305,6 +2488,7 @@ def stochastic_sparse_dual_approach(
     exact_layered_graph: LayeredIntersectionGraph | None = None,
     exact_layered_checkpoint: int | None = None,
     lazy_block_cache: int = 16,
+    sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
 ) -> SparseStochasticResult:
     """Use minibatch Adam only to approach the exact dual optimum.
 
@@ -2350,6 +2534,10 @@ def stochastic_sparse_dual_approach(
         raise ValueError(
             "exact layered graph and checkpoint must be supplied together"
         )
+    if sampled_ab_major_graph is not None and sampling != "blocks":
+        raise ValueError("AB-major sampled graph requires block sampling")
+    if sampled_ab_major_graph is not None and exact_layered_checkpoint is None:
+        raise ValueError("AB-major sampled graph requires checkpoint depth")
 
     lb = np.array(log_base_y, dtype=np.float64, copy=True)
     c1 = np.array(correction_ya, dtype=np.float64, copy=True)
@@ -2362,7 +2550,10 @@ def stochastic_sparse_dual_approach(
     square = np.zeros_like(parameters)
     rngs = [np.random.default_rng(seed + 1_000_003 * replica)
             for replica in range(replicas)]
-    lazy_blocks = sampling == "blocks" and exact_layered_graph is not None
+    direct_ab_blocks = sampled_ab_major_graph is not None
+    lazy_blocks = sampling == "blocks" and (
+        exact_layered_graph is not None or direct_ab_blocks
+    )
     full_plan = (
         None if lazy_blocks else build_sparse_intersection_plan(problem)
     )
@@ -2405,9 +2596,20 @@ def stochastic_sparse_dual_approach(
             group_masses.append(mass)
     elif sampling == "blocks":
         if lazy_blocks:
-            work = layered_edge_intersection_counts(
-                problem, exact_layered_graph, exact_layered_checkpoint
-            ) + 1
+            if direct_ab_blocks:
+                active = np.r_[0, np.cumsum(
+                    sampled_ab_major_graph.birth
+                    <= exact_layered_checkpoint,
+                    dtype=np.int64,
+                )]
+                ptr = sampled_ab_major_graph.edge_ptr[:(
+                    len(problem.edge_probability) + 1
+                )]
+                work = active[ptr[1:]] - active[ptr[:-1]] + 1
+            else:
+                work = layered_edge_intersection_counts(
+                    problem, exact_layered_graph, exact_layered_checkpoint
+                ) + 1
             cumulative = np.r_[0, np.cumsum(work, dtype=np.int64)]
             targets = np.linspace(0, cumulative[-1], edge_blocks + 1)
             boundaries = np.unique(np.searchsorted(cumulative, targets))
@@ -2443,7 +2645,9 @@ def stochastic_sparse_dual_approach(
         # Construct outside the lock: independent cache misses should use the
         # available stochastic workers rather than serializing all builders.
         lo, hi = block_bounds[index]
-        candidate = sparse_edge_block_from_bounds(problem, lo, hi)
+        candidate = sparse_edge_block_from_bounds(
+            problem, lo, hi, build_plan=not direct_ab_blocks
+        )
         with block_cache_lock:
             cached = block_cache.get(index)
             if cached is not None:
@@ -2655,11 +2859,19 @@ def stochastic_sparse_dual_approach(
         yb_position = np.flatnonzero(np.isin(
             problem.active_yb_b, np.unique(block.problem.edge_b)
         )).astype(np.int32)
-        margins = sparse_factorized_margins(
-            block.problem, block.intersection_plan,
-            snapshot_parameters[:first],
-            snapshot_parameters[first:second],
-            snapshot_parameters[second:],
+        margins = (
+            sparse_factorized_margins_ab_major(
+                block.problem, sampled_ab_major_graph,
+                exact_layered_checkpoint, block_bounds[index][0],
+                snapshot_parameters[:first],
+                snapshot_parameters[first:second],
+                snapshot_parameters[second:],
+            ) if direct_ab_blocks else sparse_factorized_margins(
+                block.problem, block.intersection_plan,
+                snapshot_parameters[:first],
+                snapshot_parameters[first:second],
+                snapshot_parameters[second:],
+            )
         )
         candidate = SparseReferenceMargins(
             margins.target_y, ya_position,
@@ -2734,10 +2946,17 @@ def stochastic_sparse_dual_approach(
                 block_cdf, rngs[replica].random(), side="right"
             ))
             block = get_block(chosen)
-            margins = sparse_factorized_margins(
-                block.problem, block.intersection_plan,
-                parameters[:first], parameters[first:second],
-                parameters[second:],
+            margins = (
+                sparse_factorized_margins_ab_major(
+                    block.problem, sampled_ab_major_graph,
+                    exact_layered_checkpoint, block_bounds[chosen][0],
+                    parameters[:first], parameters[first:second],
+                    parameters[second:],
+                ) if direct_ab_blocks else sparse_factorized_margins(
+                    block.problem, block.intersection_plan,
+                    parameters[:first], parameters[first:second],
+                    parameters[second:],
+                )
             )
             if variance_reduction:
                 reference = reference_for_block(chosen)

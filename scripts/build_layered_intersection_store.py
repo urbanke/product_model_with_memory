@@ -17,8 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from intersection_topology_audit import keys, load_problem, mark_births
 from product_model_with_memory.graphical_calibration import (
     birth_major_sparse_support,
+    build_ab_major_intersection_graph,
     build_layered_intersection_graph,
     save_layered_intersection_graph,
+    save_ab_major_intersection_graph,
 )
 
 
@@ -26,6 +28,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problems", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--ab-major", action="store_true")
     args = parser.parse_args()
 
     source = Path(args.problems)
@@ -57,6 +60,16 @@ def main() -> None:
     destination.mkdir(parents=True, exist_ok=True)
     save_started = time.perf_counter()
     save_layered_intersection_graph(graph, destination / "graph")
+    ab_graph = None
+    ab_construction_seconds = 0.0
+    if args.ab_major:
+        ab_started = time.perf_counter()
+        ab_graph = build_ab_major_intersection_graph(
+            support.problem,
+            support.birth_ya, support.birth_yb, support.birth_ab,
+        )
+        ab_construction_seconds = time.perf_counter() - ab_started
+        save_ab_major_intersection_graph(ab_graph, destination / "ab_graph")
     problem = support.problem
     arrays = {
         "edge_a": problem.edge_a,
@@ -87,6 +100,8 @@ def main() -> None:
         "graph_bytes": graph.nbytes,
         "construction_seconds": construction_seconds,
         "persistence_seconds": persistence_seconds,
+        "ab_major_bytes": None if ab_graph is None else ab_graph.nbytes,
+        "ab_major_construction_seconds": ab_construction_seconds,
     }
     temporary = destination / "manifest.json.tmp"
     temporary.write_text(json.dumps(payload, indent=2))
