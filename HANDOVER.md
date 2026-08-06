@@ -4682,3 +4682,47 @@ it matches the YA-major layered evaluator's speed under a bounded scratch
 budget, keep only the AB-major shared graph rather than persisting two 0.704
 GiB layouts.  Then integrate AB-major persistence into the offline C32 fitting
 driver and run the complete V1024 trajectory.
+
+Full AB-major exact evaluation is now implemented and parallelized with
+bounded worker-private scratch.  It is numerically consistent with YA-major
+evaluation (margin differences around 1e-10 and worst observed log-normalizer
+difference 2.6e-7), but remains slower.  At checkpoint 31 with 12 workers,
+YA-major took about .103 s and AB-major .192 s.  We therefore retain both
+memory-mapped 0.704-GiB views: YA-major for exact certificates/fallback and
+AB-major for sampled blocks.  This deliberate duplication buys fast exact
+checks while avoiding all checkpoint-local sampled topology.
+
+`scripts/fit_shared_graph_checkpoints.py` now provides the complete offline
+warm-started fitting workflow.  It walks checkpoints sequentially, uses the
+AB-major graph for stochastic sampled blocks, certifies with the YA-major
+graph, invokes the exact layered L-BFGS fallback at any checkpoint that does
+not certify, and writes scoring-compatible states in the original coordinate
+order.  `scripts/ab_major_exact_probe.py` benchmarks the two exact layouts,
+and `scripts/validate_layered_checkpoint_store.py --ab-major` can persist the
+AB-major graph alongside a checkpoint store.
+
+The complete text8 V1024/C32 run in
+`output/shared_graph_fit_v1024_c32_scorable` finished all 32 checkpoints in
+108.739 s with 12 workers and peak RSS 3,981,393,920 bytes (3.71 GiB).  It
+used 9,650 stochastic updates, invoked exact fallback at 10 early/intermediate
+checkpoints (2.28 s total fallback time), retained zero sampled-topology cache,
+and used at most 103,895,216 bytes of sampled reference cache.  Every final
+certificate is below .01; the maximum is .009988078 and the last is
+.008877395.  The preceding compact-plan run took 142.507 s and peaked at
+10,254,237,696 bytes, so the shared-graph route is about 24% faster and uses
+about 2.6 times less resident memory.
+
+Twelve-worker scoring took 52.291 s.  In bits per original text8 character,
+the updated V1024 row is: star 1.005026, three-pair prediction 0.982837, gain
+0.022189; honest accounting is reduced prediction 0.982970, vocabulary
+0.062164, escape payload 0.916345, total 1.961478.  These replace the older
+V1024 values in `paper/main.tex`.
+
+NEXT: commit and push this production path.  Then port it to the V4096/server
+workflow.  The main remaining fitting opportunity is the early trajectory:
+several early checkpoints exhaust 500 stochastic updates and then finish
+quickly under fallback, whereas later warm starts need only 100--300 updates.
+Improve that scheduler only through generic, certificate-driven rules; do not
+tune it to text8.  Retain the exact fallback at every checkpoint.  If much
+tighter tolerances are later required, revisit the compensated-sum threshold
+and the recorded Newton fallback proposal.

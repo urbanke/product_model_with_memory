@@ -529,16 +529,52 @@ fail_layered:
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
 }
 
+typedef struct {
+    npy_intp lo,hi,v,n1,n2;long long offset;int checkpoint,phase;
+    const double *b,*q1,*q2,*ep,*s1,*s2,*me;
+    const int *ea,*eb,*ay,*aa,*by,*bb,*first,*second;
+    const npy_int64 *ptr;const npy_uint8 *depth;
+    double *olz,*out_y,*out1,*out2,*row,*col,sm;
+    npy_uint8 *bad;
+} ABMarginTask;
+
+static void *ab_margin_worker(void *raw){
+    ABMarginTask *t=(ABMarginTask*)raw;
+    if(t->phase==0){
+        t->sm=0.0;
+        for(npy_intp e=t->lo;e<t->hi;e++){
+            npy_intp ge=(npy_intp)t->offset+e;double cross=0.0,cc=0.0;
+            for(npy_int64 p=t->ptr[ge];p<t->ptr[ge+1];p++)if(t->depth[p]<=t->checkpoint){int i=t->first[p],j=t->second[p];double value=t->b[t->ay[i]]*t->q1[i]*t->q2[j]-cc,total=cross+value;cc=(total-cross)-value;cross=total;}
+            double z=1+t->s1[t->ea[e]]+t->s2[t->eb[e]]+cross,scale=1+fabs(t->s1[t->ea[e]])+fabs(t->s2[t->eb[e]])+fabs(cross);
+            if(!isfinite(z)||z<=0||scale>1e10*fmax(fabs(z),1e-300)){t->bad[e]=1;t->olz[e]=NAN;((double*)t->me)[e]=0;}
+            else{t->olz[e]=log(z);((double*)t->me)[e]=t->ep[e]/z;t->row[t->ea[e]]+=t->me[e];t->col[t->eb[e]]+=t->me[e];t->sm+=t->me[e];}
+        }
+    }else{
+        for(npy_intp e=t->lo;e<t->hi;e++)if(t->me[e]!=0){npy_intp ge=(npy_intp)t->offset+e;for(npy_int64 p=t->ptr[ge];p<t->ptr[ge+1];p++)if(t->depth[p]<=t->checkpoint){int i=t->first[p],j=t->second[p],y=t->ay[i];double common=t->b[y]*t->me[e];t->out1[i]+=common*(1+t->q1[i])*t->q2[j];t->out2[j]+=common*(1+t->q2[j])*t->q1[i];t->out_y[y]+=common*t->q1[i]*t->q2[j];}}
+    }
+    return NULL;
+}
+
+static npy_intp ab_edge_cut(const npy_int64 *ptr,npy_intp offset,npy_intp ne,int part,int parts){
+    if(part<=0)return 0;if(part>=parts)return ne;
+    npy_int64 start=ptr[offset],total=ptr[offset+ne]-start;
+    npy_int64 target=start+(npy_int64)((long double)total*part/parts);
+    npy_intp lo=0,hi=ne;
+    while(lo<hi){npy_intp mid=lo+(hi-lo)/2;if(ptr[offset+mid]<target)lo=mid+1;else hi=mid;}
+    return lo;
+}
+
 static PyObject *fused_margins_ab_major(PyObject *self, PyObject *args) {
     PyArrayObject *base,*r1,*r2,*edge_a,*edge_b,*edge_p,*ya_y,*ya_a,*yb_y,*yb_b;
     PyArrayObject *edge_ptr,*ix1,*ix2,*birth;
-    int checkpoint;long long edge_offset;
-    if(!PyArg_ParseTuple(args,"O!O!O!O!O!O!O!O!O!O!O!O!O!O!iL",
+    int checkpoint,workers=1;long long edge_offset;
+    if(!PyArg_ParseTuple(args,"O!O!O!O!O!O!O!O!O!O!O!O!O!O!iL|i",
         &PyArray_Type,&base,&PyArray_Type,&r1,&PyArray_Type,&r2,
         &PyArray_Type,&edge_a,&PyArray_Type,&edge_b,&PyArray_Type,&edge_p,
         &PyArray_Type,&ya_y,&PyArray_Type,&ya_a,&PyArray_Type,&yb_y,&PyArray_Type,&yb_b,
         &PyArray_Type,&edge_ptr,&PyArray_Type,&ix1,&PyArray_Type,&ix2,&PyArray_Type,&birth,
-        &checkpoint,&edge_offset))return NULL;
+        &checkpoint,&edge_offset,&workers))return NULL;
+    if(workers<1)workers=1;
     npy_intp v=PyArray_SIZE(base),n1=PyArray_SIZE(r1),n2=PyArray_SIZE(r2),ne=PyArray_SIZE(edge_p);
     if(edge_offset<0||edge_offset+ne+1>PyArray_SIZE(edge_ptr)||
        PyArray_SIZE(edge_a)!=ne||PyArray_SIZE(edge_b)!=ne||
@@ -553,31 +589,43 @@ static PyObject *fused_margins_ab_major(PyObject *self, PyObject *args) {
     double *s1=calloc((size_t)v,sizeof(double)),*s2=calloc((size_t)v,sizeof(double));
     double *cs1=calloc((size_t)v,sizeof(double)),*cs2=calloc((size_t)v,sizeof(double));
     double *me=malloc((size_t)ne*sizeof(double)),*row=calloc((size_t)v,sizeof(double)),*col=calloc((size_t)v,sizeof(double));
+    pthread_t *threads=NULL;ABMarginTask *tasks=NULL;double *local_row=NULL,*local_col=NULL,*local_y=NULL,*local_1=NULL,*local_2=NULL;
     if(!my||!m1||!m2||!lz||!unstable||!s1||!s2||!cs1||!cs2||!me||!row||!col){PyErr_NoMemory();goto fail_ab_margin;}
     double *b=PyArray_DATA(base),*q1=PyArray_DATA(r1),*q2=PyArray_DATA(r2),*ep=PyArray_DATA(edge_p);
     double *oy=PyArray_DATA(my),*o1=PyArray_DATA(m1),*o2=PyArray_DATA(m2),*olz=PyArray_DATA(lz);
     int *ea=PyArray_DATA(edge_a),*eb=PyArray_DATA(edge_b),*ay=PyArray_DATA(ya_y),*aa=PyArray_DATA(ya_a),*by=PyArray_DATA(yb_y),*bb=PyArray_DATA(yb_b);
     npy_int64 *ptr=PyArray_DATA(edge_ptr);int *first=PyArray_DATA(ix1),*second=PyArray_DATA(ix2);npy_uint8 *depth=PyArray_DATA(birth),*bad=PyArray_DATA(unstable);
+    if(workers>1){
+        threads=malloc((size_t)workers*sizeof(*threads));tasks=calloc((size_t)workers,sizeof(*tasks));
+        local_row=calloc((size_t)workers*v,sizeof(double));local_col=calloc((size_t)workers*v,sizeof(double));
+        local_y=calloc((size_t)workers*v,sizeof(double));local_1=calloc((size_t)workers*n1,sizeof(double));local_2=calloc((size_t)workers*n2,sizeof(double));
+        if(!threads||!tasks||!local_row||!local_col||!local_y||!local_1||!local_2){PyErr_NoMemory();goto fail_ab_margin;}
+    }
     Py_BEGIN_ALLOW_THREADS
     for(npy_intp i=0;i<n1;i++){int a=aa[i];double value=b[ay[i]]*q1[i]-cs1[a],total=s1[a]+value;cs1[a]=(total-s1[a])-value;s1[a]=total;}
     for(npy_intp i=0;i<n2;i++){int a=bb[i];double value=b[by[i]]*q2[i]-cs2[a],total=s2[a]+value;cs2[a]=(total-s2[a])-value;s2[a]=total;}
     double sm=0.0;
-    for(npy_intp e=0;e<ne;e++){
-        npy_intp ge=(npy_intp)edge_offset+e;double cross=0.0,cc=0.0;
-        for(npy_int64 p=ptr[ge];p<ptr[ge+1];p++)if(depth[p]<=checkpoint){int i=first[p],j=second[p];double value=b[ay[i]]*q1[i]*q2[j]-cc,total=cross+value;cc=(total-cross)-value;cross=total;}
-        double z=1+s1[ea[e]]+s2[eb[e]]+cross,scale=1+fabs(s1[ea[e]])+fabs(s2[eb[e]])+fabs(cross);
-        if(!isfinite(z)||z<=0||scale>1e10*fmax(fabs(z),1e-300)){bad[e]=1;olz[e]=NAN;me[e]=0;}
-        else{olz[e]=log(z);me[e]=ep[e]/z;row[ea[e]]+=me[e];col[eb[e]]+=me[e];sm+=me[e];}
+    if(workers==1){ABMarginTask task={0,ne,v,n1,n2,edge_offset,checkpoint,0,b,q1,q2,ep,s1,s2,me,ea,eb,ay,aa,by,bb,first,second,ptr,depth,olz,NULL,NULL,NULL,row,col,0,bad};ab_margin_worker(&task);sm=task.sm;}
+    else{
+        for(int w=0;w<workers;w++){tasks[w]=(ABMarginTask){ab_edge_cut(ptr,(npy_intp)edge_offset,ne,w,workers),ab_edge_cut(ptr,(npy_intp)edge_offset,ne,w+1,workers),v,n1,n2,edge_offset,checkpoint,0,b,q1,q2,ep,s1,s2,me,ea,eb,ay,aa,by,bb,first,second,ptr,depth,olz,NULL,NULL,NULL,local_row+(size_t)w*v,local_col+(size_t)w*v,0,bad};pthread_create(&threads[w],NULL,ab_margin_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(int w=0;w<workers;w++){sm+=tasks[w].sm;for(npy_intp x=0;x<v;x++){row[x]+=local_row[(size_t)w*v+x];col[x]+=local_col[(size_t)w*v+x];}}
+        free(local_row);local_row=NULL;free(local_col);local_col=NULL;
     }
     for(npy_intp i=0;i<n1;i++){o1[i]=b[ay[i]]*(1+q1[i])*row[aa[i]];oy[ay[i]]+=b[ay[i]]*q1[i]*row[aa[i]];}
     for(npy_intp i=0;i<n2;i++){o2[i]=b[by[i]]*(1+q2[i])*col[bb[i]];oy[by[i]]+=b[by[i]]*q2[i]*col[bb[i]];}
     for(npy_intp y=0;y<v;y++)oy[y]+=b[y]*sm;
-    for(npy_intp e=0;e<ne;e++)if(me[e]!=0){npy_intp ge=(npy_intp)edge_offset+e;for(npy_int64 p=ptr[ge];p<ptr[ge+1];p++)if(depth[p]<=checkpoint){int i=first[p],j=second[p],y=ay[i];double common=b[y]*me[e];o1[i]+=common*(1+q1[i])*q2[j];o2[j]+=common*(1+q2[j])*q1[i];oy[y]+=common*q1[i]*q2[j];}}
+    if(workers==1){ABMarginTask task={0,ne,v,n1,n2,edge_offset,checkpoint,1,b,q1,q2,ep,s1,s2,me,ea,eb,ay,aa,by,bb,first,second,ptr,depth,olz,oy,o1,o2,NULL,NULL,0,bad};ab_margin_worker(&task);}
+    else{
+        for(int w=0;w<workers;w++){tasks[w]=(ABMarginTask){ab_edge_cut(ptr,(npy_intp)edge_offset,ne,w,workers),ab_edge_cut(ptr,(npy_intp)edge_offset,ne,w+1,workers),v,n1,n2,edge_offset,checkpoint,1,b,q1,q2,ep,s1,s2,me,ea,eb,ay,aa,by,bb,first,second,ptr,depth,olz,local_y+(size_t)w*v,local_1+(size_t)w*n1,local_2+(size_t)w*n2,NULL,NULL,0,bad};pthread_create(&threads[w],NULL,ab_margin_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(int w=0;w<workers;w++){for(npy_intp y=0;y<v;y++)oy[y]+=local_y[(size_t)w*v+y];for(npy_intp i=0;i<n1;i++)o1[i]+=local_1[(size_t)w*n1+i];for(npy_intp j=0;j<n2;j++)o2[j]+=local_2[(size_t)w*n2+j];}
+    }
     Py_END_ALLOW_THREADS
-    free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
+    free(threads);free(tasks);free(local_y);free(local_1);free(local_2);free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
     return Py_BuildValue("NNNNN",my,m1,m2,lz,unstable);
 fail_ab_margin:
-    free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
+    free(threads);free(tasks);free(local_row);free(local_col);free(local_y);free(local_1);free(local_2);free(s1);free(s2);free(cs1);free(cs2);free(me);free(row);free(col);
     Py_XDECREF(my);Py_XDECREF(m1);Py_XDECREF(m2);Py_XDECREF(lz);Py_XDECREF(unstable);return NULL;
 }
 

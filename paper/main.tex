@@ -1069,7 +1069,7 @@ both panels is in bits per original text8 character.}
 \toprule
 $V$ & star rule & three-pair fit & gain from third pair \\
 \midrule
-1024 & 1.005026 & 0.983384 & 0.021642 \\
+1024 & 1.005026 & 0.982837 & 0.022189 \\
 4096 & 1.373681 & 1.340738 & 0.032943 \\
 8192 & 1.558876 & 1.520687 & 0.038189 \\
 \bottomrule
@@ -1080,7 +1080,7 @@ $V$ & star rule & three-pair fit & gain from third pair \\
 \toprule
 $V$ & reduced prediction & vocabulary & escape payload & honest total \\
 \midrule
-1024 & 0.983516 & 0.062164 & 0.916345 & 1.962025 \\
+1024 & 0.982970 & 0.062164 & 0.916345 & 1.961478 \\
 4096 & 1.346247 & 0.062328 & 0.452748 & 1.861324 \\
 8192 & 1.533246 & 0.062491 & 0.234154 & 1.829890 \\
 \bottomrule
@@ -1091,29 +1091,33 @@ The vocabulary column includes the fixed $6{,}208{,}152$-bit external
 tokenizer description and the enumerative description of the selected
 subset.  Increasing $V$ makes the reduced-alphabet prediction harder, but
 sharply reduces the escaped-token payload; over these three runs the latter
-effect dominates.  The honest total falls from $1.962025$ to $1.861324$ and
+effect dominates.  The honest total falls from $1.961478$ to $1.861324$ and
 then $1.829890$ bits per original character.  Independently, the upper panel
 shows that the third pair remains useful throughout: its gain over the
-two-pair star rule increases from $0.021642$ to $0.038189$ bits per original
+two-pair star rule increases from $0.022189$ to $0.038189$ bits per original
 character.
 
 These provisional fits used the parallel stochastic dual solver with a
 plateau learning-rate schedule, an exact certificate every 50 updates, and
 an exact L-BFGS fallback if certification failed.  All 32 fits certified at
-grouped margin error below $0.01$ without fallback or nonfinite rejection.
-At $V=1024$, reusable checkpoint construction took $871$ seconds with 12
-processes and calibration took $151.3$ seconds in the final validation run.
-A direct two-pass C builder eliminated the
-temporary sparse matrices used to construct the intersection plan, and a
-context-sparse reference cache retained only corrections used by each edge
-block.  A complete validation run reproduced every fitted array and every
-certificate exactly, while reducing measured peak RSS from $10.25$ to
-$5.12$ GB.  At the final checkpoint the problem arrays occupy $29$ MB, the
-$83{,}702{,}774$-entry compact intersection plan $1.34$ GB, and the compact
-reference cache $0.776$ GB.  Exact predictive scoring of the 31 independent
-checkpoint intervals is also process-parallel: four workers reproduce every
-serial block and accounting total exactly in $87.7$ rather than $256.8$
-seconds, a $2.93$-fold elapsed-time speedup.
+grouped margin error below $0.01$ without nonfinite rejection.  The latest
+$V=1024$ run invoked the fallback at 10 early or intermediate checkpoints;
+later warm starts generally certified after only 100--300 stochastic
+updates.  Reusable checkpoint construction took $871$ seconds with 12
+processes.  Calibration of all 32 checkpoints then took $108.7$ seconds,
+down from $142.5$ seconds for the preceding compact-plan run.
+
+The low-memory implementation stores two complementary, memory-mapped views
+of the same $83{,}702{,}774$ intersection triples.  The YA-major view is used
+for fast exact certificates and fallback, while the AB-major view permits a
+sampled block to be traversed directly without constructing a checkpoint-local
+intersection plan.  Each view occupies about $0.704$ GiB.  The sampled path
+therefore retains no local topology cache; its largest checkpoint-local
+reference cache in the complete run was $104$ MB.  Measured peak RSS fell
+from $10.25$ GB in the earlier run to $3.98$ GB, while elapsed calibration
+also decreased.  Exact predictive scoring of the 31 independent checkpoint
+intervals used 12 processes and took $52.3$ seconds; it reproduces the serial
+accounting exactly.
 
 At $V=4096$, the 32-checkpoint fit used
 the direct intersection builder, context-sparse stochastic cache, and one

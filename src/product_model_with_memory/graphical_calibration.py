@@ -1207,10 +1207,13 @@ def sparse_factorized_margins_ab_major(
     log_base_y: np.ndarray,
     correction_ya: np.ndarray,
     correction_yb: np.ndarray,
+    *,
+    workers: int = 1,
+    max_parallel_scratch_bytes: int = 1 << 30,
 ) -> SparseFactorizedMargins:
     """Evaluate one contiguous AB-edge range from the shared AB-major graph."""
 
-    if checkpoint < 0 or edge_offset < 0:
+    if checkpoint < 0 or edge_offset < 0 or workers < 1:
         raise ValueError("invalid AB-major checkpoint or edge offset")
     ne = len(problem.edge_probability)
     if edge_offset + ne + 1 > len(graph.edge_ptr):
@@ -1220,6 +1223,14 @@ def sparse_factorized_margins_ab_major(
     base = np.exp(normalized_log_base)
     c1 = np.asarray(correction_ya, dtype=np.float64)
     c2 = np.asarray(correction_yb, dtype=np.float64)
+    scratch_per_worker = 8 * (
+        3 * problem.vocabulary_size + len(c1) + len(c2)
+    )
+    effective_workers = min(
+        workers,
+        max(1, max_parallel_scratch_bytes // max(1, scratch_per_worker)),
+        max(1, ne),
+    )
     target_y, active_ya, active_yb, log_z, unstable = (
         _graphical_margin_c.fused_margins_ab_major(
             np.ascontiguousarray(base), np.ascontiguousarray(np.expm1(c1)),
@@ -1235,7 +1246,7 @@ def sparse_factorized_margins_ab_major(
             np.ascontiguousarray(graph.correction_ya, dtype=np.int32),
             np.ascontiguousarray(graph.correction_yb, dtype=np.int32),
             np.ascontiguousarray(graph.birth, dtype=np.uint8),
-            checkpoint, edge_offset,
+            checkpoint, edge_offset, effective_workers,
         )
     )
     for edge in np.flatnonzero(unstable):
@@ -3633,6 +3644,7 @@ def fit_sparse_grouped_checkpoints(
     stochastic_seed: int = 71,
     layered_graph: LayeredIntersectionGraph | None = None,
     layered_checkpoint_indices: Sequence[int] | None = None,
+    sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
 ) -> list[SparseGroupedResult]:
     """Fit causal sparse checkpoints in interleaved warm-start chains.
 
@@ -3765,6 +3777,7 @@ def fit_sparse_grouped_checkpoints(
                         None if layered_indices is None
                         else layered_indices[index]
                     ),
+                    sampled_ab_major_graph=sampled_ab_major_graph,
                 )
                 record = min(stochastic.trace, key=lambda item: float(
                     item["exact_certificate"]

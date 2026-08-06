@@ -779,6 +779,10 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
         problem, ab_graph, layers - 1, 0,
         log_base, full_c1, full_c2,
     )
+    parallel_ab_major = sparse_factorized_margins_ab_major(
+        problem, ab_graph, layers - 1, 0,
+        log_base, full_c1, full_c2, workers=4,
+    )
     np.testing.assert_allclose(layered.target_y, explicit.target_y,
                                rtol=0.0, atol=2e-15)
     np.testing.assert_allclose(layered.active_ya, explicit.active_ya,
@@ -828,6 +832,13 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
     np.testing.assert_allclose(ab_major.log_normalizer,
                                explicit.log_normalizer,
                                rtol=0.0, atol=2e-15)
+    for actual, expected in zip(
+        (parallel_ab_major.target_y, parallel_ab_major.active_ya,
+         parallel_ab_major.active_yb, parallel_ab_major.log_normalizer),
+        (ab_major.target_y, ab_major.active_ya, ab_major.active_yb,
+         ab_major.log_normalizer),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-15)
     edge_lo, edge_hi = 5, 19
     block = sparse_edge_block_from_bounds(problem, edge_lo, edge_hi)
     explicit_block = sparse_factorized_margins(

@@ -22,9 +22,11 @@ from product_model_with_memory.graphical_calibration import (
     build_sparse_intersection_plan,
     checkpoint_in_birth_major_support,
     intersection_plan_from_layered_graph,
+    load_ab_major_intersection_graph,
     load_layered_intersection_graph,
     sparse_factorized_margins,
     sparse_factorized_margins_layered,
+    sparse_factorized_margins_ab_major,
 )
 
 
@@ -82,6 +84,10 @@ def main() -> None:
         final, arrays["birth_ya"], arrays["birth_yb"], arrays["birth_ab"]
     )
     graph = load_layered_intersection_graph(store / "graph")
+    ab_graph = (
+        load_ab_major_intersection_graph(store / "ab_graph")
+        if (store / "ab_graph" / "manifest.json").exists() else None
+    )
     rows = []
     for checkpoint in map(int, args.checkpoints.split(",")):
         problem_path = Path(args.problems) / "states" / f"checkpoint_{checkpoint:03d}.npz"
@@ -122,6 +128,15 @@ def main() -> None:
             workers=args.workers,
         )
         seconds = time.perf_counter() - started
+        ab = None
+        ab_seconds = None
+        if ab_graph is not None:
+            ab_started = time.perf_counter()
+            ab = sparse_factorized_margins_ab_major(
+                aligned, ab_graph, checkpoint, 0,
+                log_base, c1, c2, workers=args.workers,
+            )
+            ab_seconds = time.perf_counter() - ab_started
         old_ya = reorder_values(
             original.active_ya_y, original.active_ya_a, old.active_ya,
             aligned.active_ya_y, aligned.active_ya_a,
@@ -151,6 +166,7 @@ def main() -> None:
         rows.append({
             "checkpoint": checkpoint,
             "seconds": seconds,
+            "ab_major_seconds": ab_seconds,
             "triangles": int(sum(len(graph.edge_ab[d]) for d in range(checkpoint + 1))),
             "explicit_triangles": len(aligned_plan.edge),
             "topology_equal": topology_equal,
@@ -164,6 +180,26 @@ def main() -> None:
             ),
             "layered_log_z_error_at_worst": float(
                 abs(new.log_normalizer[worst_edge] - direct_z)
+            ),
+            "difference_ab_major_target_y": (
+                None if ab is None else float(np.max(np.abs(
+                    ab.target_y - new.target_y
+                )))
+            ),
+            "difference_ab_major_ya": (
+                None if ab is None else float(np.max(np.abs(
+                    ab.active_ya - new.active_ya
+                )))
+            ),
+            "difference_ab_major_yb": (
+                None if ab is None else float(np.max(np.abs(
+                    ab.active_yb - new.active_yb
+                )))
+            ),
+            "difference_ab_major_log_z": (
+                None if ab is None else float(np.max(np.abs(
+                    ab.log_normalizer - new.log_normalizer
+                )))
             ),
         })
         print(json.dumps(rows[-1]), flush=True)
