@@ -7,7 +7,7 @@ name = "product-model-with-memory"
 version = "0.1.0"
 description = "A simple product model but for sources with memory."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "mpmath",
     "numpy",
@@ -29,4 +29,4 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py311"

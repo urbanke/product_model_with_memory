@@ -73,8 +73,6 @@ The staged V4096/C32 server experiment uses the 64-core, high-memory node:
 
     cd ~/product_model_with_memory
     git pull
-    conda create -y -n pmm312 python=3.12 numpy scipy pip  # first time only
-    conda run -n pmm312 pip install tiktoken                # if stream absent
     sbatch cluster/job_graphical_enwik8_v4096.sbatch
 
 It prepares/reuses `output/streams/bpe_enwik8`, constructs reusable problems
@@ -82,8 +80,10 @@ with 64 workers, calibrates with the validated fixed batch of 12 stochastic
 replicas on 12 workers, and performs exact honest scoring with 31 workers
 (one per predicted interval).  It requests
 220 GB but does not attempt to consume it eagerly.  BLAS/OpenMP inner threading
-is disabled to prevent process oversubscription.  The native C extension is
-built and verified before the run starts.  Each completed stage is reusable;
+is disabled to prevent process oversubscription.  The existing `pmm`
+environment is reused and no packages are installed.  The native C extension
+is compiled in place and verified before the run starts.  The prepared
+`bpe_enwik8` stream must already exist on the server.  Each completed stage is reusable;
 resubmitting skips construction or fitting when its `results.json` exists.
 
 Monitor it from `lth.epfl.ch` with:

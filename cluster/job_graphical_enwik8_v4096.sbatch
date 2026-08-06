@@ -26,40 +26,30 @@ FITTED="$ROOT/fitted_c32_w12"
 mkdir -p "$ROOT"
 
 PY=""
-for cand in "$HOME/anaconda3/envs/pmm312/bin/python" \
-            "$HOME/miniforge3/envs/pmm312/bin/python" \
-            "$HOME/anaconda3/envs/pmm/bin/python" \
+for cand in "$HOME/anaconda3/envs/pmm/bin/python" \
             "$HOME/miniforge3/envs/pmm/bin/python" \
             /usr/bin/python3; do
   if [ -x "$cand" ] && "$cand" -c \
-      'import sys; assert sys.version_info >= (3,12); import numpy, scipy' \
+      'import sys; assert sys.version_info >= (3,11); import numpy, scipy' \
       2>/dev/null; then
     PY="$cand"
     break
   fi
 done
 [ -n "$PY" ] || {
-  echo "ERROR: need Python >=3.12 with numpy/scipy."
-  echo "On lth run: conda create -y -n pmm312 python=3.12 numpy scipy pip"
+  echo "ERROR: the existing pmm Python >=3.11 environment was not found."
   exit 1
 }
 echo "using python: $PY"
 "$PY" -c 'import sys, numpy, scipy; print(sys.version); print(numpy.__version__, scipy.__version__)'
 
-# Build the native sparse-margin/intersection extension from this checkout.
-"$PY" -m pip install -e . --no-build-isolation
+# Build only the native extension; do not install or change packages.
+"$PY" setup.py build_ext --inplace
 "$PY" -c 'from product_model_with_memory import _graphical_margin_c; print("native extension: OK")'
 
 if [ ! -f "$STREAM/ids.npy" ] || [ ! -f "$STREAM/stream.json" ]; then
-  [ -f data/enwik8 ] || { echo "ERROR: data/enwik8 is missing"; exit 1; }
-  "$PY" -c 'import tiktoken' 2>/dev/null || {
-    echo "ERROR: bpe_enwik8 is absent and tiktoken is not installed."
-    echo "Install it in pmm312 or copy output/streams/bpe_enwik8 to the server."
-    exit 1
-  }
-  srun -c 1 "$PY" scripts/make_stream.py \
-    --representation bpe --file data/enwik8 --encoding cl100k_base \
-    --vocab-dir vocab_cache --charge-vocabulary 776019 --out "$STREAM"
+  echo "ERROR: $STREAM is absent. Copy the prepared stream from the Mac."
+  exit 1
 fi
 
 echo "=== construct V4096/C32 with 64 workers ==="
