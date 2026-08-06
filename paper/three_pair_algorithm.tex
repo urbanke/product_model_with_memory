@@ -1,0 +1,281 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\usepackage[colorlinks=true,linkcolor=blue]{hyperref}
+
+\title{The Current Three-Pair Prediction Algorithm\\
+\large construction, calibration, scoring, and computational cost}
+\author{}
+\date{August 2026 --- working notes}
+
+\newcommand{\cA}{\mathcal A}
+\newcommand{\E}{\mathcal E}
+\newcommand{\T}{\mathcal T}
+
+\begin{document}
+\maketitle
+
+\section{Purpose and statistical object}
+
+Let $Y=X_t$, $A=X_{t-1}$, and $B=X_{t-2}$ after mapping the retained
+tokenizer IDs to an alphabet $\cA$ of size $V$ (including escape).  At each
+causal checkpoint the layered estimator supplies three pairwise target
+margins
+\[
+ p_{YA}(y,a),\qquad p_{YB}(y,b),\qquad p_{AB}(a,b).
+\]
+The central estimator is the maximum-entropy distribution having these three
+margins.  We parameterize its conditional distribution as
+\begin{equation}
+ q(y\mid a,b)
+ =\frac{p_0(y)\exp\{c_1(y,a)+c_2(y,b)\}}{Z_{ab}},
+ \qquad
+ Z_{ab}=\sum_y p_0(y)\exp\{c_1(y,a)+c_2(y,b)\}.
+ \label{eq:model}
+\end{equation}
+Here $p_0$ is the chosen unigram baseline.  The factors $c_1,c_2$ are fitted
+so that $p_{AB}(a,b)q(y\mid a,b)$ has the prescribed $YA$ and $YB$
+margins.  The $AB$ margin is used directly as the context distribution and
+is therefore not discarded.
+
+The implementation never constructs a dense $V^3$ joint distribution or a
+dense $V\times V$ table.  It stores observed pair supports and traverses only
+compatible sparse intersections.
+
+\section{Stage I: causal checkpoint construction}
+
+The token stream is divided into 32 geometrically increasing prefixes.  For
+each prefix, cumulative lag-one and lag-two counts are converted by the
+layered universal estimator into sparse pair probabilities.  The two
+margins involving $Y$ are projected to a common $Y$ marginal, using a sparse
+Sinkhorn/IPF projection to a tolerance much tighter than the subsequent
+calibration tolerance.  The result saved for checkpoint $k$ contains
+\begin{itemize}
+\item the active $AB$, $YA$, and $YB$ pair supports and probabilities;
+\item the common target marginal of $Y$;
+\item the baseline $\log p_0(y)$;
+\item sparse fallback corrections used outside the active supports.
+\end{itemize}
+Checkpoint construction is currently the dominant elapsed-time stage.  The
+stream is processed cumulatively and completed checkpoints are restartable,
+but much of the layered-estimator work is still repeated for different
+prefixes.  Parallel profile evaluation uses worker processes and therefore
+has a significant worker-private memory component.
+
+For planning, the present hypothesis is that construction time is initially
+approximately linear in stream length $N$ and retained alphabet size $V$,
+with saturation as new tokens cease to create new sparse supports.  This is
+an empirical hypothesis, not an algorithmic theorem.
+
+\section{Stable global supports and birth depths}
+
+After all checkpoints exist, every final pair support is sorted into a stable
+birth-major order.  Each edge receives the first checkpoint at which it is
+active.  Consequently, checkpoint $k$ is represented by prefixes of the
+global $YA$, $YB$, and $AB$ arrays, and one shared intersection topology can
+serve the entire checkpoint chain.
+
+Write
+\[
+ \E_{YA}=\{(y,a)\},\quad
+ \E_{YB}=\{(y,b)\},\quad
+ \E_{AB}=\{(a,b)\}.
+\]
+The compatible intersection set is
+\begin{equation}
+ \T=\{(y,a,b):(y,a)\in\E_{YA},\ (y,b)\in\E_{YB},\
+                    (a,b)\in\E_{AB}\}.
+ \label{eq:triangles}
+\end{equation}
+Every triangle also stores the maximum of the birth depths of its three pair
+edges.  At checkpoint $k$ it is traversed exactly when that depth is at most
+$k$.  Let $T=|\T|$ and let $E_{YA},E_{YB},E_{AB}$ denote the pair-edge
+counts.
+
+\section{Sparse evaluation of the exponential family}
+
+Set
+\[
+ r_1(y,a)=e^{c_1(y,a)}-1,
+ \qquad
+ r_2(y,b)=e^{c_2(y,b)}-1,
+\]
+and
+\[
+ S_{1a}=\sum_y p_0(y)r_1(y,a),
+ \qquad
+ S_{2b}=\sum_y p_0(y)r_2(y,b).
+\]
+Expanding the product in \eqref{eq:model} gives
+\begin{equation}
+ Z_{ab}=1+S_{1a}+S_{2b}
+ +\sum_{y:(y,a,b)\in\T}p_0(y)r_1(y,a)r_2(y,b).
+ \label{eq:sparseZ}
+\end{equation}
+Thus the only joint correction is a traversal of the compatible triangles;
+all absent combinations are handled by the first three terms.  A reverse
+traversal accumulates the resulting $Y$, $YA$, and $YB$ model margins.
+Numerically dangerous signed cancellations are detected and recomputed by a
+positive log-sum-exp calculation.
+
+One complete exact margin evaluation costs
+\[
+ O(V+E_{YA}+E_{YB}+E_{AB}+T)
+\]
+time and corresponding pair/topology storage.  In a fully dense mathematical
+limit $E=O(V^2)$ and $T=O(V^3)$, but the observed corpus supports are far
+sparser and saturate strongly at fixed $N$.
+
+\section{The two current traversal layouts}
+
+The implementation presently persists two memory-mapped orderings of the
+same triangle set.
+
+\paragraph{YA-major layout.}
+Rows are global $YA$ edges.  Each triangle stores its $YB$ and $AB$ indices
+and birth depth; $y$ is implicit in the row.  This layout permits an efficient
+parallel reverse pass with disjoint ownership of $YA$ rows.  It is used for
+exact certificates and exact fallback.
+
+\paragraph{AB-major layout.}
+Rows are global $AB$ edges.  Each triangle stores its $YA$ and $YB$ indices
+and birth depth; $(a,b)$ is implicit in the row.  A contiguous range of rows
+is exactly one stochastic edge block, so sampled gradients traverse the
+memory-mapped graph directly and build no checkpoint-local topology.
+
+The layouts are not mathematically required.  They are the current fastest
+engineering compromise.  At V1024 each occupies about 0.704 GiB.  The
+AB-major exact evaluator is currently about 1.9 times slower than YA-major at
+the final checkpoint, so both are retained.  A likely final design stores
+triangle fields once and adds two compact traversal indices, or improves the
+AB-major exact kernel enough to remove the YA-major copy.
+
+\section{Stage II: calibration}
+
+Checkpoints are fitted sequentially.  The fitted factors from checkpoint
+$k-1$ are copied into the common coordinates of checkpoint $k$; new
+coordinates start from zero.  This warm start becomes increasingly effective
+because adjacent late checkpoints have similar target distributions.
+
+The main solver is a parallel stochastic dual method.  The active $AB$ edges
+are divided into 128 approximately triangle-balanced blocks.  Each update
+samples a fixed total batch of 12 blocks/replicas; changing the number of
+workers does not change this statistical batch.  Workers evaluate sampled
+AB-major ranges in native C and their gradients are combined before one
+global update.  The learning rate follows the implemented plateau scheduler.
+
+Every 50 updates, the complete YA-major graph computes the exact grouped
+margin certificate
+\[
+ \max\{\|\widehat p_Y-p_Y\|_1,
+        \|\widehat p_{YA}-p_{YA}\|_1,
+        \|\widehat p_{YB}-p_{YB}\|_1\}.
+\]
+The checkpoint is accepted when this is below $0.01$.  If the stochastic
+budget ends first, the exact layered L-BFGS solver is invoked as a fallback at
+that checkpoint.  Fallback is a correctness mechanism, not evidence that the
+graph representation failed.  The current V1024 production run imposed a
+500-update stochastic cap and therefore used fallback at 10 early or
+intermediate checkpoints; fallback itself consumed only 2.28 seconds.
+
+Calibration does not scan the corpus.  Its dependence on $N$ is only through
+the support sizes and $T$, which eventually saturate.  Its approximate cost is
+\[
+ I_s\,T_s + I_e\,T,
+\]
+where $I_s$ is the number of stochastic updates, $T_s$ the triangles in a
+sampled batch, and $I_e$ the number of full certificates and fallback margin
+passes.  The dominant measured component is stochastic evaluation, not exact
+fallback.
+
+\section{Stage III: causal scoring and honest accounting}
+
+Checkpoint $k$ predicts the following interval using only factors and
+probabilities constructed from its prefix.  The 31 independent intervals are
+scheduled longest-first across worker processes, while their contributions
+are accumulated in causal order.  Exact positive log-sum-exp evaluation is
+used.  Scoring time is approximately linear in the number of scored tokens;
+with memory mapping or streaming, its working memory need not be linear in
+the file length.
+
+The reported honest code in bits per original byte is the sum of
+\begin{enumerate}
+\item reduced-alphabet predictive length, including the initial prefix;
+\item a one-time description of the retained tokenizer vocabulary;
+\item a sequential payload code for original tokenizer IDs behind escape.
+\end{enumerate}
+
+\section{Current measurements}
+
+For text8, the final support sizes at fixed stream length are:
+\begin{center}
+\begin{tabular}{rrrr}
+\toprule
+$V$ & $E_{AB}=E_{YA}$ & $E_{YB}$ & $T$ \\
+\midrule
+1024  & 338,237   & 537,579   & 83,702,774 \\
+4096  & 1,399,764 & 2,288,630 & 279,788,925 \\
+8192  & 2,269,603 & 3,664,436 & 368,845,867 \\
+16384 & 3,166,823 & 5,027,113 & 418,852,400 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Thus a sixteen-fold increase in $V$ produced only a five-fold increase in
+$T$ at fixed text8 length.  From V8192 to V16384, doubling $V$ increased $T$
+by only 14 percent.  The V16384 point uses one final checkpoint; pair and
+triangle counts are directly comparable, while its one-layer byte count is
+not directly comparable with the 32-layer stores.
+
+At fixed $V=16384$, controlled two-worker final-prefix constructions give:
+\begin{center}
+\begin{tabular}{rrrrrr}
+\toprule
+$N$ & construction & peak RSS & $E_{AB}$ & $E_{YB}$ & $T$ \\
+\midrule
+4,857,324  & 624.9 s  & 3.67 GB & 1,222,978 & 1,795,605 & 65,600,208 \\
+9,714,647  & 962.3 s  & 4.13 GB & 2,005,070 & 3,063,157 & 170,164,657 \\
+19,429,294 & 1507.9 s & 7.17 GB & 3,166,823 & 5,027,113 & 418,852,400 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Construction time grows only by factors 1.54 and 1.57 when $N$ doubles in
+this range, because fixed work and support saturation offset the longer
+stream.  Pair supports grow sublinearly.  Compatible triples nevertheless
+grow by factors 2.59 and 2.46, approximately $N^{1.3}$ over these three
+points: additional pair edges create many new compatible intersections.
+Consequently, saturation of the one-token vocabulary does not by itself
+imply that pair intersections have saturated.  This measured local exponent
+is an interpolation, not an asymptotic law; with fixed finite $V$, all pair
+and triangle supports must eventually saturate.
+
+The current full V1024/C32 shared-graph calibration took 108.7 seconds with
+12 workers and peaked at 3.71 GiB RSS, versus 142.5 seconds and about 9.55 GiB
+for the preceding compact-plan implementation.  Scoring took 52.3 seconds.
+Upstream construction of its 32 checkpoint states took about 871 seconds.
+For the diagnostic V16384 final prefix, upstream construction with two
+workers took 1507.9 seconds and peaked at 7.17 GB, whereas constructing the
+one-layer shared intersection graph from that state took 21.4 seconds.
+
+\section{Where improvement is most likely}
+
+\begin{enumerate}
+\item \textbf{Remove repeated checkpoint-construction work.}  Construction is
+currently the largest demonstrated elapsed-time stage.  Counts, profile
+families, projections, and support births should be reused more aggressively
+across prefixes.
+\item \textbf{Store triangles once.}  Replace the two complete traversal
+layouts by one canonical triangle payload plus compact YA- and AB-order
+indices, after measuring the memory/time tradeoff at larger $V$.
+\item \textbf{Reduce stochastic passes.}  Certificate-driven scheduling,
+stronger warm transfer, or a standard second-order finish is valuable only if
+it removes a substantial number of sampled margin evaluations.
+\item \textbf{Control worker replication.}  Construction memory has a shared
+component plus a worker-private component; worker count must be selected from
+measured elapsed-time/RSS curves rather than maximized blindly.
+\item \textbf{Preserve streaming.}  Increasing enwik8 to enwik9 should make
+construction and scoring time roughly linear in file length, but should not
+multiply their working memory.  Calibration grows only as new supports and
+triangles appear and should eventually saturate in $N$.
+\end{enumerate}
+
+\end{document}

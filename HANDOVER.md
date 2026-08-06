@@ -4726,3 +4726,34 @@ Improve that scheduler only through generic, certificate-driven rules; do not
 tune it to text8.  Retain the exact fallback at every checkpoint.  If much
 tighter tolerances are later required, revisit the compensated-sum threshold
 and the recorded Newton fallback proposal.
+
+### 2026-08-06 --- Controlled support-scaling measurements
+
+Single-layout shared graphs were built locally from the existing final text8
+states.  At fixed N=19,429,294 BPE tokens, `(V, AB edges, YB edges,
+triangles)` is: `(1024, 338237, 537579, 83702774)`, `(4096, 1399764,
+2288630, 279788925)`, `(8192, 2269603, 3664436, 368845867)`, and `(16384,
+3166823, 5027113, 418852400)`.  Thus a 16x increase in V produced only 5.0x
+more triangles, and the last doubling of V produced only 1.14x.  At fixed
+text8 length, support saturation makes calibration topology far from V^2.
+
+The V16384 final state was constructed locally with one checkpoint and two
+workers in 1507.9 s, peak RSS 7.17 GB.  Its one-layer shared graph then built
+in 21.4 s.  Controlled N points at the same V and worker count are:
+`N=4,857,324`: 624.9 s, 3.67 GB, 1,222,978 AB edges, 1,795,605 YB edges,
+65,600,208 triangles; `N=9,714,647`: 962.3 s, 4.13 GB, 2,005,070 AB edges,
+3,063,157 YB edges, 170,164,657 triangles; full N as above.  Doubling N
+increases construction time only 1.54--1.57x and pair edges sublinearly, but
+triangles 2.46--2.59x, locally about N^1.3.  Single-token vocabulary
+saturation therefore does not imply intersection saturation; newly appearing
+pair edges combine to create multiple triangles.  With finite V, all support
+sizes must eventually saturate.
+
+`paper/three_pair_algorithm.tex` is a new five-page current description of
+the Section 7 implementation.  It covers the statistical model, upstream
+checkpoint construction, birth-major supports, sparse exponential-family
+identity, YA- and AB-major layouts, stochastic fitting and exact fallback,
+causal scoring, honest accounting, measured complexity, and optimization
+targets.  `paper/complexity.tex` was deliberately preserved because it is an
+older broader note about the layered-mixture machinery rather than this
+current three-pair pipeline.
