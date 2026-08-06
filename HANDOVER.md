@@ -4600,3 +4600,29 @@ numerical margins/factors remain checkpoint-specific prefix arrays; future
 coordinates must not enter the optimizer.  After this invariant is tested,
 persist the graph as uncompressed/memory-mappable arrays and run one complete
 V1024/C32 fitting trajectory against the existing result.
+
+Birth-major IDs and persistence are now implemented.  The real V1024/C32
+store in `output/layered_intersection_v1024_c32` contains the complete shared
+topology (83,702,774 triangles) in 756,211,120 bytes; direct construction took
+2.50 s and uncompressed persistence .15 s.  Each layer is a separate `.npy`
+array and loading uses memory mapping, so the operating system can page layers
+without copying the whole graph into each process.
+
+Real checkpoints 0, 7, 15, and 23 were independently rebuilt in their old
+explicit representation and compared with layers 0..k of the stored graph.
+Triangle counts and all four indices `(AB,y,YA,YB)` agree exactly at every
+checkpoint.  Apparent numerical disagreements with the old evaluator were
+not topology errors: at the AB edge of largest disagreement, direct positive
+log-sum-exp agrees with the stabilized layered evaluator to displayed double
+precision, while the old expanded evaluator errs by .02795, .45249, and
+.30744 in log Z at checkpoints 7, 15, and 23 respectively.  The stricter
+cancellation test is therefore detecting real old-path error.
+
+`sparse_grouped_ipf` now accepts `evaluator="layered"` with a shared graph and
+checkpoint depth, including its L-BFGS-to-IPF polishing recursion.  All 41
+calibration tests pass.  NEXT: route the stochastic solver's periodic exact
+certificate through this evaluator and provide an offline fitting driver that
+loads checkpoint problems, aligns them to the persisted birth-major support,
+and warm-starts the complete C32 trajectory.  Sampled block gradients still
+need their own lazy intersections; they must not force construction of the old
+full explicit plan merely to prepare stochastic blocks.

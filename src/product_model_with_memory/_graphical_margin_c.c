@@ -364,7 +364,7 @@ static PyObject *fused_margins_layered(PyObject *self, PyObject *args) {
         PyObject *yb_obj=PyTuple_GET_ITEM(yb_layers,d);
         PyObject *ab_obj=PyTuple_GET_ITEM(ab_layers,d);
         if(!PyArray_Check(rp_obj)||!PyArray_Check(yb_obj)||!PyArray_Check(ab_obj)||
-           PyArray_SIZE((PyArrayObject*)rp_obj)!=n1+1 ||
+           PyArray_SIZE((PyArrayObject*)rp_obj)<n1+1 ||
            PyArray_SIZE((PyArrayObject*)yb_obj)!=PyArray_SIZE((PyArrayObject*)ab_obj)){
             PyErr_SetString(PyExc_ValueError,"invalid layered CSR arrays");
             goto fail_layered;

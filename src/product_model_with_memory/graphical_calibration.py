@@ -20,10 +20,12 @@ dense probability tables.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import pairwise
+from pathlib import Path
 from time import perf_counter
 
 import numpy as np
@@ -600,6 +602,177 @@ class LayeredIntersectionGraph:
         )
 
 
+@dataclass(frozen=True)
+class BirthMajorSparseSupport:
+    """Final sparse problem ordered so checkpoint supports are prefixes."""
+
+    problem: SparseGroupedProblem
+    birth_ya: np.ndarray
+    birth_yb: np.ndarray
+    birth_ab: np.ndarray
+
+
+def save_layered_intersection_graph(
+    graph: LayeredIntersectionGraph,
+    directory: str | Path,
+) -> None:
+    """Persist independent uncompressed arrays suitable for memory mapping."""
+
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest = {"version": 1, "layers": graph.layers, "edges": graph.edges}
+    for depth in range(graph.layers):
+        np.save(destination / f"row_ptr_{depth:03d}.npy", graph.row_ptr[depth])
+        np.save(
+            destination / f"correction_yb_{depth:03d}.npy",
+            graph.correction_yb[depth],
+        )
+        np.save(destination / f"edge_ab_{depth:03d}.npy", graph.edge_ab[depth])
+    temporary = destination / "manifest.json.tmp"
+    temporary.write_text(json.dumps(manifest, indent=2))
+    temporary.replace(destination / "manifest.json")
+
+
+def load_layered_intersection_graph(
+    directory: str | Path,
+    *,
+    mmap_mode: str | None = "r",
+) -> LayeredIntersectionGraph:
+    """Load a persisted graph, memory-mapped by default."""
+
+    source = Path(directory)
+    manifest = json.loads((source / "manifest.json").read_text())
+    if manifest.get("version") != 1 or int(manifest.get("layers", 0)) < 1:
+        raise ValueError("unsupported layered graph manifest")
+    layers = int(manifest["layers"])
+    graph = LayeredIntersectionGraph(
+        tuple(np.load(
+            source / f"row_ptr_{depth:03d}.npy",
+            mmap_mode=mmap_mode, allow_pickle=False,
+        ) for depth in range(layers)),
+        tuple(np.load(
+            source / f"correction_yb_{depth:03d}.npy",
+            mmap_mode=mmap_mode, allow_pickle=False,
+        ) for depth in range(layers)),
+        tuple(np.load(
+            source / f"edge_ab_{depth:03d}.npy",
+            mmap_mode=mmap_mode, allow_pickle=False,
+        ) for depth in range(layers)),
+    )
+    if graph.edges != int(manifest.get("edges", -1)):
+        raise ValueError("layered graph edge count differs from manifest")
+    return graph
+
+
+def birth_major_sparse_support(
+    problem: SparseGroupedProblem,
+    birth_ya: np.ndarray,
+    birth_yb: np.ndarray,
+    birth_ab: np.ndarray,
+) -> BirthMajorSparseSupport:
+    """Assign stable pair-edge IDs ordered by birth depth then pair key."""
+
+    v = problem.vocabulary_size
+    births = tuple(np.asarray(values, dtype=np.uint8) for values in (
+        birth_ya, birth_yb, birth_ab
+    ))
+    if (
+        births[0].shape != problem.target_ya.shape
+        or births[1].shape != problem.target_yb.shape
+        or births[2].shape != problem.edge_probability.shape
+    ):
+        raise ValueError("pair-edge births and sparse problem disagree")
+    keys = (
+        problem.active_ya_y.astype(np.int64) * v + problem.active_ya_a,
+        problem.active_yb_y.astype(np.int64) * v + problem.active_yb_b,
+        problem.edge_a.astype(np.int64) * v + problem.edge_b,
+    )
+    orders = tuple(
+        np.lexsort((key, birth)) for key, birth in zip(keys, births)
+    )
+    first, second, context = orders
+    ordered = SparseGroupedProblem(
+        vocabulary_size=v,
+        edge_a=problem.edge_a[context],
+        edge_b=problem.edge_b[context],
+        edge_probability=problem.edge_probability[context],
+        target_y=problem.target_y,
+        active_ya_y=problem.active_ya_y[first],
+        active_ya_a=problem.active_ya_a[first],
+        target_ya=problem.target_ya[first],
+        active_yb_y=problem.active_yb_y[second],
+        active_yb_b=problem.active_yb_b[second],
+        target_yb=problem.target_yb[second],
+    )
+    return BirthMajorSparseSupport(
+        ordered, births[0][first], births[1][second], births[2][context]
+    )
+
+
+def checkpoint_in_birth_major_support(
+    checkpoint_problem: SparseGroupedProblem,
+    support: BirthMajorSparseSupport,
+    checkpoint: int,
+) -> SparseGroupedProblem:
+    """Reorder one checkpoint into the exact active prefixes of a support."""
+
+    final = support.problem
+    if checkpoint_problem.vocabulary_size != final.vocabulary_size:
+        raise ValueError("checkpoint and final support vocabularies differ")
+    v = final.vocabulary_size
+
+    def align(
+        current_left, current_right, current_values,
+        final_left, final_right, final_birth,
+    ):
+        count = int(np.searchsorted(final_birth, checkpoint, side="right"))
+        if len(current_values) != count:
+            raise ValueError("checkpoint support size is not its birth prefix")
+        current_key = (
+            current_left.astype(np.int64) * v + current_right
+        )
+        expected_key = (
+            final_left[:count].astype(np.int64) * v + final_right[:count]
+        )
+        order = np.argsort(current_key, kind="stable")
+        position = np.searchsorted(current_key[order], expected_key)
+        if (
+            np.any(position == len(order))
+            or not np.array_equal(current_key[order[position]], expected_key)
+        ):
+            raise ValueError("checkpoint support differs from its birth prefix")
+        return np.asarray(current_values)[order[position]], count
+
+    target_ya, n1 = align(
+        checkpoint_problem.active_ya_y, checkpoint_problem.active_ya_a,
+        checkpoint_problem.target_ya,
+        final.active_ya_y, final.active_ya_a, support.birth_ya,
+    )
+    target_yb, n2 = align(
+        checkpoint_problem.active_yb_y, checkpoint_problem.active_yb_b,
+        checkpoint_problem.target_yb,
+        final.active_yb_y, final.active_yb_b, support.birth_yb,
+    )
+    edge_probability, ne = align(
+        checkpoint_problem.edge_a, checkpoint_problem.edge_b,
+        checkpoint_problem.edge_probability,
+        final.edge_a, final.edge_b, support.birth_ab,
+    )
+    return SparseGroupedProblem(
+        vocabulary_size=v,
+        edge_a=final.edge_a[:ne],
+        edge_b=final.edge_b[:ne],
+        edge_probability=edge_probability,
+        target_y=checkpoint_problem.target_y,
+        active_ya_y=final.active_ya_y[:n1],
+        active_ya_a=final.active_ya_a[:n1],
+        target_ya=target_ya,
+        active_yb_y=final.active_yb_y[:n2],
+        active_yb_b=final.active_yb_b[:n2],
+        target_yb=target_yb,
+    )
+
+
 def layered_intersection_graph_from_plan(
     problem: SparseGroupedProblem,
     plan: SparseIntersectionPlan,
@@ -709,13 +882,14 @@ def intersection_plan_from_layered_graph(
     edge_parts = []
     for depth in range(checkpoint + 1):
         ptr = graph.row_ptr[depth]
-        if ptr.shape != (n1 + 1,):
+        if ptr.ndim != 1 or len(ptr) < n1 + 1:
             raise ValueError("layer row pointer has the wrong shape")
         first_parts.append(np.repeat(
-            np.arange(n1, dtype=np.int32), np.diff(ptr)
+            np.arange(n1, dtype=np.int32), np.diff(ptr[:n1 + 1])
         ))
-        second_parts.append(graph.correction_yb[depth])
-        edge_parts.append(graph.edge_ab[depth])
+        active_edges = int(ptr[n1])
+        second_parts.append(graph.correction_yb[depth][:active_edges])
+        edge_parts.append(graph.edge_ab[depth][:active_edges])
     first = np.concatenate(first_parts)
     second = np.concatenate(second_parts)
     edge = np.concatenate(edge_parts)
@@ -3368,6 +3542,8 @@ def sparse_grouped_ipf(
     evaluator: str = "union",
     lbfgs_trust_radius: float = 16.0,
     _intersection_plan: SparseIntersectionPlan | None = None,
+    _layered_graph: LayeredIntersectionGraph | None = None,
+    _layered_checkpoint: int | None = None,
     _trace_phase: str | None = None,
 ) -> SparseGroupedResult:
     """Matrix-free grouped IPF over observed context-pair edges.
@@ -3400,8 +3576,14 @@ def sparse_grouped_ipf(
         raise ValueError("dense_fallback_mass must lie in (0, 1]")
     if margin_workers < 1:
         raise ValueError("margin_workers must be positive")
-    if evaluator not in ("union", "factorized", "auto"):
-        raise ValueError("evaluator must be 'union', 'factorized' or 'auto'")
+    if evaluator not in ("union", "factorized", "layered", "auto"):
+        raise ValueError(
+            "evaluator must be 'union', 'factorized', 'layered' or 'auto'"
+        )
+    if evaluator == "layered" and (
+        _layered_graph is None or _layered_checkpoint is None
+    ):
+        raise ValueError("layered evaluator requires a graph and checkpoint")
     if not np.isfinite(lbfgs_trust_radius) or lbfgs_trust_radius <= 0.0:
         raise ValueError("lbfgs_trust_radius must be finite and positive")
     if trace_interval < 1:
@@ -3564,6 +3746,20 @@ def sparse_grouped_ipf(
                 phase_timing[name] = (
                     phase_timing.get(name, 0.0) + perf_counter() - started
                 )
+
+        if evaluator == "layered":
+            factorized = sparse_factorized_margins_layered(
+                problem, _layered_graph, _layered_checkpoint,
+                lb, c1, c2, workers=margin_workers,
+            )
+            mark("layered_seconds", margin_started)
+            mark("margin_total_seconds", margin_started)
+            return (
+                factorized.target_y,
+                factorized.active_ya,
+                factorized.active_yb,
+                factorized.log_normalizer,
+            )
 
         if intersection_plan is not None:
             factorized = sparse_factorized_margins(
@@ -3995,6 +4191,8 @@ def sparse_grouped_ipf(
                 evaluator=evaluator,
                 lbfgs_trust_radius=lbfgs_trust_radius,
                 _intersection_plan=intersection_plan,
+                _layered_graph=_layered_graph,
+                _layered_checkpoint=_layered_checkpoint,
                 _trace_phase="ipf_polish",
             )
             return finish(SparseGroupedResult(

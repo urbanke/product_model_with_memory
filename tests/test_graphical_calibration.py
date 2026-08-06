@@ -12,13 +12,16 @@ from product_model_with_memory.graphical_calibration import (
     build_sparse_edge_blocks,
     build_sparse_intersection_plan,
     build_layered_intersection_graph,
+    birth_major_sparse_support,
     check_grouped_feasibility_lp,
     conditional_ipf,
+    checkpoint_in_birth_major_support,
     first_pair_warm_start,
     fit_grouped_checkpoints,
     grouped_conditional_ipf,
     intersection_plan_from_layered_graph,
     layered_intersection_graph_from_plan,
+    load_layered_intersection_graph,
     pair_midpoint_warm_start,
     pair_product_warm_start,
     project_sparse_layered_pair,
@@ -26,6 +29,7 @@ from product_model_with_memory.graphical_calibration import (
     restrict_margins_to_observed_contexts,
     restrict_sparse_margins_to_observed_contexts,
     sample_sparse_grouped_edges,
+    save_layered_intersection_graph,
     second_pair_warm_start,
     sparse_edge_minibatch,
     sparse_factorized_dual_evaluation,
@@ -784,6 +788,122 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
         parallel_layered.log_normalizer, native_layered.log_normalizer,
         rtol=0.0, atol=2e-15,
     )
+    fitted_explicit = sparse_grouped_ipf(
+        problem, solver="lbfgs", evaluator="factorized",
+        tolerance=1e-9, max_iterations=2_000,
+    )
+    fitted_layered = sparse_grouped_ipf(
+        problem, solver="lbfgs", evaluator="layered",
+        tolerance=1e-9, max_iterations=2_000,
+        _layered_graph=graph, _layered_checkpoint=layers - 1,
+    )
+    assert fitted_layered.converged
+    np.testing.assert_allclose(
+        fitted_layered.grouped_residual_ya_l1,
+        fitted_explicit.grouped_residual_ya_l1,
+        rtol=0.0, atol=2e-10,
+    )
+    np.testing.assert_allclose(
+        fitted_layered.grouped_residual_yb_l1,
+        fitted_explicit.grouped_residual_yb_l1,
+        rtol=0.0, atol=2e-10,
+    )
+
+
+def test_birth_major_support_makes_every_checkpoint_a_graph_prefix(tmp_path):
+    rng = np.random.default_rng(20260813)
+    v = 8
+    raw = rng.gamma(shape=0.9, scale=1.0, size=(v, v, v))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    final = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        rng.random((v, v)) < 0.7,
+        rng.random((v, v)) < 0.6,
+    )
+    layers = 4
+    births = (
+        rng.integers(layers, size=len(final.target_ya), dtype=np.uint8),
+        rng.integers(layers, size=len(final.target_yb), dtype=np.uint8),
+        rng.integers(
+            layers, size=len(final.edge_probability), dtype=np.uint8
+        ),
+    )
+    support = birth_major_sparse_support(final, *births)
+    graph = build_layered_intersection_graph(
+        support.problem,
+        support.birth_ya, support.birth_yb, support.birth_ab,
+        layers=layers,
+    )
+    save_layered_intersection_graph(graph, tmp_path / "graph")
+    mapped = load_layered_intersection_graph(tmp_path / "graph")
+    assert mapped.edges == graph.edges
+    assert all(isinstance(array, np.memmap) for family in (
+        mapped.row_ptr, mapped.correction_yb, mapped.edge_ab
+    ) for array in family)
+    graph = mapped
+    for checkpoint in range(layers):
+        chosen1 = np.flatnonzero(births[0] <= checkpoint)
+        chosen2 = np.flatnonzero(births[1] <= checkpoint)
+        chosen_ab = np.flatnonzero(births[2] <= checkpoint)
+        rng.shuffle(chosen1)
+        rng.shuffle(chosen2)
+        rng.shuffle(chosen_ab)
+        edge_probability = final.edge_probability[chosen_ab]
+        edge_probability /= edge_probability.sum()
+        unordered = SparseGroupedProblem(
+            vocabulary_size=v,
+            edge_a=final.edge_a[chosen_ab],
+            edge_b=final.edge_b[chosen_ab],
+            edge_probability=edge_probability,
+            target_y=final.target_y,
+            active_ya_y=final.active_ya_y[chosen1],
+            active_ya_a=final.active_ya_a[chosen1],
+            target_ya=final.target_ya[chosen1],
+            active_yb_y=final.active_yb_y[chosen2],
+            active_yb_b=final.active_yb_b[chosen2],
+            target_yb=final.target_yb[chosen2],
+        )
+        aligned = checkpoint_in_birth_major_support(
+            unordered, support, checkpoint
+        )
+        assert np.all(support.birth_ya[:len(aligned.target_ya)] <= checkpoint)
+        assert np.all(support.birth_yb[:len(aligned.target_yb)] <= checkpoint)
+        assert np.all(support.birth_ab[:len(aligned.edge_probability)] <= checkpoint)
+        explicit_plan = build_sparse_intersection_plan(aligned)
+        layered_plan = intersection_plan_from_layered_graph(
+            aligned, graph, checkpoint
+        )
+        np.testing.assert_array_equal(layered_plan.edge, explicit_plan.edge)
+        np.testing.assert_array_equal(
+            layered_plan.target_y, explicit_plan.target_y
+        )
+        np.testing.assert_array_equal(
+            layered_plan.correction_ya, explicit_plan.correction_ya
+        )
+        np.testing.assert_array_equal(
+            layered_plan.correction_yb, explicit_plan.correction_yb
+        )
+
+        log_base = rng.normal(scale=0.2, size=v)
+        c1 = rng.normal(scale=0.1, size=len(aligned.target_ya))
+        c2 = rng.normal(scale=0.1, size=len(aligned.target_yb))
+        explicit = sparse_factorized_margins(
+            aligned, explicit_plan, log_base, c1, c2
+        )
+        layered = sparse_factorized_margins_layered(
+            aligned, graph, checkpoint, log_base, c1, c2, workers=3
+        )
+        np.testing.assert_allclose(layered.target_y, explicit.target_y,
+                                   rtol=0.0, atol=3e-15)
+        np.testing.assert_allclose(layered.active_ya, explicit.active_ya,
+                                   rtol=0.0, atol=3e-15)
+        np.testing.assert_allclose(layered.active_yb, explicit.active_yb,
+                                   rtol=0.0, atol=3e-15)
+        np.testing.assert_allclose(
+            layered.log_normalizer, explicit.log_normalizer,
+            rtol=0.0, atol=3e-15,
+        )
 
 
 def test_sampled_sparse_dual_gradient_is_unbiased_edge_by_edge():
