@@ -2440,8 +2440,16 @@ def stochastic_sparse_dual_approach(
             if cached is not None:
                 block_cache.move_to_end(index)
                 return cached
-            lo, hi = block_bounds[index]
-            block = sparse_edge_block_from_bounds(problem, lo, hi)
+        # Construct outside the lock: independent cache misses should use the
+        # available stochastic workers rather than serializing all builders.
+        lo, hi = block_bounds[index]
+        candidate = sparse_edge_block_from_bounds(problem, lo, hi)
+        with block_cache_lock:
+            cached = block_cache.get(index)
+            if cached is not None:
+                block_cache.move_to_end(index)
+                return cached
+            block = candidate
             block_cache[index] = block
             while len(block_cache) > lazy_block_cache:
                 block_cache.popitem(last=False)
@@ -2638,24 +2646,32 @@ def stochastic_sparse_dual_approach(
             if cached is not None:
                 lazy_reference_cache.move_to_end(index)
                 return cached
-            block = get_block(index)
-            ya_position = np.flatnonzero(np.isin(
-                problem.active_ya_a, np.unique(block.problem.edge_a)
-            )).astype(np.int32)
-            yb_position = np.flatnonzero(np.isin(
-                problem.active_yb_b, np.unique(block.problem.edge_b)
-            )).astype(np.int32)
-            margins = sparse_factorized_margins(
-                block.problem, block.intersection_plan,
-                snapshot_parameters[:first],
-                snapshot_parameters[first:second],
-                snapshot_parameters[second:],
-            )
-            reference = SparseReferenceMargins(
-                margins.target_y, ya_position,
-                margins.active_ya[ya_position], yb_position,
-                margins.active_yb[yb_position],
-            )
+        # As above, the numerical reference calculation is independent and
+        # should run concurrently; only insertion/eviction is serialized.
+        block = get_block(index)
+        ya_position = np.flatnonzero(np.isin(
+            problem.active_ya_a, np.unique(block.problem.edge_a)
+        )).astype(np.int32)
+        yb_position = np.flatnonzero(np.isin(
+            problem.active_yb_b, np.unique(block.problem.edge_b)
+        )).astype(np.int32)
+        margins = sparse_factorized_margins(
+            block.problem, block.intersection_plan,
+            snapshot_parameters[:first],
+            snapshot_parameters[first:second],
+            snapshot_parameters[second:],
+        )
+        candidate = SparseReferenceMargins(
+            margins.target_y, ya_position,
+            margins.active_ya[ya_position], yb_position,
+            margins.active_yb[yb_position],
+        )
+        with lazy_reference_lock:
+            cached = lazy_reference_cache.get(index)
+            if cached is not None:
+                lazy_reference_cache.move_to_end(index)
+                return cached
+            reference = candidate
             lazy_reference_cache[index] = reference
             while len(lazy_reference_cache) > lazy_block_cache:
                 lazy_reference_cache.popitem(last=False)

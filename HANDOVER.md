@@ -4649,3 +4649,13 @@ graph directly and never reconstruct local four-index plans.  The bounded
 cache remains a correct low-memory fallback and a measured baseline.  After
 that, run the complete V1024/C32 warm-started trajectory from the persisted
 store and compare certificates, elapsed time, and peak memory.
+
+Cache misses for topology and reference margins were initially serialized
+under Python locks.  They now construct concurrently and lock only for the
+short insertion/eviction operation.  On the checkpoint-23 50-step probe this
+reduced the 16-block lazy time from 3.89 s to 3.17 s (eager 1.51 s), with
+about 47.0 MB versus 378.1 MB of cached arrays.  A 32-block cache took 2.23 s
+and 92.8 MB, versus eager 1.50 s and 378.1 MB: about 1.49x elapsed time for
+4.1x less cache memory.  Thus cache size is a useful explicit operating knob,
+but direct sampled traversal remains the route to removing reconstruction
+work rather than merely trading it against memory.
