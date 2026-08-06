@@ -4587,3 +4587,16 @@ NEXT: construct the layered CSR topology directly from pair-edge birth depths
 rather than first building the final four-index plan and converting it.  Then
 persist/memory-map the one shared graph and adapt checkpoint problems to stable
 global YA/YB/AB identifiers before attempting a complete fitting trajectory.
+
+Direct native construction is now implemented and validated against the
+converted graph layer-by-layer on independent problems.  On the real V1024
+final topology it takes 1.95 s.  The prototype conversion path took 1.85 s to
+allocate/build the old 1.339-GB plan plus 5.70 s to convert it; the direct
+builder never allocates that plan and emits the 0.756-GB graph immediately.
+The next format change is stable birth-major global IDs for YA, YB and AB
+edges.  With every checkpoint support represented as a prefix of those global
+orders, layers 0..k can use the same stored CSR indices directly.  Checkpoint
+numerical margins/factors remain checkpoint-specific prefix arrays; future
+coordinates must not enter the optimizer.  After this invariant is tested,
+persist the graph as uncompressed/memory-mappable arrays and run one complete
+V1024/C32 fitting trajectory against the existing result.

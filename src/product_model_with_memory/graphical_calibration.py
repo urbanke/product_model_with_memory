@@ -638,6 +638,62 @@ def layered_intersection_graph_from_plan(
     )
 
 
+def build_layered_intersection_graph(
+    problem: SparseGroupedProblem,
+    birth_ya: np.ndarray,
+    birth_yb: np.ndarray,
+    birth_ab: np.ndarray,
+    *,
+    layers: int,
+) -> LayeredIntersectionGraph:
+    """Build birth-layered CSR directly, without a four-index plan."""
+
+    first_birth = np.asarray(birth_ya, dtype=np.uint8)
+    second_birth = np.asarray(birth_yb, dtype=np.uint8)
+    context_birth = np.asarray(birth_ab, dtype=np.uint8)
+    if (
+        first_birth.shape != problem.target_ya.shape
+        or second_birth.shape != problem.target_yb.shape
+        or context_birth.shape != problem.edge_probability.shape
+    ):
+        raise ValueError("pair-edge births and sparse problem disagree")
+    if layers < 1 or any(
+        np.any(values >= layers)
+        for values in (first_birth, second_birth, context_birth)
+    ):
+        raise ValueError("pair-edge birth lies outside the layer range")
+    if not (
+        _graphical_margin_c is not None
+        and hasattr(_graphical_margin_c, "layered_intersection_graph")
+    ):
+        plan = build_sparse_intersection_plan(problem)
+        triangle_birth = np.maximum.reduce([
+            first_birth[plan.correction_ya],
+            second_birth[plan.correction_yb],
+            context_birth[plan.edge],
+        ])
+        return layered_intersection_graph_from_plan(
+            problem, plan, triangle_birth, layers=layers
+        )
+    row_ptr, correction_yb, edge_ab = (
+        _graphical_margin_c.layered_intersection_graph(
+            np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+            np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+            np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+            np.ascontiguousarray(first_birth),
+            np.ascontiguousarray(second_birth),
+            np.ascontiguousarray(context_birth),
+            layers,
+        )
+    )
+    return LayeredIntersectionGraph(
+        tuple(row_ptr), tuple(correction_yb), tuple(edge_ab)
+    )
+
+
 def intersection_plan_from_layered_graph(
     problem: SparseGroupedProblem,
     graph: LayeredIntersectionGraph,

@@ -11,6 +11,7 @@ from product_model_with_memory.graphical_calibration import (
     SparseRestrictedMargins,
     build_sparse_edge_blocks,
     build_sparse_intersection_plan,
+    build_layered_intersection_graph,
     check_grouped_feasibility_lp,
     conditional_ipf,
     first_pair_warm_start,
@@ -686,6 +687,17 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins():
     graph = layered_intersection_graph_from_plan(
         problem, plan, triangle_birth, layers=layers
     )
+    direct_graph = build_layered_intersection_graph(
+        problem, birth_ya, birth_yb, birth_ab, layers=layers
+    )
+    for expected, actual in zip(graph.row_ptr, direct_graph.row_ptr):
+        np.testing.assert_array_equal(actual, expected)
+    for expected, actual in zip(
+        graph.correction_yb, direct_graph.correction_yb
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    for expected, actual in zip(graph.edge_ab, direct_graph.edge_ab):
+        np.testing.assert_array_equal(actual, expected)
     assert graph.layers == layers
     assert graph.edges == len(plan.edge)
     assert graph.nbytes < plan.edge.nbytes * 4 + sum(

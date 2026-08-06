@@ -79,6 +79,105 @@ fail_plan:
     return NULL;
 }
 
+static PyObject *layered_intersection_graph(PyObject *self, PyObject *args) {
+    PyArrayObject *edge_a,*edge_b,*ya_y,*ya_a,*yb_y,*yb_b;
+    PyArrayObject *birth_ya,*birth_yb,*birth_ab;
+    int layers;
+    if(!PyArg_ParseTuple(args,"O!O!O!O!O!O!O!O!O!i",
+        &PyArray_Type,&edge_a,&PyArray_Type,&edge_b,
+        &PyArray_Type,&ya_y,&PyArray_Type,&ya_a,
+        &PyArray_Type,&yb_y,&PyArray_Type,&yb_b,
+        &PyArray_Type,&birth_ya,&PyArray_Type,&birth_yb,
+        &PyArray_Type,&birth_ab,&layers))return NULL;
+    npy_intp ne=PyArray_SIZE(edge_a),n1=PyArray_SIZE(ya_y),n2=PyArray_SIZE(yb_y),v=0;
+    if(layers<1||PyArray_SIZE(edge_b)!=ne||PyArray_SIZE(birth_ab)!=ne||
+       PyArray_SIZE(ya_a)!=n1||PyArray_SIZE(birth_ya)!=n1||
+       PyArray_SIZE(yb_b)!=n2||PyArray_SIZE(birth_yb)!=n2){
+        PyErr_SetString(PyExc_ValueError,"invalid layered graph inputs");return NULL;
+    }
+    int *ea=PyArray_DATA(edge_a),*eb=PyArray_DATA(edge_b);
+    int *ay=PyArray_DATA(ya_y),*aa=PyArray_DATA(ya_a);
+    int *by=PyArray_DATA(yb_y),*bb=PyArray_DATA(yb_b);
+    npy_uint8 *d1=PyArray_DATA(birth_ya),*d2=PyArray_DATA(birth_yb),*de=PyArray_DATA(birth_ab);
+    for(npy_intp i=0;i<ne;i++){if(ea[i]+1>v)v=ea[i]+1;if(eb[i]+1>v)v=eb[i]+1;}
+    for(npy_intp i=0;i<n1;i++)if(aa[i]+1>v)v=aa[i]+1;
+    for(npy_intp i=0;i<n2;i++)if(bb[i]+1>v)v=bb[i]+1;
+    npy_intp *p1=calloc((size_t)v+1,sizeof(*p1)),*p2=calloc((size_t)v+1,sizeof(*p2));
+    npy_intp *position=malloc(((size_t)v+1)*sizeof(*position));
+    ActivePair *r1=malloc((size_t)n1*sizeof(*r1)),*r2=malloc((size_t)n2*sizeof(*r2));
+    npy_intp *counts=calloc((size_t)layers*(size_t)n1,sizeof(*counts));
+    npy_intp *cursor=NULL;
+    PyObject *ptr_tuple=NULL,*yb_tuple=NULL,*ab_tuple=NULL;
+    if(!p1||!p2||!position||(!r1&&n1)||(!r2&&n2)||(!counts&&n1)){
+        PyErr_NoMemory();goto fail_layer_graph;
+    }
+    for(npy_intp i=0;i<n1;i++)p1[aa[i]+1]++;
+    for(npy_intp i=0;i<n2;i++)p2[bb[i]+1]++;
+    for(npy_intp a=0;a<v;a++){p1[a+1]+=p1[a];p2[a+1]+=p2[a];}
+    memcpy(position,p1,((size_t)v+1)*sizeof(*position));
+    for(npy_intp i=0;i<n1;i++){npy_intp j=position[aa[i]]++;r1[j]=(ActivePair){ay[i],(int)i};}
+    memcpy(position,p2,((size_t)v+1)*sizeof(*position));
+    for(npy_intp i=0;i<n2;i++){npy_intp j=position[bb[i]]++;r2[j]=(ActivePair){by[i],(int)i};}
+    for(npy_intp a=0;a<v;a++){
+        qsort(r1+p1[a],(size_t)(p1[a+1]-p1[a]),sizeof(*r1),compare_active_pair);
+        qsort(r2+p2[a],(size_t)(p2[a+1]-p2[a]),sizeof(*r2),compare_active_pair);
+    }
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp e=0;e<ne;e++){
+        npy_intp i=p1[ea[e]],ie=p1[ea[e]+1],j=p2[eb[e]],je=p2[eb[e]+1];
+        while(i<ie&&j<je){
+            if(r1[i].y<r2[j].y)i++;else if(r2[j].y<r1[i].y)j++;
+            else{
+                int depth=d1[r1[i].index];if(d2[r2[j].index]>depth)depth=d2[r2[j].index];if(de[e]>depth)depth=de[e];
+                if(depth>=0&&depth<layers)counts[(size_t)depth*n1+r1[i].index]++;
+                i++;j++;
+            }
+        }
+    }
+    Py_END_ALLOW_THREADS
+    ptr_tuple=PyTuple_New(layers);yb_tuple=PyTuple_New(layers);ab_tuple=PyTuple_New(layers);
+    cursor=malloc((size_t)layers*(size_t)n1*sizeof(*cursor));
+    if(!ptr_tuple||!yb_tuple||!ab_tuple||(!cursor&&n1)){PyErr_NoMemory();goto fail_layer_graph;}
+    for(int d=0;d<layers;d++){
+        npy_intp ptr_dims[1]={n1+1};
+        PyArrayObject *ptr=(PyArrayObject*)PyArray_EMPTY(1,ptr_dims,NPY_INT64,0);
+        if(!ptr){goto fail_layer_graph;}
+        npy_int64 *raw=PyArray_DATA(ptr);raw[0]=0;
+        for(npy_intp i=0;i<n1;i++)raw[i+1]=raw[i]+counts[(size_t)d*n1+i];
+        npy_intp edge_dims[1]={raw[n1]};
+        PyArrayObject *right=(PyArrayObject*)PyArray_EMPTY(1,edge_dims,NPY_INT32,0);
+        PyArrayObject *context=(PyArrayObject*)PyArray_EMPTY(1,edge_dims,NPY_INT32,0);
+        if(!right||!context){Py_XDECREF(right);Py_XDECREF(context);Py_DECREF(ptr);goto fail_layer_graph;}
+        for(npy_intp i=0;i<n1;i++)cursor[(size_t)d*n1+i]=raw[i];
+        PyTuple_SET_ITEM(ptr_tuple,d,(PyObject*)ptr);
+        PyTuple_SET_ITEM(yb_tuple,d,(PyObject*)right);
+        PyTuple_SET_ITEM(ab_tuple,d,(PyObject*)context);
+    }
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp e=0;e<ne;e++){
+        npy_intp i=p1[ea[e]],ie=p1[ea[e]+1],j=p2[eb[e]],je=p2[eb[e]+1];
+        while(i<ie&&j<je){
+            if(r1[i].y<r2[j].y)i++;else if(r2[j].y<r1[i].y)j++;
+            else{
+                int left=r1[i].index,right=r2[j].index,depth=d1[left];
+                if(d2[right]>depth)depth=d2[right];if(de[e]>depth)depth=de[e];
+                if(depth>=0&&depth<layers){
+                    npy_intp out=cursor[(size_t)depth*n1+left]++;
+                    ((int*)PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(yb_tuple,depth)))[out]=right;
+                    ((int*)PyArray_DATA((PyArrayObject*)PyTuple_GET_ITEM(ab_tuple,depth)))[out]=(int)e;
+                }
+                i++;j++;
+            }
+        }
+    }
+    Py_END_ALLOW_THREADS
+    free(p1);free(p2);free(position);free(r1);free(r2);free(counts);free(cursor);
+    return Py_BuildValue("NNN",ptr_tuple,yb_tuple,ab_tuple);
+fail_layer_graph:
+    free(p1);free(p2);free(position);free(r1);free(r2);free(counts);free(cursor);
+    Py_XDECREF(ptr_tuple);Py_XDECREF(yb_tuple);Py_XDECREF(ab_tuple);return NULL;
+}
+
 typedef struct {
     npy_intp lo, hi, v, n1, n2;
     const double *b, *q1, *q2, *me;
@@ -364,6 +463,7 @@ static PyMethodDef methods[]={
     {"fused_margins",fused_margins,METH_VARARGS,"Fused sparse margins."},
     {"fused_margins_layered",fused_margins_layered,METH_VARARGS,"Fused birth-layered CSR margins."},
     {"intersection_plan",intersection_plan,METH_VARARGS,"Direct compact intersection plan."},
+    {"layered_intersection_graph",layered_intersection_graph,METH_VARARGS,"Direct birth-layered CSR graph."},
     {NULL,NULL,0,NULL}
 };
 static struct PyModuleDef module={PyModuleDef_HEAD_INIT,"_graphical_margin_c",NULL,-1,methods};

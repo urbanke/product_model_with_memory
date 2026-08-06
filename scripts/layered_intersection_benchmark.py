@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from intersection_topology_audit import keys, load_problem, mark_births
 from product_model_with_memory.graphical_calibration import (
+    build_layered_intersection_graph,
     build_sparse_intersection_plan,
     layered_intersection_graph_from_plan,
     sparse_factorized_margins,
@@ -60,6 +61,14 @@ def main() -> None:
         final, plan, triangle_birth, layers=len(paths)
     )
     graph_build_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    direct_graph = build_layered_intersection_graph(
+        final, births[0], births[1], births[2], layers=len(paths)
+    )
+    direct_graph_build_seconds = time.perf_counter() - started
+    if direct_graph.edges != graph.edges or direct_graph.nbytes != graph.nbytes:
+        raise RuntimeError("direct and converted layered graphs disagree")
+    graph = direct_graph
     with np.load(factor_paths[-1], allow_pickle=False) as data:
         log_base = data["log_base_y"]
         c1 = data["correction_ya"]
@@ -134,6 +143,7 @@ def main() -> None:
         "triangles": len(plan.edge),
         "plan_build_seconds": plan_build_seconds,
         "graph_conversion_seconds": graph_build_seconds,
+        "direct_graph_build_seconds": direct_graph_build_seconds,
         "explicit_bytes": sum(array.nbytes for array in (
             plan.edge, plan.target_y, plan.correction_ya, plan.correction_yb
         )),
