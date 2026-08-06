@@ -4371,3 +4371,18 @@ total is exactly identical. Twelve workers are the current laptop default
 for extraction. Remaining scoring speedup requires splitting large
 intervals into record ranges, since a single large interval is still handled
 by one worker.
+
+### 2026-08-06 --- Next server experiment prepared
+
+`cluster/job_graphical_enwik8_v4096.sbatch` is the staged first test of the
+new three-pair pipeline on the EPFL server. Submit only through
+`urbanke@lth.epfl.ch`; it requests node14, 64 CPUs and 220 GB on
+`slurm-cluster`. It verifies Python >=3.12 and the native extension,
+prepares/reuses the 25,793,085-token `bpe_enwik8` stream, constructs V4096/C32
+problems with 64 workers, calibrates with 48 replicas/workers, and exact-scores
+with 31 workers. BLAS inner threading is forced to one. Stages are restartable
+through separate `results.json` files under
+`output/calibration_enwik8_v4096_server`. First-time environment command:
+`conda create -y -n pmm312 python=3.12 numpy scipy pip`; install `tiktoken`
+only if the existing server stream is absent. The laptop concurrently builds
+V8192/text8 problems with four workers; do not confuse the two runs.

@@ -67,6 +67,29 @@ set in the job files are generous.
     squeue -u $USER          # status
     tail -f output/<run>/slurm-*.out
 
+### Three-pair graphical calibration on enwik8
+
+The staged V4096/C32 server experiment uses the 64-core, high-memory node:
+
+    cd ~/product_model_with_memory
+    git pull
+    conda create -y -n pmm312 python=3.12 numpy scipy pip  # first time only
+    conda run -n pmm312 pip install tiktoken                # if stream absent
+    sbatch cluster/job_graphical_enwik8_v4096.sbatch
+
+It prepares/reuses `output/streams/bpe_enwik8`, constructs reusable problems
+with 64 workers, calibrates with 48 stochastic replicas/workers, and performs
+exact honest scoring with 31 workers (one per predicted interval).  It requests
+220 GB but does not attempt to consume it eagerly.  BLAS/OpenMP inner threading
+is disabled to prevent process oversubscription.  The native C extension is
+built and verified before the run starts.  Each completed stage is reusable;
+resubmitting skips construction or fitting when its `results.json` exists.
+
+Monitor it from `lth.epfl.ch` with:
+
+    squeue -u $USER
+    tail -f output/calibration_enwik8_v4096_server/slurm-*.out
+
 Each job is single-node; three jobs use three nodes in parallel.
 Caches live under the run's output dir; if home quota is tight, set
 CACHE_ROOT in the job files to node-local or shared scratch.
