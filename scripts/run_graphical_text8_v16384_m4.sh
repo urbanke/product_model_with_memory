@@ -20,15 +20,28 @@ FITTED="$ROOT/fitted_w12"
   echo "ERROR: $PY is absent. Create the project environment first."
   exit 1
 }
-"$PY" -c 'import numpy, scipy, setuptools'
-[ -f "$STREAM/ids.npy" ] && [ -f "$STREAM/stream.json" ] || {
-  echo "ERROR: prepared stream $STREAM is absent."
-  exit 1
-}
-[ -f tables/anchors_prod/anchors.json ] || {
-  echo "ERROR: complete tables/anchors_prod store is absent."
-  exit 1
-}
+"$PY" -c 'import numpy, scipy, setuptools, tiktoken'
+
+if [ ! -f "$STREAM/ids.npy" ] || [ ! -f "$STREAM/stream.json" ]; then
+  [ -f data/text8 ] || {
+    echo "ERROR: data/text8 is absent."
+    exit 1
+  }
+  echo "=== build deterministic cl100k_base text8 stream ==="
+  mkdir -p vocab_cache output/streams
+  "$PY" scripts/make_stream.py \
+    --representation bpe --file data/text8 --encoding cl100k_base \
+    --vocab-dir vocab_cache --charge-vocabulary 776019 \
+    --out "$STREAM"
+fi
+
+if [ ! -f tables/anchors_prod/anchors.json ]; then
+  echo "=== build production anchor store with 12 workers ==="
+  "$PY" scripts/build_anchor_store.py \
+    --out tables/anchors_prod --factor 0.083071 --levels 2-53 \
+    --r-max 200000000 --pad-anchors 8 --dense-below 256 \
+    --targets-per-level 40 --jobs 12 --go
+fi
 
 mkdir -p "$ROOT"
 "$PY" setup.py build_ext --inplace
