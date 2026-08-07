@@ -37,6 +37,10 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--tolerance", type=float, default=1e-2)
     parser.add_argument("--newton-products", type=int, default=80)
+    parser.add_argument(
+        "--lbfgs-caps", default="10,25,50,100,250",
+        help="comma-separated L-BFGS approach budgets, each followed by IPF",
+    )
     args = parser.parse_args()
 
     with np.load(args.candidate, allow_pickle=False) as saved:
@@ -55,22 +59,34 @@ def main() -> None:
     graph = load_layered_intersection_graph(Path(args.store) / "graph")
     rows = []
 
-    started = time.perf_counter()
-    lbfgs = sparse_grouped_ipf(
-        problem, solver="lbfgs", evaluator="layered",
-        tolerance=args.tolerance, max_iterations=5_000,
-        log_base_y=warm[0], correction_ya=warm[1], correction_yb=warm[2],
-        margin_workers=args.workers,
-        _layered_graph=graph, _layered_checkpoint=args.checkpoint,
-    )
-    rows.append({
-        "solver": "layered_lbfgs",
-        "seconds": time.perf_counter() - started,
-        "certificate": certificate(lbfgs),
-        "converged": lbfgs.converged,
-        "iterations": lbfgs.iterations,
-        "margin_evaluations": lbfgs.margin_evaluations,
-    })
+    caps = [int(value) for value in args.lbfgs_caps.split(",")]
+    if not caps or any(value < 1 for value in caps):
+        parser.error("L-BFGS caps must be positive integers")
+    for cap in caps:
+        started = time.perf_counter()
+        trace = []
+        lbfgs = sparse_grouped_ipf(
+            problem, solver="lbfgs", evaluator="layered",
+            tolerance=args.tolerance, max_iterations=cap,
+            log_base_y=warm[0], correction_ya=warm[1],
+            correction_yb=warm[2], margin_workers=args.workers,
+            trace=trace, trace_interval=max(1, cap // 10),
+            _layered_graph=graph, _layered_checkpoint=args.checkpoint,
+        )
+        phase_counts = {}
+        for record in trace:
+            phase = record["phase"]
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+        rows.append({
+            "solver": "layered_lbfgs_then_ipf",
+            "lbfgs_cap": cap,
+            "seconds": time.perf_counter() - started,
+            "certificate": certificate(lbfgs),
+            "converged": lbfgs.converged,
+            "iterations": lbfgs.iterations,
+            "margin_evaluations": lbfgs.margin_evaluations,
+            "trace_phase_counts": phase_counts,
+        })
 
     started = time.perf_counter()
     newton = sparse_grouped_newton_cg(
