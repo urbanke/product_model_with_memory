@@ -280,12 +280,18 @@ def main() -> None:
                 restart = (
                     np.asarray(state["log_base_y"]),
                     reorder_values(
-                        original.active_ya_y, original.active_ya_a,
+                        np.asarray(state["active_ya_y"])
+                        if "active_ya_y" in state else original.active_ya_y,
+                        np.asarray(state["active_ya_a"])
+                        if "active_ya_a" in state else original.active_ya_a,
                         state["correction_ya"], problem.active_ya_y,
                         problem.active_ya_a, problem.vocabulary_size,
                     ),
                     reorder_values(
-                        original.active_yb_y, original.active_yb_b,
+                        np.asarray(state["active_yb_y"])
+                        if "active_yb_y" in state else original.active_yb_y,
+                        np.asarray(state["active_yb_b"])
+                        if "active_yb_b" in state else original.active_yb_b,
                         state["correction_yb"], problem.active_yb_y,
                         problem.active_yb_b, problem.vocabulary_size,
                     ),
