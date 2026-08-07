@@ -4805,3 +4805,27 @@ production defaults to the proven worker-local route.  The useful parts are
 the indexed native evaluator, O(1)-range context lookup for numerical repair,
 and phase timings.  At checkpoint 31 the central reduction was only about
 3--4% of elapsed time; replica evaluation/native traversal is the real target.
+
+A follow-up V4096 checkpoint-31 audit tested several apparent memory-traffic
+shortcuts against the 23.74-s, 60-update, 128-block/interval-5 baseline.  None
+was retained: one full snapshot-gradient accumulator per worker with sparse
+NumPy updates took 26.56 s; contiguous worker accumulation took 25.10 s;
+central preparation of the two context sums took 27.23 s because it serialized
+scans that the replica workers perform concurrently; scanning only the YA rows
+touched by each block took 28.06 s because indirect access and support setup
+cost more than the sequential scan; and a branch-free final-checkpoint birth
+specialization took 25.01 s.  Changing the number of work-balanced blocks was
+also worse: 64 blocks took 30.94 s and 256 blocks 24.60 s, versus 128 blocks
+at 23.74 s.  All experimental code was removed after measurement.
+
+The support geometry explains the asymmetric result: a typical AB-major
+block touches only 0.84% of active YA rows but 88.8% of active YB rows because
+the persistent graph is ordered primarily by A.  Nevertheless, the full YA
+scan is cheap and sequential; random triangle factor reads and margin writes
+dominate.  The next material optimization should therefore change triangle
+locality or reduce the number of triangle products evaluated.  Rearranging
+Python reductions, centralizing replica work, or shaving the birth check is
+unlikely to help.  A more radical candidate is a two-dimensional tiled AB
+layout (or another locality-preserving ordering) coupled to compact block
+margins; it must be benchmarked against the current contiguous AB-major walk,
+since the indexed-edge prototype was slower.
