@@ -34,6 +34,7 @@ def select_warm_start(
     checkpoint: int,
     workers: int,
     transferred: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    restart: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
     policy: str,
 ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], list[dict], str]:
     """Choose a generic initializer by its exact convex dual objective."""
@@ -52,6 +53,8 @@ def select_warm_start(
     }
     if transferred is not None:
         candidates["transferred"] = transferred
+    if restart is not None:
+        candidates["restart"] = restart
 
     rows = []
     valid = []
@@ -84,7 +87,8 @@ def select_warm_start(
     if not valid:
         raise FloatingPointError("all initialization candidates are nonfinite")
     selected = (
-        "transferred" if policy == "legacy" and transferred is not None
+        "restart" if restart is not None
+        else "transferred" if policy == "legacy" and transferred is not None
         else "pair_product" if policy == "legacy"
         else min(valid)[-1]
     )
@@ -145,6 +149,13 @@ def main() -> None:
     )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
+    parser.add_argument(
+        "--restart-state",
+        help=(
+            "scoring-compatible state for the first selected checkpoint; "
+            "reuse its factors while resetting optimizer and scheduler state"
+        ),
+    )
     args = parser.parse_args()
     snapshot_thresholds = (
         [] if not args.snapshot_certificates else sorted(
@@ -232,10 +243,36 @@ def main() -> None:
             transferred = transfer_sparse_warm_start(
                 previous_problem, previous_result, problem
             )
+        restart = None
+        if checkpoint == args.start and args.restart_state:
+            restart_path = Path(args.restart_state)
+            with np.load(restart_path, allow_pickle=False) as state:
+                with np.load(paths[checkpoint], allow_pickle=False) as source:
+                    expected_prefix = int(source["prefix"])
+                if (
+                    "prefix" in state
+                    and int(state["prefix"]) != expected_prefix
+                ):
+                    raise ValueError(
+                        "restart state belongs to a different checkpoint prefix"
+                    )
+                restart = (
+                    np.asarray(state["log_base_y"]),
+                    reorder_values(
+                        original.active_ya_y, original.active_ya_a,
+                        state["correction_ya"], problem.active_ya_y,
+                        problem.active_ya_a, problem.vocabulary_size,
+                    ),
+                    reorder_values(
+                        original.active_yb_y, original.active_yb_b,
+                        state["correction_yb"], problem.active_yb_y,
+                        problem.active_yb_b, problem.vocabulary_size,
+                    ),
+                )
         (lb, c1, c2), initialization_rows, initialization = (
             select_warm_start(
                 problem, exact_graph, checkpoint, args.workers, transferred,
-                args.initialization_policy,
+                restart, args.initialization_policy,
             )
         )
         print(json.dumps({
