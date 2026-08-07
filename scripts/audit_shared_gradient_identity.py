@@ -138,22 +138,27 @@ def main() -> None:
     for _ in range(args.directions):
         direction = rng.normal(size=len(exact_gradient))
         direction /= np.linalg.norm(direction)
-        epsilon = 1e-5
-        plus = np.concatenate(factors) + epsilon * direction
-        minus = np.concatenate(factors) - epsilon * direction
+        vector = np.concatenate(factors)
         first = problem.vocabulary_size
         second = first + len(problem.target_ya)
         unpack = lambda vector: (  # noqa: E731
             vector[:first], vector[first:second], vector[second:]
         )
-        finite = (
-            exact(unpack(plus)).objective - exact(unpack(minus)).objective
-        ) / (2.0 * epsilon)
         analytic = float(exact_gradient @ direction)
         directional.append({
             "analytic": analytic,
-            "finite_difference": finite,
-            "absolute_error": abs(analytic - finite),
+            "finite_differences": [
+                {
+                    "epsilon": epsilon,
+                    "value": finite,
+                    "absolute_error": abs(analytic - finite),
+                }
+                for epsilon in (1e-2, 1e-3, 1e-4)
+                for finite in [(
+                    exact(unpack(vector + epsilon * direction)).objective
+                    - exact(unpack(vector - epsilon * direction)).objective
+                ) / (2.0 * epsilon)]
+            ],
         })
 
     vector = np.concatenate(factors)
@@ -167,6 +172,31 @@ def main() -> None:
         ))
         step_rows.append({
             "step_size": step_size,
+            "objective": float(evaluation.objective),
+            "objective_change": float(
+                evaluation.objective - exact_evaluation.objective
+            ),
+            "certificate": float(evaluation.certificate),
+        })
+
+    adam_rows = []
+    for learning_rate in (0.03, 0.003, 0.0003):
+        # At Adam's first update m_hat=g and v_hat=g^2, so each active
+        # coordinate moves by approximately the learning rate, independently
+        # of the gradient magnitude.  This makes the Euclidean step grow as
+        # sqrt(number of parameters) unless the rate is scaled accordingly.
+        update = learning_rate * exact_gradient / (
+            np.abs(exact_gradient) + 1e-8
+        )
+        candidate = vector - update
+        candidate[:first] -= np.log(np.exp(candidate[:first]).sum())
+        evaluation = exact((
+            candidate[:first], candidate[first:second], candidate[second:]
+        ))
+        adam_rows.append({
+            "learning_rate": learning_rate,
+            "update_l2": float(np.linalg.norm(update)),
+            "update_linf": float(np.max(np.abs(update))),
             "objective": float(evaluation.objective),
             "objective_change": float(
                 evaluation.objective - exact_evaluation.objective
@@ -191,6 +221,7 @@ def main() -> None:
         ),
         "directional_derivatives": directional,
         "negative_exact_gradient_steps": step_rows,
+        "first_exact_adam_steps": adam_rows,
     }, indent=2))
 
 
