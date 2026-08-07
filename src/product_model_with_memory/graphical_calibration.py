@@ -2678,21 +2678,120 @@ def sparse_grouped_newton_cg(
         if value <= tolerance:
             raise _ConvergenceReached
 
-    try:
-        optimized = minimize(
-            objective_gradient,
-            np.zeros(np.count_nonzero(free), dtype=np.float64),
-            method="trust-ncg",
-            jac=True,
-            hessp=hessian_product,
-            callback=stop_at_convergence,
-            options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
-        )
-        iterations = int(optimized.nit)
-    except _ConvergenceReached:
-        iterations = accepted_iterations
-    except _HessianBudgetReached:
-        iterations = accepted_iterations
+    if layered_graph is None:
+        try:
+            optimized = minimize(
+                objective_gradient,
+                np.zeros(np.count_nonzero(free), dtype=np.float64),
+                method="trust-ncg",
+                jac=True,
+                hessp=hessian_product,
+                callback=stop_at_convergence,
+                options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
+            )
+            iterations = int(optimized.nit)
+        except _ConvergenceReached:
+            iterations = accepted_iterations
+        except _HessianBudgetReached:
+            iterations = accepted_iterations
+    else:
+        # Standard Steihaug trust-region Newton iteration.  Unlike scipy's
+        # wrapper, this loop treats a nonfinite trial as a rejected step and
+        # contracts the radius; it never lets an exploratory proposal abort
+        # the fit.
+        reduced = np.zeros(np.count_nonzero(free), dtype=np.float64)
+        objective, gradient = objective_gradient(reduced)
+        radius = 1.0
+        maximum_radius = 1e6
+        iterations = 0
+
+        def boundary_distance(point: np.ndarray, direction: np.ndarray,
+                              bound: float) -> float:
+            pd = float(point @ direction)
+            dd = float(direction @ direction)
+            discriminant = max(
+                0.0, pd * pd + dd * (bound * bound - float(point @ point)),
+            )
+            return (-pd + np.sqrt(discriminant)) / dd
+
+        try:
+            for iteration in range(max_iterations):
+                iterations = iteration
+                stopping_value = (
+                    best_stationarity if relaxed else best_certificate
+                )
+                if stopping_value <= tolerance:
+                    break
+                residual = gradient.copy()
+                direction = -residual
+                step = np.zeros_like(reduced)
+                residual_norm_squared = float(residual @ residual)
+                cg_threshold = min(
+                    0.5, np.sqrt(np.sqrt(residual_norm_squared)),
+                ) * np.sqrt(residual_norm_squared)
+                hit_boundary = False
+                for _ in range(len(reduced)):
+                    curvature_vector = hessian_product(reduced, direction)
+                    curvature = float(direction @ curvature_vector)
+                    if curvature <= 0.0 or not np.isfinite(curvature):
+                        step += boundary_distance(step, direction, radius) * direction
+                        hit_boundary = True
+                        break
+                    alpha = residual_norm_squared / curvature
+                    candidate_step = step + alpha * direction
+                    if np.linalg.norm(candidate_step) >= radius:
+                        step += boundary_distance(step, direction, radius) * direction
+                        hit_boundary = True
+                        break
+                    step = candidate_step
+                    next_residual = residual + alpha * curvature_vector
+                    next_norm_squared = float(next_residual @ next_residual)
+                    if np.sqrt(next_norm_squared) <= cg_threshold:
+                        residual = next_residual
+                        break
+                    beta = next_norm_squared / residual_norm_squared
+                    direction = -next_residual + beta * direction
+                    residual = next_residual
+                    residual_norm_squared = next_norm_squared
+
+                model_product = hessian_product(reduced, step)
+                predicted_reduction = -float(
+                    gradient @ step + 0.5 * step @ model_product
+                )
+                if predicted_reduction <= 0.0 or not np.isfinite(predicted_reduction):
+                    radius *= 0.25
+                    continue
+
+                snapshot = (
+                    best_parameters.copy(), best_certificate,
+                    best_stationarity, best_objective, best_residuals,
+                )
+                try:
+                    trial_objective, trial_gradient = objective_gradient(
+                        reduced + step
+                    )
+                    ratio = (objective - trial_objective) / predicted_reduction
+                    if not np.isfinite(ratio):
+                        ratio = -np.inf
+                except (FloatingPointError, OverflowError, ValueError):
+                    ratio = -np.inf
+
+                if ratio < 0.25:
+                    radius *= 0.25
+                elif ratio > 0.75 and hit_boundary:
+                    radius = min(2.0 * radius, maximum_radius)
+                if ratio > 0.1:
+                    reduced += step
+                    objective = trial_objective
+                    gradient = trial_gradient
+                    accepted_iterations += 1
+                else:
+                    (best_parameters, best_certificate, best_stationarity,
+                     best_objective, best_residuals) = snapshot
+            else:
+                iterations = max_iterations
+        except _HessianBudgetReached:
+            pass
     return SparseGroupedResult(
         best_parameters[:v],
         best_parameters[v:v + n1],
