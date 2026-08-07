@@ -28,23 +28,32 @@ def main() -> None:
     parser.add_argument("--ids", required=True)
     parser.add_argument("--top-k", type=int, required=True)
     parser.add_argument("--n", type=int, required=True)
-    parser.add_argument("--next-prefix", type=int, required=True)
+    boundary = parser.add_mutually_exclusive_group(required=True)
+    boundary.add_argument("--next-prefix", type=int)
+    boundary.add_argument(
+        "--next-problem",
+        help="constructed checkpoint state supplying only the next boundary",
+    )
     parser.add_argument("--checkpoint", type=int, required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
     started = time.time()
     problem, result, p_ya, p_yb, prefix = load_state(Path(args.state))
-    if args.next_prefix <= prefix:
+    next_prefix = args.next_prefix
+    if args.next_problem:
+        with np.load(args.next_problem, allow_pickle=False) as state:
+            next_prefix = int(state["prefix"])
+    if next_prefix <= prefix:
         parser.error("next prefix must lie after the fitted prefix")
     ids, _ = load_stream(args.ids)
     original = ids[:args.n].astype(np.int64)
     x, _, _ = reduce_ids(original, args.top_k)
-    if args.next_prefix > len(x):
+    if next_prefix > len(x):
         parser.error("next prefix lies beyond the reduced stream")
-    target = x[prefix:args.next_prefix]
-    lag1 = x[prefix - 1:args.next_prefix - 1]
-    lag2 = x[prefix - 2:args.next_prefix - 2]
+    target = x[prefix:next_prefix]
+    lag1 = x[prefix - 1:next_prefix - 1]
+    lag2 = x[prefix - 2:next_prefix - 2]
     candidate = sparse_gated_log_probabilities(
         problem, result, target, lag1, lag2, p_ya, p_yb
     )
@@ -63,7 +72,7 @@ def main() -> None:
         "version": 1,
         "checkpoint": args.checkpoint,
         "fit_prefix": prefix,
-        "next_prefix": args.next_prefix,
+        "next_prefix": next_prefix,
         "scored_records": len(target),
         "supported_fraction": float(covered.mean()),
         "candidate_bits": candidate_bits,

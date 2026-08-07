@@ -115,3 +115,20 @@ memory declarations, verifies expected outputs, and publishes one completion
 manifest per job.  This bridge permits correctness comparisons among fixed
 orders before the compatibility materialization and count replay are replaced
 by direct incremental traversal and persisted count states.
+
+`make_fixed_checkpoint_schedule.py` generates two deliberately simple fixed
+orders.  Both enforce the serial chains
+
+\[
+C_0\to C_1\to\cdots,
+\qquad
+F_0\to F_1\to\cdots.
+\]
+
+The `phased` order completes all construction and graph jobs before fitting;
+the `pipeline` order overlaps only different job types whose declared inputs
+already exist.  A three-checkpoint text8 smoke test ran all 11 jobs in both
+orders.  The three construction states and three fitted states were bitwise
+identical, and both interval score records were identical after excluding
+elapsed time.  This establishes scheduling-order invariance for the current
+bridge on the test problem.

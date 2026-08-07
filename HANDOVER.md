@@ -4975,19 +4975,20 @@ The existing exact shared store is already physically split into 32 triangle
 birth layers, but all layers are built together from the final support; the
 AB-major stochastic store is monolithic with birth labels.
 
-The new reference primitives assign stable pair-edge IDs online (retain all
+The new primitives assign stable pair-edge IDs online (retain all
 old IDs and append newly observed sorted keys), represent each triangle-birth
 layer as sparse CSR row directories in both YA-major and AB-major order, and
 publish each immutable delta with its manifest written last.  A test constructs
 the layers sequentially without final-checkpoint knowledge and reproduces the
-final birth-major topology exactly.  All 42 calibration tests pass.
+final birth-major topology exactly.  The incremental builder emits each
+triangle once, when its last required edge is born.  All 44 scheduler and
+calibration tests pass.
 
-Do not yet use the reference delta builder for a large production run: it
-materializes the cumulative explicit intersection plan at each checkpoint.
-The next implementation step is a native incremental builder that enumerates
-only triangles newly enabled by new YA, YB, or AB edges.  After that, add a
-native multi-delta traversal and compare its exact/stochastic margins with the
-current monolithic store before modifying the production workflow.
+Do not yet use the delta path for a large production run: although delta
+construction is incremental, the correctness bridge still materializes all
+deltas through k into a legacy graph store for each fitting job.  The next
+representation step is native multi-delta traversal, followed by comparison
+of exact and stochastic margins with the current monolithic store.
 
 The orchestration priority was subsequently changed: establish coarse C/G/F/E
 jobs and fixed hand-authored schedules before the automatic scheduler.  The
@@ -4999,5 +5000,9 @@ delta; a temporary materializer converts deltas through k into the legacy
 fitter store; the existing fitter can run only k; and the new interval scorer
 uses F_k plus an explicit next boundary rather than F_{k+1}.  Small smoke tests
 confirmed incremental C0/C1 publication, G0--G2 publication/materialization,
-and standalone E0 scoring.  Replace the correctness bridge's replay and graph
-materialization only after fixed schedules reproduce the sequential totals.
+and standalone E0 scoring.  `make_fixed_checkpoint_schedule.py` now emits
+`phased` and `pipeline` fixed orders while enforcing serial C and F chains.  A
+three-checkpoint/two-interval text8 test produced bitwise-identical C and F
+states and identical E scores under both orders.  Replace the correctness
+bridge's replay and graph materialization only after this invariant is also
+covered by a durable integration test.
