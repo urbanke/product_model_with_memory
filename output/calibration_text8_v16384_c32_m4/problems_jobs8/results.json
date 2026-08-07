@@ -1,0 +1,349 @@
+{
+  "ids": "output/streams/bpe_text8",
+  "V": 16384,
+  "n": 19429294,
+  "checkpoints": 32,
+  "first_checkpoint": 262144,
+  "interleave": 1,
+  "margin_workers": 1,
+  "solver": "lbfgs",
+  "evaluator": "union",
+  "lbfgs_trust_radius": 16.0,
+  "initialization": "unigram",
+  "checkpoint_transfer": "copy",
+  "sparse_upstream": true,
+  "stream_checkpoints": true,
+  "construct_only": true,
+  "construction_jobs": 8,
+  "tolerance": 0.0001,
+  "max_iterations_per_phase": 2000,
+  "construction_seconds": 9297.955512046814,
+  "fit_seconds": 0.0,
+  "persistence_seconds": 2.659504162999383,
+  "state_compression": "none",
+  "elapsed_seconds": 9300.718881845474,
+  "peak_resident_bytes": 20169293824,
+  "rows": [
+    {
+      "prefix": 262144,
+      "retained_ab_mass": 0.8026228669920715,
+      "context_edges": 126816,
+      "ya_corrections": 126816,
+      "yb_corrections": 159397,
+      "construction_seconds": 26.92192840576172,
+      "persistence_seconds": 0.0035629160001917626,
+      "constructed_only": true
+    },
+    {
+      "prefix": 537170,
+      "retained_ab_mass": 0.8224311593857159,
+      "context_edges": 229474,
+      "ya_corrections": 229474,
+      "yb_corrections": 298355,
+      "construction_seconds": 38.270599126815796,
+      "persistence_seconds": 0.016994250000152533,
+      "constructed_only": true
+    },
+    {
+      "prefix": 825712,
+      "retained_ab_mass": 0.8338875866090023,
+      "context_edges": 322538,
+      "ya_corrections": 322538,
+      "yb_corrections": 428411,
+      "construction_seconds": 50.512521266937256,
+      "persistence_seconds": 0.023575167000217334,
+      "constructed_only": true
+    },
+    {
+      "prefix": 1128436,
+      "retained_ab_mass": 0.8450307750534124,
+      "context_edges": 408593,
+      "ya_corrections": 408594,
+      "yb_corrections": 552726,
+      "construction_seconds": 62.4367618560791,
+      "persistence_seconds": 0.024136084000019764,
+      "constructed_only": true
+    },
+    {
+      "prefix": 1446037,
+      "retained_ab_mass": 0.8549330683138722,
+      "context_edges": 488351,
+      "ya_corrections": 488351,
+      "yb_corrections": 671588,
+      "construction_seconds": 76.18060493469238,
+      "persistence_seconds": 0.02732037499981743,
+      "constructed_only": true
+    },
+    {
+      "prefix": 1779248,
+      "retained_ab_mass": 0.8612341884297245,
+      "context_edges": 572173,
+      "ya_corrections": 572174,
+      "yb_corrections": 794545,
+      "construction_seconds": 89.35278797149658,
+      "persistence_seconds": 0.03187066700002106,
+      "constructed_only": true
+    },
+    {
+      "prefix": 2128836,
+      "retained_ab_mass": 0.8659811836453729,
+      "context_edges": 656464,
+      "ya_corrections": 656464,
+      "yb_corrections": 920082,
+      "construction_seconds": 102.98519206047058,
+      "persistence_seconds": 0.027848624999933236,
+      "constructed_only": true
+    },
+    {
+      "prefix": 2495604,
+      "retained_ab_mass": 0.8703771318789373,
+      "context_edges": 740279,
+      "ya_corrections": 740280,
+      "yb_corrections": 1045964,
+      "construction_seconds": 116.9201762676239,
+      "persistence_seconds": 0.04331691600009435,
+      "constructed_only": true
+    },
+    {
+      "prefix": 2880399,
+      "retained_ab_mass": 0.8743030677746925,
+      "context_edges": 824843,
+      "ya_corrections": 824843,
+      "yb_corrections": 1175040,
+      "construction_seconds": 130.82825899124146,
+      "persistence_seconds": 0.04704658299988296,
+      "constructed_only": true
+    },
+    {
+      "prefix": 3284105,
+      "retained_ab_mass": 0.8777897211332789,
+      "context_edges": 911083,
+      "ya_corrections": 911083,
+      "yb_corrections": 1306586,
+      "construction_seconds": 146.1990909576416,
+      "persistence_seconds": 0.04084116700005325,
+      "constructed_only": true
+    },
+    {
+      "prefix": 3707652,
+      "retained_ab_mass": 0.8815527896268264,
+      "context_edges": 994740,
+      "ya_corrections": 994740,
+      "yb_corrections": 1437325,
+      "construction_seconds": 159.8823962211609,
+      "persistence_seconds": 0.03180683299979137,
+      "constructed_only": true
+    },
+    {
+      "prefix": 4152016,
+      "retained_ab_mass": 0.8845714606623606,
+      "context_edges": 1081956,
+      "ya_corrections": 1081956,
+      "yb_corrections": 1573188,
+      "construction_seconds": 175.21679091453552,
+      "persistence_seconds": 0.055181624999931955,
+      "constructed_only": true
+    },
+    {
+      "prefix": 4618219,
+      "retained_ab_mass": 0.887289050205063,
+      "context_edges": 1171694,
+      "ya_corrections": 1171695,
+      "yb_corrections": 1714246,
+      "construction_seconds": 190.87879300117493,
+      "persistence_seconds": 0.0744858749994819,
+      "constructed_only": true
+    },
+    {
+      "prefix": 5107335,
+      "retained_ab_mass": 0.8902988890390522,
+      "context_edges": 1258392,
+      "ya_corrections": 1258392,
+      "yb_corrections": 1852845,
+      "construction_seconds": 207.0427761077881,
+      "persistence_seconds": 0.08308333300010418,
+      "constructed_only": true
+    },
+    {
+      "prefix": 5620489,
+      "retained_ab_mass": 0.8928003758215787,
+      "context_edges": 1349523,
+      "ya_corrections": 1349523,
+      "yb_corrections": 1998599,
+      "construction_seconds": 228.8384702205658,
+      "persistence_seconds": 0.08167108299949177,
+      "constructed_only": true
+    },
+    {
+      "prefix": 6158864,
+      "retained_ab_mass": 0.8949049851486734,
+      "context_edges": 1445190,
+      "ya_corrections": 1445191,
+      "yb_corrections": 2150094,
+      "construction_seconds": 242.66987013816833,
+      "persistence_seconds": 0.09465820800051006,
+      "constructed_only": true
+    },
+    {
+      "prefix": 6723698,
+      "retained_ab_mass": 0.8970618603744661,
+      "context_edges": 1541380,
+      "ya_corrections": 1541380,
+      "yb_corrections": 2304183,
+      "construction_seconds": 258.97574186325073,
+      "persistence_seconds": 0.06598037500043574,
+      "constructed_only": true
+    },
+    {
+      "prefix": 7316293,
+      "retained_ab_mass": 0.8992909023895435,
+      "context_edges": 1636785,
+      "ya_corrections": 1636785,
+      "yb_corrections": 2458958,
+      "construction_seconds": 274.92094683647156,
+      "persistence_seconds": 0.08705154099970969,
+      "constructed_only": true
+    },
+    {
+      "prefix": 7938012,
+      "retained_ab_mass": 0.9014318510653997,
+      "context_edges": 1734086,
+      "ya_corrections": 1734086,
+      "yb_corrections": 2616953,
+      "construction_seconds": 297.44194197654724,
+      "persistence_seconds": 0.08502716699968005,
+      "constructed_only": true
+    },
+    {
+      "prefix": 8590287,
+      "retained_ab_mass": 0.9036579354295101,
+      "context_edges": 1831517,
+      "ya_corrections": 1831517,
+      "yb_corrections": 2777446,
+      "construction_seconds": 314.8432469367981,
+      "persistence_seconds": 0.07916533299976436,
+      "constructed_only": true
+    },
+    {
+      "prefix": 9274620,
+      "retained_ab_mass": 0.9056187120742968,
+      "context_edges": 1932671,
+      "ya_corrections": 1932671,
+      "yb_corrections": 2944071,
+      "construction_seconds": 341.40937399864197,
+      "persistence_seconds": 0.11808225000004313,
+      "constructed_only": true
+    },
+    {
+      "prefix": 9992586,
+      "retained_ab_mass": 0.9076334869318295,
+      "context_edges": 2035059,
+      "ya_corrections": 2035059,
+      "yb_corrections": 3113187,
+      "construction_seconds": 373.77925181388855,
+      "persistence_seconds": 0.13027899999997317,
+      "constructed_only": true
+    },
+    {
+      "prefix": 10745838,
+      "retained_ab_mass": 0.909114439778075,
+      "context_edges": 2147411,
+      "ya_corrections": 2147411,
+      "yb_corrections": 3293187,
+      "construction_seconds": 396.28891801834106,
+      "persistence_seconds": 0.11450608299946907,
+      "constructed_only": true
+    },
+    {
+      "prefix": 11536110,
+      "retained_ab_mass": 0.9111018114900398,
+      "context_edges": 2252175,
+      "ya_corrections": 2252175,
+      "yb_corrections": 3468239,
+      "construction_seconds": 447.84883093833923,
+      "persistence_seconds": 0.079137124999761,
+      "constructed_only": true
+    },
+    {
+      "prefix": 12365223,
+      "retained_ab_mass": 0.9130853830346348,
+      "context_edges": 2358312,
+      "ya_corrections": 2358312,
+      "yb_corrections": 3648303,
+      "construction_seconds": 476.7988910675049,
+      "persistence_seconds": 0.09503958300047088,
+      "constructed_only": true
+    },
+    {
+      "prefix": 13235084,
+      "retained_ab_mass": 0.9150014405496592,
+      "context_edges": 2466379,
+      "ya_corrections": 2466379,
+      "yb_corrections": 3831811,
+      "construction_seconds": 469.99018120765686,
+      "persistence_seconds": 0.09795666599893593,
+      "constructed_only": true
+    },
+    {
+      "prefix": 14147697,
+      "retained_ab_mass": 0.9167876556423643,
+      "context_edges": 2579976,
+      "ya_corrections": 2579977,
+      "yb_corrections": 4020973,
+      "construction_seconds": 519.4960839748383,
+      "persistence_seconds": 0.09983204200034379,
+      "constructed_only": true
+    },
+    {
+      "prefix": 15105162,
+      "retained_ab_mass": 0.9190972063462468,
+      "context_edges": 2678400,
+      "ya_corrections": 2678400,
+      "yb_corrections": 4193589,
+      "construction_seconds": 545.5373446941376,
+      "persistence_seconds": 0.1394704999984242,
+      "constructed_only": true
+    },
+    {
+      "prefix": 16109684,
+      "retained_ab_mass": 0.9207380385642474,
+      "context_edges": 2795843,
+      "ya_corrections": 2795843,
+      "yb_corrections": 4395848,
+      "construction_seconds": 580.2450728416443,
+      "persistence_seconds": 0.14263491700148734,
+      "constructed_only": true
+    },
+    {
+      "prefix": 17163576,
+      "retained_ab_mass": 0.9222747192142464,
+      "context_edges": 2918818,
+      "ya_corrections": 2918818,
+      "yb_corrections": 4603680,
+      "construction_seconds": 637.2851581573486,
+      "persistence_seconds": 0.1664965830004803,
+      "constructed_only": true
+    },
+    {
+      "prefix": 18269264,
+      "retained_ab_mass": 0.9239318145656861,
+      "context_edges": 3038816,
+      "ya_corrections": 3038816,
+      "yb_corrections": 4809568,
+      "construction_seconds": 647.2280759811401,
+      "persistence_seconds": 0.23317158300051233,
+      "constructed_only": true
+    },
+    {
+      "prefix": 19429294,
+      "retained_ab_mass": 0.9254156902110962,
+      "context_edges": 3166823,
+      "ya_corrections": 3166823,
+      "yb_corrections": 5027113,
+      "construction_seconds": 670.729433298111,
+      "persistence_seconds": 0.21827370800019708,
+      "constructed_only": true
+    }
+  ],
+  "predictive_comparison": null
+}
