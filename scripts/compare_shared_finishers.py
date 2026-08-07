@@ -65,12 +65,14 @@ def main() -> None:
     for cap in caps:
         started = time.perf_counter()
         trace = []
+        phase_timing = {}
         lbfgs = sparse_grouped_ipf(
             problem, solver="lbfgs", evaluator="layered",
             tolerance=args.tolerance, max_iterations=cap,
             log_base_y=warm[0], correction_ya=warm[1],
             correction_yb=warm[2], margin_workers=args.workers,
             trace=trace, trace_interval=max(1, cap // 10),
+            phase_timing=phase_timing,
             _layered_graph=graph, _layered_checkpoint=args.checkpoint,
         )
         phase_counts = {}
@@ -86,6 +88,7 @@ def main() -> None:
             "iterations": lbfgs.iterations,
             "margin_evaluations": lbfgs.margin_evaluations,
             "trace_phase_counts": phase_counts,
+            "phase_timing": phase_timing,
         })
 
     started = time.perf_counter()

@@ -1127,6 +1127,7 @@ def sparse_factorized_margins_layered(
     context_rows: tuple[
         tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]
     ] | None = None,
+    phase_timing: dict[str, float] | None = None,
 ) -> SparseFactorizedMargins:
     """Evaluate a birth-layered graph with the native sequential kernel."""
 
@@ -1157,6 +1158,7 @@ def sparse_factorized_margins_layered(
     with np.errstate(over="ignore", invalid="ignore"):
         r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
         r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    native_started = perf_counter()
     target_y, active_ya, active_yb, log_z, unstable = (
         _graphical_margin_c.fused_margins_layered(
             np.ascontiguousarray(base),
@@ -1176,6 +1178,11 @@ def sparse_factorized_margins_layered(
             effective_workers,
         )
     )
+    if phase_timing is not None:
+        phase_timing["layered_native_seconds"] = (
+            phase_timing.get("layered_native_seconds", 0.0)
+            + perf_counter() - native_started
+        )
     # The expanded 1+S1+S2+cross formula is fast but can lose precision when
     # large signed corrections cancel.  The native kernel omits and flags
     # such AB edges; add them back from their positive log-sum-exp form.
@@ -1190,7 +1197,9 @@ def sparse_factorized_margins_layered(
         ), dtype=np.int64)]
     else:
         (ptr1, order1), (ptr2, order2) = context_rows
-    for edge in np.flatnonzero(unstable):
+    unstable_edges = np.flatnonzero(unstable)
+    repair_started = perf_counter()
+    for edge in unstable_edges:
         a = problem.edge_a[edge]
         b = problem.edge_b[edge]
         selected1 = order1[ptr1[a]:ptr1[a + 1]]
@@ -1210,6 +1219,18 @@ def sparse_factorized_margins_layered(
         active_ya[selected1] += joint[problem.active_ya_y[selected1]]
         active_yb[selected2] += joint[problem.active_yb_y[selected2]]
         log_z[edge] = direct_log_z
+    if phase_timing is not None:
+        phase_timing["layered_repair_seconds"] = (
+            phase_timing.get("layered_repair_seconds", 0.0)
+            + perf_counter() - repair_started
+        )
+        phase_timing["layered_unstable_edges"] = (
+            phase_timing.get("layered_unstable_edges", 0.0)
+            + len(unstable_edges)
+        )
+        phase_timing["layered_evaluations"] = (
+            phase_timing.get("layered_evaluations", 0.0) + 1.0
+        )
     if not all(np.all(np.isfinite(array)) for array in (
         target_y, active_ya, active_yb, log_z
     )):
@@ -4258,6 +4279,7 @@ def sparse_grouped_ipf(
                 problem, _layered_graph, _layered_checkpoint,
                 lb, c1, c2, workers=margin_workers,
                 context_rows=layered_context_rows,
+                phase_timing=phase_timing,
             )
             mark("layered_seconds", margin_started)
             mark("margin_total_seconds", margin_started)
