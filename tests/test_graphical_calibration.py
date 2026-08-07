@@ -939,6 +939,23 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
         stochastic_layered.best_exact_certificate
         - dual_layered.certificate
     ) < 3e-15
+    relaxed_stochastic = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=0, batch_size=1, exact_margin_workers=2,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+        pair_slack_precision=2.0,
+        pair_slack_variance_ya=np.full(len(full_c1), 0.1),
+        pair_slack_variance_yb=np.full(len(full_c2), 0.2),
+    )
+    expected_relaxed_gradient = dual_layered.gradient().copy()
+    expected_relaxed_gradient[len(log_base):len(log_base) + len(full_c1)] += (
+        0.05 * full_c1
+    )
+    expected_relaxed_gradient[len(log_base) + len(full_c1):] += 0.1 * full_c2
+    assert relaxed_stochastic.trace[0]["exact_gradient_linf"] == pytest.approx(
+        np.max(np.abs(expected_relaxed_gradient)), abs=3e-15,
+    )
     stochastic_lazy = stochastic_sparse_dual_approach(
         problem, log_base, full_c1, full_c2,
         steps=2, batch_size=1, sampling="blocks", edge_blocks=4,

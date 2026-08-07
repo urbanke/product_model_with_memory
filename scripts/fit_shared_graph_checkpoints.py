@@ -23,6 +23,7 @@ from product_model_with_memory.graphical_calibration import (
     checkpoint_in_birth_major_support, load_ab_major_intersection_graph,
     load_layered_intersection_graph, pair_midpoint_warm_start,
     pair_product_warm_start, second_pair_warm_start,
+    empirical_pair_slack_variances, exact_sparse_dual_wolfe,
     sparse_factorized_dual_evaluation, sparse_grouped_ipf,
     stochastic_sparse_dual_approach, transfer_sparse_warm_start,
 )
@@ -126,6 +127,18 @@ def main() -> None:
         ),
     )
     parser.add_argument("--tolerance", type=float, default=1e-2)
+    parser.add_argument(
+        "--stationarity-tolerance", type=float, default=1e-5,
+        help="regularized-gradient infinity-norm tolerance",
+    )
+    parser.add_argument(
+        "--relaxed", action="store_true",
+        help="allow uncertainty-weighted YA/YB margin slack",
+    )
+    parser.add_argument(
+        "--slack-precision", type=float, default=1.0,
+        help="dimensionless confidence multiplier for relaxed pair margins",
+    )
     parser.add_argument(
         "--exact-interval", type=int, default=5,
         help=(
@@ -259,6 +272,12 @@ def main() -> None:
         problem = checkpoint_in_birth_major_support(
             original, support, checkpoint
         )
+        with np.load(paths[checkpoint], allow_pickle=False) as source:
+            prefix = int(source["prefix"])
+        pair_variances = (
+            empirical_pair_slack_variances(problem, prefix)
+            if args.relaxed else (None, None)
+        )
         transferred = None
         if previous_result is not None:
             transferred = transfer_sparse_warm_start(
@@ -368,7 +387,10 @@ def main() -> None:
             replicas=args.replicas, stochastic_workers=args.workers,
             variance_reduction=True, exact_interval=args.exact_interval,
             exact_margin_workers=args.workers,
-            certificate_tolerance=args.tolerance,
+            certificate_tolerance=(
+                args.stationarity_tolerance if args.relaxed
+                else args.tolerance
+            ),
             optimizer="adam_plateau",
             learning_rate=args.learning_rate,
             minimum_learning_rate=args.minimum_learning_rate,
@@ -378,6 +400,11 @@ def main() -> None:
             exact_layered_checkpoint=checkpoint,
             sampled_ab_major_graph=sampled_graph,
             lazy_block_cache=args.cache,
+            pair_slack_precision=(
+                args.slack_precision if args.relaxed else float("inf")
+            ),
+            pair_slack_variance_ya=pair_variances[0],
+            pair_slack_variance_yb=pair_variances[1],
             exact_record_callback=(
                 snapshot_callback
                 if snapshot_thresholds or args.progress_interval > 0
@@ -385,7 +412,14 @@ def main() -> None:
             ),
         )
         stochastic_seconds = time.perf_counter() - started
-        fallback = stochastic.best_exact_certificate > args.tolerance
+        stopping_value = (
+            stochastic.best_exact_stationarity if args.relaxed
+            else stochastic.best_exact_certificate
+        )
+        target_tolerance = (
+            args.stationarity_tolerance if args.relaxed else args.tolerance
+        )
+        fallback = stopping_value > target_tolerance
         fallback_seconds = 0.0
         if fallback and not args.skip_fallback:
             if args.save_fallback_candidates:
@@ -400,19 +434,54 @@ def main() -> None:
                     stochastic.best_exact_certificate,
                 )
             fallback_started = time.perf_counter()
-            result = sparse_grouped_ipf(
-                problem, solver="lbfgs", evaluator="layered",
-                tolerance=args.tolerance, max_iterations=5_000,
-                log_base_y=stochastic.log_base_y,
-                correction_ya=stochastic.correction_ya,
-                correction_yb=stochastic.correction_yb,
-                margin_workers=args.workers,
-                _layered_graph=exact_graph,
-                _layered_checkpoint=checkpoint,
-            )
+            if args.relaxed:
+                finished = exact_sparse_dual_wolfe(
+                    problem, stochastic.log_base_y,
+                    stochastic.correction_ya, stochastic.correction_yb,
+                    tolerance=args.stationarity_tolerance,
+                    max_iterations=5_000,
+                    margin_workers=args.workers,
+                    layered_graph=exact_graph,
+                    layered_checkpoint=checkpoint,
+                    pair_slack_precision=args.slack_precision,
+                    pair_slack_variance_ya=pair_variances[0],
+                    pair_slack_variance_yb=pair_variances[1],
+                )
+                diagnostic = sparse_factorized_dual_evaluation(
+                    problem, finished.log_base_y,
+                    finished.correction_ya, finished.correction_yb,
+                    compute_certificate=True, layered_graph=exact_graph,
+                    layered_checkpoint=checkpoint,
+                    margin_workers=args.workers,
+                )
+                result = SparseGroupedResult(
+                    finished.log_base_y, finished.correction_ya,
+                    finished.correction_yb, finished.iterations,
+                    float(diagnostic.residual_ya_l1),
+                    float(diagnostic.residual_yb_l1),
+                    float(diagnostic.residual_y_l1),
+                    finished.converged, finished.evaluations,
+                )
+            else:
+                result = sparse_grouped_ipf(
+                    problem, solver="lbfgs", evaluator="layered",
+                    tolerance=args.tolerance, max_iterations=5_000,
+                    log_base_y=stochastic.log_base_y,
+                    correction_ya=stochastic.correction_ya,
+                    correction_yb=stochastic.correction_yb,
+                    margin_workers=args.workers,
+                    _layered_graph=exact_graph,
+                    _layered_checkpoint=checkpoint,
+                )
             fallback_seconds = time.perf_counter() - fallback_started
         else:
-            record = min(stochastic.trace, key=lambda row: row["exact_certificate"])
+            record = min(
+                stochastic.trace,
+                key=lambda row: row[
+                    "regularized_stationarity"
+                    if args.relaxed else "exact_certificate"
+                ],
+            )
             result = SparseGroupedResult(
                 stochastic.log_base_y, stochastic.correction_ya,
                 stochastic.correction_yb, stochastic.steps,
@@ -455,6 +524,11 @@ def main() -> None:
                 result.residual_y_l1, result.grouped_residual_ya_l1,
                 result.grouped_residual_yb_l1,
             ),
+            "regularized_stationarity": (
+                stochastic.best_exact_stationarity if args.relaxed else None
+            ),
+            "relaxed": args.relaxed,
+            "slack_precision": args.slack_precision,
             "steps": stochastic.steps,
             "stochastic_stop_reason": stochastic.stop_reason,
             "sampled_topology_cache_bytes": stochastic.intersection_plan_bytes,

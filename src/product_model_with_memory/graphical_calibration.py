@@ -588,6 +588,7 @@ class SparseStochasticResult:
     intersection_plan_bytes: int = 0
     reference_cache_bytes: int = 0
     sampled_phase_timing: dict[str, float] = field(default_factory=dict)
+    best_exact_stationarity: float = float("inf")
 
 
 @dataclass(frozen=True)
@@ -2899,6 +2900,9 @@ def stochastic_sparse_dual_approach(
     lazy_block_cache: int = 16,
     sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
     fused_ab_batch: bool = False,
+    pair_slack_precision: float = float("inf"),
+    pair_slack_variance_ya: np.ndarray | None = None,
+    pair_slack_variance_yb: np.ndarray | None = None,
     exact_record_callback: Callable[
         [int, float, np.ndarray, np.ndarray, np.ndarray], None
     ] | None = None,
@@ -2951,6 +2955,8 @@ def stochastic_sparse_dual_approach(
         raise ValueError("AB-major sampled graph requires block sampling")
     if sampled_ab_major_graph is not None and exact_layered_checkpoint is None:
         raise ValueError("AB-major sampled graph requires checkpoint depth")
+    if pair_slack_precision <= 0.0 or np.isnan(pair_slack_precision):
+        raise ValueError("pair slack precision must be positive")
 
     lb = np.array(log_base_y, dtype=np.float64, copy=True)
     c1 = np.array(correction_ya, dtype=np.float64, copy=True)
@@ -2959,6 +2965,37 @@ def stochastic_sparse_dual_approach(
     parameters = origin.copy()
     first = len(lb)
     second = first + len(c1)
+    relaxed = np.isfinite(pair_slack_precision)
+    variance_ya = np.ones(len(c1), dtype=np.float64)
+    variance_yb = np.ones(len(c2), dtype=np.float64)
+    for supplied, destination, name in (
+        (pair_slack_variance_ya, variance_ya, "YA slack variance"),
+        (pair_slack_variance_yb, variance_yb, "YB slack variance"),
+    ):
+        if supplied is not None:
+            values = np.asarray(supplied, dtype=np.float64)
+            if values.shape != destination.shape or not np.isfinite(values).all():
+                raise ValueError(f"invalid {name}")
+            destination[:] = values
+    if np.any(variance_ya <= 0.0) or np.any(variance_yb <= 0.0):
+        raise ValueError("pair slack variances must be positive")
+
+    def slack_gradient(vector: np.ndarray) -> np.ndarray:
+        gradient = np.zeros_like(vector)
+        if relaxed:
+            scale = 1.0 / pair_slack_precision
+            gradient[first:second] = scale * variance_ya * vector[first:second]
+            gradient[second:] = scale * variance_yb * vector[second:]
+        return gradient
+
+    def relaxed_objective(objective: float, vector: np.ndarray) -> float:
+        if not relaxed:
+            return float(objective)
+        scale = 1.0 / pair_slack_precision
+        return float(objective + 0.5 * scale * (
+            np.dot(variance_ya, vector[first:second] ** 2)
+            + np.dot(variance_yb, vector[second:] ** 2)
+        ))
 
     def prepare_ab_factors(vector: np.ndarray):
         local_lb = vector[:first]
@@ -3126,6 +3163,7 @@ def stochastic_sparse_dual_approach(
     best = parameters.copy()
     best_objective = float("inf")
     best_certificate = float("inf")
+    best_stationarity = float("inf")
     snapshot_parameters = parameters.copy()
     snapshot_gradient = np.zeros_like(parameters)
     current_ab_factors = None
@@ -3148,7 +3186,8 @@ def stochastic_sparse_dual_approach(
     stop_reason = "safety_limit"
 
     def exact_record(step: int) -> bool:
-        nonlocal best, best_objective, best_certificate, exact_evaluations
+        nonlocal best, best_objective, best_certificate, best_stationarity
+        nonlocal exact_evaluations
         nonlocal snapshot_parameters, snapshot_gradient, exact_seconds
         nonlocal current_step_size
         nonlocal scheduler_best, scheduler_bad_records
@@ -3171,12 +3210,14 @@ def stochastic_sparse_dual_approach(
             margin_workers=exact_margin_workers,
         )
         exact_evaluations += 1
-        gradient = evaluation.gradient()
+        gradient = evaluation.gradient() + slack_gradient(parameters)
         observed_gradient = gradient.copy()
+        objective = relaxed_objective(evaluation.objective, parameters)
+        stationarity = float(np.max(np.abs(gradient)))
         certificate = float(evaluation.certificate)
         exact_seconds += perf_counter() - started
         if not (
-            np.isfinite(evaluation.objective)
+            np.isfinite(objective)
             and np.isfinite(certificate)
             and np.all(np.isfinite(gradient))
         ):
@@ -3215,9 +3256,13 @@ def stochastic_sparse_dual_approach(
             if scheduler_exhausted:
                 stop_reason = "nonfinite"
             return scheduler_exhausted
-        if certificate < best_certificate:
+        selection_value = stationarity if relaxed else certificate
+        if selection_value < (
+            best_stationarity if relaxed else best_certificate
+        ):
             best_certificate = certificate
-            best_objective = evaluation.objective
+            best_stationarity = stationarity
+            best_objective = objective
             best = parameters.copy()
         learning_rate_reduced = False
         if optimizer == "adam_plateau":
@@ -3225,7 +3270,7 @@ def stochastic_sparse_dual_approach(
             # not the nonsmooth maximum-L1 certificate used for termination.
             # Individual margin residuals can temporarily trade off while the
             # exact convex dual objective decreases steadily.
-            scheduler_value = float(evaluation.objective)
+            scheduler_value = objective
             if scheduler_value < scheduler_best * (
                 1.0 - plateau_relative_threshold
             ):
@@ -3267,15 +3312,16 @@ def stochastic_sparse_dual_approach(
                 snapshot_ab_factors = prepare_ab_factors(snapshot_parameters)
         trace.append({
             "step": step,
-            "exact_objective": evaluation.objective,
+            "exact_objective": objective,
             "exact_gradient_l2": float(np.linalg.norm(observed_gradient)),
             "exact_gradient_linf": float(np.max(np.abs(observed_gradient))),
             "exact_certificate": certificate,
+            "regularized_stationarity": stationarity,
             "residual_y_l1": float(evaluation.residual_y_l1),
             "residual_ya_l1": float(evaluation.residual_ya_l1),
             "residual_yb_l1": float(evaluation.residual_yb_l1),
             "step_size": current_step_size,
-            "scheduler_value": float(evaluation.objective),
+            "scheduler_value": objective,
             "learning_rate_reduced": learning_rate_reduced,
             "scheduler_exhausted": scheduler_exhausted,
             "rejected_nonfinite": False,
@@ -3288,7 +3334,8 @@ def stochastic_sparse_dual_approach(
             )
         if (
             certificate_tolerance is not None
-            and certificate <= certificate_tolerance
+            and (stationarity if relaxed else certificate)
+            <= certificate_tolerance
         ):
             stop_reason = "tolerance"
             return True
@@ -3627,6 +3674,10 @@ def stochastic_sparse_dual_approach(
                 ab_phase_timing.get("replica_reduction_seconds", 0.0)
                 + perf_counter() - reduction_started
             )
+        if relaxed:
+            gradient += slack_gradient(parameters)
+            if variance_reduction:
+                gradient -= slack_gradient(snapshot_parameters)
         sampled_gradient_seconds += perf_counter() - sampled_started
         if not np.all(np.isfinite(gradient)):
             rejected_nonfinite_steps += 1
@@ -3732,6 +3783,7 @@ def stochastic_sparse_dual_approach(
         intersection_plan_bytes=intersection_plan_bytes,
         reference_cache_bytes=reference_cache_bytes,
         sampled_phase_timing=dict(ab_phase_timing),
+        best_exact_stationarity=best_stationarity,
     )
 
 
