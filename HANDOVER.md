@@ -4911,3 +4911,39 @@ Hessian products.  `scripts/benchmark_layered_hessian.py` isolates this
 primitive for server measurements; run it before coupling Newton back into
 the production checkpoint driver.  Production policy remains stochastic
 first and bounded Newton only as a measured fallback.
+
+### 2026-08-07 --- Shared stochastic concurrency diagnosis
+
+Do not repeat the thread/process and block-order probes without a distinct
+mechanism.  On the identical text8 V1024 checkpoint-20 state, 500 fixed
+updates took 13.20 s with four workers, 11.68 s with six, and 11.92 s with
+eight.  The reason six can beat eight is structural: 12 replicas divide as
+`(2,2,2,2,2,2)` over six workers but `(2,2,2,2,1,1,1,1)` over eight, with a
+barrier after every update.  Instrumented effective concurrency was 5.22 for
+eight workers and 5.82 over the full instrumented fit.  This explains the
+observed six-core-looking plateau; it is not evidence that native traversal
+or worker-local reduction disappeared.
+
+Two simultaneous four-worker fits, both reading the same memory-mapped graph,
+finished in about 15.4 s each versus 13.20 s for one.  Aggregate throughput
+therefore rose by 1.71x.  Global memory bandwidth is not yet the sole ceiling;
+process-local Python/synchronization and the static replica barrier matter.
+Earlier multiprocessing work used independent chains or scoring intervals,
+not persistent process shards contributing locally reduced pieces of one
+gradient.  That latter architecture remains genuinely untried.
+
+Randomized systematic spreading of the 12 replicas across block mass took
+11.43 s versus 11.55 s for independent block draws at eight workers, only a
+1% change.  Simultaneous selection of nearby AB-major blocks is not the main
+problem.  Do not randomize triangles within a block: their AB-major order is
+required for the native kernel's sequential locality.
+
+New phase timing on the six-worker control attributed 14.74 aggregate worker
+seconds to current native margins, 11.97 to reference lookup/construction,
+5.07 of the latter specifically to repeated `unique`/`isin` support-position
+construction, 6.56 to native reference margins, 3.56 to gradient assembly,
+and only 0.16 to block lookup.  Structural support positions are invariant
+when the numerical SVRG reference refreshes.  An opt-in persistent position
+cache reduced the same run from 11.59 to 10.50 s and sampled-gradient time
+from 7.58 to 6.50 s, while using 38.2 MB at this checkpoint.  Measure its
+large-V footprint before making it the production default.

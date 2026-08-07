@@ -3233,6 +3233,8 @@ def stochastic_sparse_dual_approach(
     lazy_block_cache: int = 16,
     sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
     fused_ab_batch: bool = False,
+    block_replica_schedule: str = "independent",
+    persistent_reference_positions: bool = False,
     pair_slack_precision: float = float("inf"),
     pair_slack_variance_ya: np.ndarray | None = None,
     pair_slack_variance_yb: np.ndarray | None = None,
@@ -3259,6 +3261,10 @@ def stochastic_sparse_dual_approach(
         raise ValueError("Adam decay factors must lie in [0, 1)")
     if sampling not in ("iid", "stratified", "blocks"):
         raise ValueError("sampling must be 'iid', 'stratified' or 'blocks'")
+    if block_replica_schedule not in ("independent", "systematic"):
+        raise ValueError(
+            "block_replica_schedule must be 'independent' or 'systematic'"
+        )
     if edge_blocks < 1:
         raise ValueError("edge_blocks must be positive")
     if lazy_block_cache < 1:
@@ -3348,6 +3354,8 @@ def stochastic_sparse_dual_approach(
     square = np.zeros_like(parameters)
     rngs = [np.random.default_rng(seed + 1_000_003 * replica)
             for replica in range(replicas)]
+    schedule_rng = np.random.default_rng(seed + 97_000_291)
+    scheduled_blocks: np.ndarray | None = None
     direct_ab_blocks = sampled_ab_major_graph is not None
     ab_context_rows = None
     if direct_ab_blocks:
@@ -3688,6 +3696,13 @@ def stochastic_sparse_dual_approach(
             min(stochastic_workers, replicas),
         ) if len(group)
     ]
+    ab_phase_timing["configured_workers"] = float(stochastic_workers)
+    ab_phase_timing["configured_replicas"] = float(replicas)
+    ab_phase_timing["configured_worker_groups"] = float(len(replica_groups))
+    if replica_groups:
+        ab_phase_timing["largest_replica_group"] = float(
+            max(len(group) for group in replica_groups)
+        )
     reference_block_margins: list[SparseReferenceMargins] = []
     reference_positions = [] if lazy_blocks else [
         (
@@ -3707,9 +3722,12 @@ def stochastic_sparse_dual_approach(
     )
     lazy_reference_lock = Lock()
     peak_lazy_reference_bytes = 0
+    reference_position_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    reference_position_cache_bytes = 0
 
     def reference_for_block(index: int) -> SparseReferenceMargins:
         nonlocal peak_lazy_reference_bytes, reference_cache_seconds
+        nonlocal reference_position_cache_bytes
         if not lazy_blocks:
             return reference_block_margins[index]
         with lazy_reference_lock:
@@ -3721,12 +3739,32 @@ def stochastic_sparse_dual_approach(
         # should run concurrently; only insertion/eviction is serialized.
         reference_started = perf_counter()
         block = get_block(index)
-        ya_position = np.flatnonzero(np.isin(
-            problem.active_ya_a, np.unique(block.problem.edge_a)
-        )).astype(np.int32)
-        yb_position = np.flatnonzero(np.isin(
-            problem.active_yb_b, np.unique(block.problem.edge_b)
-        )).astype(np.int32)
+        positions_started = perf_counter()
+        with lazy_reference_lock:
+            cached_positions = reference_position_cache.get(index)
+        if cached_positions is None:
+            ya_position = np.flatnonzero(np.isin(
+                problem.active_ya_a, np.unique(block.problem.edge_a)
+            )).astype(np.int32)
+            yb_position = np.flatnonzero(np.isin(
+                problem.active_yb_b, np.unique(block.problem.edge_b)
+            )).astype(np.int32)
+            if persistent_reference_positions:
+                with lazy_reference_lock:
+                    existing = reference_position_cache.get(index)
+                    if existing is None:
+                        reference_position_cache[index] = (
+                            ya_position, yb_position
+                        )
+                        reference_position_cache_bytes += (
+                            ya_position.nbytes + yb_position.nbytes
+                        )
+                    else:
+                        ya_position, yb_position = existing
+        else:
+            ya_position, yb_position = cached_positions
+        positions_seconds = perf_counter() - positions_started
+        native_started = perf_counter()
         margins = (
             sparse_factorized_margins_ab_major(
                 block.problem, sampled_ab_major_graph,
@@ -3743,6 +3781,7 @@ def stochastic_sparse_dual_approach(
                 snapshot_parameters[second:],
             )
         )
+        native_seconds = perf_counter() - native_started
         candidate = SparseReferenceMargins(
             margins.target_y, ya_position,
             margins.active_ya[ya_position], yb_position,
@@ -3750,7 +3789,22 @@ def stochastic_sparse_dual_approach(
         )
         with lazy_reference_lock:
             cached = lazy_reference_cache.get(index)
+            ab_phase_timing["reference_position_seconds"] = (
+                ab_phase_timing.get("reference_position_seconds", 0.0)
+                + positions_seconds
+            )
+            ab_phase_timing["reference_native_seconds"] = (
+                ab_phase_timing.get("reference_native_seconds", 0.0)
+                + native_seconds
+            )
+            ab_phase_timing["reference_build_attempts"] = (
+                ab_phase_timing.get("reference_build_attempts", 0.0) + 1.0
+            )
             if cached is not None:
+                ab_phase_timing["reference_duplicate_builds"] = (
+                    ab_phase_timing.get("reference_duplicate_builds", 0.0)
+                    + 1.0
+                )
                 lazy_reference_cache.move_to_end(index)
                 return cached
             reference = candidate
@@ -3811,12 +3865,24 @@ def stochastic_sparse_dual_approach(
 
     refresh_reference_blocks()
 
-    def sampled_gradient(replica: int) -> tuple[np.ndarray, int]:
+    def sampled_gradient(
+        replica: int,
+    ) -> tuple[np.ndarray, int, np.ndarray]:
+        # Worker-time components: block lookup, current native margins,
+        # reference lookup/construction, and gradient assembly.
+        phases = np.zeros(4, dtype=np.float64)
         if sampling == "blocks":
-            chosen = int(np.searchsorted(
-                block_cdf, rngs[replica].random(), side="right"
-            ))
+            chosen = (
+                int(scheduled_blocks[replica])
+                if scheduled_blocks is not None
+                else int(np.searchsorted(
+                    block_cdf, rngs[replica].random(), side="right"
+                ))
+            )
+            phase_started = perf_counter()
             block = get_block(chosen)
+            phases[0] = perf_counter() - phase_started
+            phase_started = perf_counter()
             margins = (
                 sparse_factorized_margins_ab_major(
                     block.problem, sampled_ab_major_graph,
@@ -3831,8 +3897,12 @@ def stochastic_sparse_dual_approach(
                     parameters[second:],
                 )
             )
+            phases[1] = perf_counter() - phase_started
+            phase_started = perf_counter()
             if variance_reduction:
                 reference = reference_for_block(chosen)
+                phases[2] = perf_counter() - phase_started
+                phase_started = perf_counter()
                 # Targets cancel in the SVRG difference.  Forming full dual
                 # evaluations here used to perform two unnecessary target
                 # subtractions, objectives, and gradient concatenations per
@@ -3848,13 +3918,20 @@ def stochastic_sparse_dual_approach(
                 gradient[first:second] += margins.active_ya
                 gradient[second:] += margins.active_yb
             else:
+                phases[2] = perf_counter() - phase_started
+                phase_started = perf_counter()
                 gradient = np.concatenate([
                     margins.target_y - block.problem.target_y,
                     margins.active_ya - block.problem.target_ya,
                     margins.active_yb - block.problem.target_yb,
                 ])
+            phases[3] = perf_counter() - phase_started
             edges_used = len(block.problem.edge_probability)
-            return gradient, edges_used * (2 if variance_reduction else 1)
+            return (
+                gradient,
+                edges_used * (2 if variance_reduction else 1),
+                phases,
+            )
         if sampling == "stratified":
             allocation = np.full(
                 len(ranked_groups), batch_size // len(ranked_groups),
@@ -3896,20 +3973,26 @@ def stochastic_sparse_dual_approach(
                 intersection_plan=sampled_plan,
             ).gradient()
             gradient += snapshot_gradient - reference
-        return gradient, batch_size * (2 if variance_reduction else 1)
+        return gradient, batch_size * (2 if variance_reduction else 1), phases
 
     def sampled_gradient_group(
         replica_group: np.ndarray,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, int, float, np.ndarray]:
         """Evaluate and reduce several replicas inside one worker."""
 
+        group_started = perf_counter()
         local_gradient = np.zeros_like(parameters)
         local_edges = 0
+        local_phases = np.zeros(4, dtype=np.float64)
         for replica in replica_group:
-            contribution, edges_used = sampled_gradient(int(replica))
+            contribution, edges_used, phases = sampled_gradient(int(replica))
             local_gradient += contribution
             local_edges += edges_used
-        return local_gradient, local_edges
+            local_phases += phases
+        return (
+            local_gradient, local_edges,
+            perf_counter() - group_started, local_phases,
+        )
 
     def sampled_gradient_fused_ab() -> tuple[np.ndarray, int]:
         """Fuse the fixed replica batch into one indexed native traversal."""
@@ -3968,6 +4051,15 @@ def stochastic_sparse_dual_approach(
     completed_steps = 0
     for step in (range(1, steps + 1) if not reached_certificate else ()):
         completed_steps = step
+        if sampling == "blocks" and block_replica_schedule == "systematic":
+            offset = schedule_rng.random() / replicas
+            positions = offset + np.arange(replicas) / replicas
+            scheduled_blocks = np.searchsorted(
+                block_cdf, positions, side="right"
+            ).astype(np.int64)
+            scheduled_blocks = scheduled_blocks[
+                schedule_rng.permutation(replicas)
+            ]
         if optimizer == "adam_cosine":
             progress = (step - 1) / max(1, steps - 1)
             current_step_size = minimum_learning_rate + 0.5 * (
@@ -3997,9 +4089,41 @@ def stochastic_sparse_dual_approach(
                 ab_phase_timing.get("replica_evaluation_seconds", 0.0)
                 + perf_counter() - evaluation_started
             )
+            group_seconds = [timing for _, _, timing, _ in gradients]
+            if group_seconds:
+                ab_phase_timing["worker_task_seconds"] = (
+                    ab_phase_timing.get("worker_task_seconds", 0.0)
+                    + sum(group_seconds)
+                )
+                ab_phase_timing["worker_critical_path_seconds"] = (
+                    ab_phase_timing.get("worker_critical_path_seconds", 0.0)
+                    + max(group_seconds)
+                )
+                ab_phase_timing["worker_fastest_seconds"] = (
+                    ab_phase_timing.get("worker_fastest_seconds", 0.0)
+                    + min(group_seconds)
+                )
+                ab_phase_timing["worker_tasks"] = (
+                    ab_phase_timing.get("worker_tasks", 0.0)
+                    + len(group_seconds)
+                )
+                ab_phase_timing["worker_timed_updates"] = (
+                    ab_phase_timing.get("worker_timed_updates", 0.0) + 1.0
+                )
+                phase_totals = np.sum(
+                    [phases for _, _, _, phases in gradients], axis=0
+                )
+                for name, value in zip(
+                    ("block_lookup", "current_native", "reference", "assembly"),
+                    phase_totals,
+                ):
+                    key = f"worker_{name}_seconds"
+                    ab_phase_timing[key] = (
+                        ab_phase_timing.get(key, 0.0) + float(value)
+                    )
             reduction_started = perf_counter()
             gradient = np.zeros_like(parameters)
-            for contribution, edges_used in gradients:
+            for contribution, edges_used, _, _ in gradients:
                 gradient += contribution
                 sampled_edge_evaluations += edges_used
             gradient /= replicas
@@ -4096,6 +4220,13 @@ def stochastic_sparse_dual_approach(
                 reference.active_yb,
             )
         )
+    )
+    reference_cache_bytes += reference_position_cache_bytes
+    ab_phase_timing["reference_position_cache_bytes"] = float(
+        reference_position_cache_bytes
+    )
+    ab_phase_timing["reference_position_cache_entries"] = float(
+        len(reference_position_cache)
     )
 
     return SparseStochasticResult(

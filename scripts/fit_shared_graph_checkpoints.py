@@ -147,7 +147,23 @@ def main() -> None:
         ),
     )
     parser.add_argument("--blocks", type=int, default=128)
+    parser.add_argument(
+        "--block-replica-schedule",
+        choices=("independent", "systematic"),
+        default="independent",
+        help=(
+            "assign independently sampled blocks to replicas, or use one "
+            "randomized systematic draw that spreads replicas over block mass"
+        ),
+    )
     parser.add_argument("--cache", type=int, default=16)
+    parser.add_argument(
+        "--persistent-reference-positions", action="store_true",
+        help=(
+            "retain block YA/YB support indices across numerical SVRG "
+            "reference refreshes; diagnostic until its memory scaling is known"
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-2)
     parser.add_argument(
         "--minimum-learning-rate", type=float, default=3e-3,
@@ -399,6 +415,8 @@ def main() -> None:
             exact_layered_graph=exact_graph,
             exact_layered_checkpoint=checkpoint,
             sampled_ab_major_graph=sampled_graph,
+            block_replica_schedule=args.block_replica_schedule,
+            persistent_reference_positions=args.persistent_reference_positions,
             lazy_block_cache=args.cache,
             pair_slack_precision=(
                 args.slack_precision if args.relaxed else float("inf")

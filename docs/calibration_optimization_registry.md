@@ -18,6 +18,7 @@ numbers and chronology are in `HANDOVER.md`.
 | First-order solvers | IPF; Anderson IPF; L-BFGS; certificate-aware stopping; trust-region displacement; stochastic fixed batches; SVRG refresh intervals; adaptive schedules | Current stochastic/SVRG route is the production baseline.  Anderson and extensive hand-tuned scheduling did not solve the large-support tail robustly. |
 | Exact Newton | Analytic Hessian products; finite-difference products; trust-region Newton-CG; Fisher/Jacobi scaling; multiple product budgets; relaxed objective | Exact Newton can rescue some near-solution states, but full Hessian passes are too expensive.  It is a bounded fallback, not the default. |
 | Parallel execution | Multiple chains, interleaving, inner margin workers, worker-local gradient reduction, native C traversal | Useful but limited by extra cold iterations or bandwidth.  More cores alone are not the answer. |
+| Replica scheduling | Static 12-replica splits at 4/6/8 workers; two concurrent four-worker processes; independent versus systematic randomized block assignment | Six workers slightly beat eight because 12/8 gives unequal groups. Systematic block spreading changed time by only about 1%. Two four-worker processes achieved 1.71x aggregate throughput while reading the same graph, so global memory bandwidth is not yet the sole ceiling. |
 
 ## Proposed before but not sufficiently distinct
 
@@ -28,7 +29,24 @@ new mathematical argument showing that they eliminate triangle products or
 asymptotically reduce bytes read.  A claim of better cache locality alone is
 not enough.
 
-## Genuinely untried candidate
+## Genuinely untried candidates
+
+### Process-sharded worker-local replica groups
+
+This has not yet been implemented for one stochastic gradient.  Earlier
+process experiments ran independent optimization chains or independent
+scoring intervals.  A genuinely new design would use a small number of
+persistent processes, each running a balanced native-thread replica group and
+returning one locally reduced gradient through shared buffers.  It must be
+compared against the current six-thread balanced baseline, and must not send
+one dense gradient per replica through Python IPC.
+
+The shared-graph V1024 checkpoint-20 diagnostic found a concrete Python-side
+cost that should be removed first: numerical SVRG references change every
+refresh, but their YA/YB support positions do not.  Persisting those positions
+reduced a 500-update six-worker run from 11.59 to 10.50 seconds at a measured
+38.2 MB structural-cache cost.  This remains opt-in until its large-V memory
+scaling is measured.
 
 ### Subsampled Newton--CG
 

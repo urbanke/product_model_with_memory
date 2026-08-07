@@ -1072,6 +1072,7 @@ $V$ & star rule & three-pair fit & gain from third pair \\
 1024 & 1.005026 & 0.982837 & 0.022189 \\
 4096 & 1.373681 & 1.340738 & 0.032943 \\
 8192 & 1.558876 & 1.520687 & 0.038189 \\
+16384 & 1.713862 & 1.676549 & 0.037314 \\
 \bottomrule
 \end{tabular}
 \vspace{0.8em}
@@ -1083,6 +1084,7 @@ $V$ & reduced prediction & vocabulary & escape payload & honest total \\
 1024 & 0.982970 & 0.062164 & 0.916345 & 1.961478 \\
 4096 & 1.346247 & 0.062328 & 0.452748 & 1.861324 \\
 8192 & 1.533246 & 0.062491 & 0.234154 & 1.829890 \\
+16384 & 1.703984 & 0.062726 & 0.069611 & 1.836321 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1090,12 +1092,14 @@ $V$ & reduced prediction & vocabulary & escape payload & honest total \\
 The vocabulary column includes the fixed $6{,}208{,}152$-bit external
 tokenizer description and the enumerative description of the selected
 subset.  Increasing $V$ makes the reduced-alphabet prediction harder, but
-sharply reduces the escaped-token payload; over these three runs the latter
-effect dominates.  The honest total falls from $1.961478$ to $1.861324$ and
-then $1.829890$ bits per original character.  Independently, the upper panel
-shows that the third pair remains useful throughout: its gain over the
-two-pair star rule increases from $0.022189$ to $0.038189$ bits per original
-character.
+sharply reduces the escaped-token payload.  The honest total falls from
+$1.961478$ to $1.861324$ and then $1.829890$ bits per original character,
+before rising slightly to $1.836321$ at $V=16384$.  Thus text8 already shows
+an interior tradeoff between the more difficult retained-alphabet prediction
+and the shrinking escape payload.  Independently, the upper panel shows that
+the third pair remains useful throughout: its gain over the two-pair star
+rule rises from $0.022189$ to $0.038189$ and remains $0.037314$ bits per
+original character at $V=16384$.
 
 These provisional fits used the parallel stochastic dual solver with a
 plateau learning-rate schedule, an exact certificate every 50 updates, and
@@ -1142,8 +1146,61 @@ $0.01$, again with no exact fallback or nonfinite rejection; calibration
 peaked at $17.91$ GB.  The final intersection plan and compact reference
 cache contain $5.90$ and $4.86$ GB of live arrays respectively.  These are
 provisional tolerance-$0.01$ results, but they demonstrate that increasing
-the working alphabet continues to improve the honest code and remains
+the working alphabet through $V=8192$ improves the honest code and remains
 feasible on the 24-GB laptop.
+
+The $V=16384$ M4 Max run used eight construction workers, the fixed
+12-replica/12-worker calibration batch, and 15 scoring workers.  Construction
+took $9298$ seconds, calibration $6703$ seconds, and scoring $922$ seconds.
+All checkpoints certified below $0.01$; one invoked exact fallback.  The old
+compact-plan calibration used 23,000 stochastic updates and reported a
+$28.05$-GB peak, with final intersection-plan and reference-cache arrays of
+$6.70$ and $6.25$ GB.  This row predates the shared-graph implementation and
+therefore serves as the controlled baseline for its next large-$V$ test.
+
+We have also completed a first full-file enwik8 run at $V=1024$; its
+provisional results are reported separately in
+Table~\ref{tab:calibrated-full-enwik8}, since enwik8 has a different BPE
+token density from text8.  All entries have therefore been converted to bits
+per original input byte (equivalently, per enwik8 character), rather than
+being reported per BPE token.
+
+\begin{table}[ht]
+\centering
+\caption{Provisional calibrated pairwise prediction on full enwik8 at
+$V=1024$, using $32$ geometric checkpoints.  The upper panel isolates the
+predictive score; the lower panel gives the honest-code accounting.  Every
+entry is in bits per original enwik8 byte.}
+\label{tab:calibrated-full-enwik8}
+\small
+\begin{tabular}{rrrr}
+\toprule
+$V$ & star rule & three-pair fit & gain from third pair \\
+\midrule
+1024 & 1.119311 & 1.086621 & 0.032690 \\
+\bottomrule
+\end{tabular}
+\vspace{0.8em}
+
+\begin{tabular}{rrrrr}
+\toprule
+$V$ & reduced prediction & vocabulary & escape payload & honest total \\
+\midrule
+1024 & 1.086968 & 0.062164 & 1.272515 & 2.421647 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The run represents the $100{,}000{,}000$ input bytes by $25{,}793{,}085$
+\texttt{cl100k\_base} tokens.  Construction took $2741.4$ seconds and peaked
+at $5.67$ GB resident memory; calibration took $1002.7$ seconds and peaked at
+$1.81$ GB; exact scoring took $31.2$ seconds.  The relaxed calibration used
+$107{,}805$ stochastic updates in total.  Its reported stopping condition is
+stationarity of the regularized relaxed objective, not exact agreement with
+the original (infeasible at the earliest checkpoint) pairwise margins.  The
+row is consequently a useful scaling and coding result, but the relaxation
+and its stopping rule remain provisional choices to be standardized before
+the final comparison across corpora.
 
 \appendix
 
@@ -1731,6 +1788,247 @@ synergy --- two lags that are individually uninformative but jointly
 decisive.  Triples address the second point; nothing in this route
 addresses the first, which is retrieval's territory.
 
+\paragraph{A Bayesian completion of the constraint route.}
+There is a more ambitious version of Route~2 that places it exactly
+in the calculus of Section~\ref{sec:setup}.  It is useful to state it
+now because it separates an exact statistical identity from the
+computational obstacle that any implementation must overcome.  Let
+\[
+  Z_t=(X_t,X_{t-1},\ldots,X_{t-k})
+\]
+be the window ending at position $t$, and let $T(Z_t)$ collect the
+selected pair and triple indicators.  A natural-parameter vector
+$\eta$ defines the exponential-family joint
+\begin{equation}
+\label{eq:future-exp-family}
+  p_\eta(z)
+  =\exp\!\left\{\langle\eta,T(z)\rangle-A(\eta)\right\},
+  \qquad
+  A(\eta)=\log\sum_z
+       \exp\!\left\{\langle\eta,T(z)\rangle\right\}.
+\end{equation}
+Matching prescribed pairwise marginals is the mean-parameter equation
+$\nabla A(\eta)=\mu$.  The calibrated predictor currently solves one
+small instance of this inverse problem.  The proposed reversal is not
+to solve it anew for every possible $\mu$, but to put a prior $\Pi$ on
+a region of natural parameters and average the resulting predictors.
+
+If, as a first mathematical model, the $N$ observed windows are
+treated as independent, their sufficient statistic is
+\[
+  S_N=\sum_{t=1}^{N}T(Z_t),
+\]
+the collection of empirical low-order count tables, and the Bayesian
+assignment is exactly
+\begin{equation}
+\label{eq:future-bayes-joint}
+  Q_N(Z^N)
+  =\int \exp\!\left\{
+       \langle\eta,S_N\rangle-NA(\eta)
+     \right\}\,\Pi(d\eta).
+\end{equation}
+Consequently the complete sequential log loss telescopes to
+\begin{equation}
+\label{eq:future-bayes-loss}
+  -\sum_{t=1}^{N}\log_2 Q(Z_t\mid Z^{t-1})
+  =-\log_2 Q_N(Z^N).
+\end{equation}
+This is the direct analogue of the profile formula for the layered
+simplex prior: the data enter only through $S_N$, and a prior with
+additional structural indices --- constraint set, graph, rank or
+interaction range --- can be averaged in the same expression.  For a
+countable family $m$ with weights $w_m$,
+\begin{equation}
+\label{eq:future-structure-mixture}
+  Q_N^{\rm mix}=\sum_m w_m Q_N^{(m)},
+  \qquad
+  -\log_2 Q_N^{\rm mix}
+  \leq \min_m\{-\log_2 Q_N^{(m)}-\log_2 w_m\}.
+\end{equation}
+Thus uncertainty about which pairwise constraints to retain costs
+only their description length, rather than a tuned selection on the
+file.
+
+Equation~\eqref{eq:future-bayes-joint} is exact but not yet an
+algorithm.  Every value of its integrand requires the global
+normalizer $A(\eta)$, a sum over the alphabet of the entire window;
+Bayesian averaging adds an integral over $\eta$ but does not remove
+that sum.  The formal conjugate prior makes the limitation especially
+plain.  With
+\[
+  \Pi_{\alpha,\nu}(d\eta)
+  =C(\alpha,\nu)^{-1}
+    \exp\!\left\{\langle\eta,\alpha\rangle-\nu A(\eta)\right\}d\eta,
+\]
+the marginal likelihood is the compact ratio
+\begin{equation}
+\label{eq:future-conjugate}
+  Q_N(Z^N)
+  =\frac{C(\alpha+S_N,\nu+N)}{C(\alpha,\nu)},
+\end{equation}
+but the conjugate normalizer $C$ is generally as difficult as the
+partition function it contains.  Conjugacy relocates the computation;
+it does not solve it.  This is the central feasibility test for the
+fully Bayesian constraint model.
+
+There are three ways around the global normalizer, each worth a
+controlled experiment and each defining an exact probability assignment
+once its local ingredients are computed.  First, predict conditionally
+rather than construct the whole window joint:
+\begin{equation}
+\label{eq:future-conditional-family}
+  p_\eta(x_t\mid x_{t-1:t-k})
+  =\frac{\exp\{\langle\eta,T(x_t,x_{t-1:t-k})\rangle\}}
+         {\sum_y\exp\{\langle\eta,T(y,x_{t-1:t-k})\rangle\}}.
+\end{equation}
+The global $A(\eta)$ cancels and only a sum over candidate next tokens
+remains.  A prior over $\eta$ then gives the coherent sequence code
+\begin{equation}
+\label{eq:future-conditional-mixture}
+  Q(x_{k+1:n}\mid x_{1:k})
+  =\int\prod_{t=k+1}^{n}
+       p_\eta(x_t\mid x_{t-1:t-k})\,\Pi(d\eta),
+\end{equation}
+whose posterior predictive is the posterior, not prior, average of
+the fixed-$\eta$ predictors.  This is also the correct resolution of
+the overlap between consecutive windows: treating them as independent
+is a useful likelihood approximation, whereas
+\eqref{eq:future-conditional-mixture} is a probability assignment to
+the original stream.
+
+Second, restrict the constraint graph to a tree.  For mutually
+consistent node and edge marginals, the maximum-entropy joint is
+\begin{equation}
+\label{eq:future-tree-joint}
+  p(z)=
+  \frac{\prod_{(i,j)\in E}p_{ij}(z_i,z_j)}
+       {\prod_i p_i(z_i)^{\deg(i)-1}},
+\end{equation}
+already normalized, with no partition function to fit.  The same
+property extends to decomposable graphs by replacing edges with
+cliques and dividing by their junction-tree separators.  Rooting the
+tree turns it into local conditional tables; Dirichlet or layered
+priors on those tables make the integrated codelength a product of
+per-table mixture probabilities, computable from the pair counts by
+the factorization of Appendix~\ref{app:factorisation}.  A mixture over
+trees or bounded-width decomposable graphs then pays the structural
+penalty in \eqref{eq:future-structure-mixture}.
+
+Between this exact restriction and the unrestricted graph lies an
+approximate route: belief propagation and the Bethe free energy.  For
+a pairwise factorization
+\[
+  p_\eta(z)=Z(\eta)^{-1}
+    \prod_i\psi_i(z_i;\eta)
+    \prod_{(i,j)\in E}\psi_{ij}(z_i,z_j;\eta),
+\]
+the messages
+\begin{equation}
+\label{eq:future-bp-message}
+  m_{i\to j}(z_j)
+  \ \propto\
+  \sum_{z_i}\psi_i(z_i)\psi_{ij}(z_i,z_j)
+  \prod_{\ell\in\partial i\setminus j}m_{\ell\to i}(z_i)
+\end{equation}
+produce node and edge beliefs $b_i,b_{ij}$.  On a tree they give the
+exact marginals and exact partition function.  On a graph with loops,
+fixed points of the same recursion are stationary points of the Bethe
+free energy~\cite{yedidia}, and give the approximation
+\begin{equation}
+\label{eq:future-bethe}
+  A(\eta)=\log Z(\eta)
+  \ \simeq\
+  A_{\rm B}(\eta):=-\min_{b\in\mathcal L}F_{\rm B}(b;\eta),
+\end{equation}
+where $\mathcal L$ is the locally consistent marginal polytope.  This
+replaces a sum over every configuration of the window by local message
+updates.  It is exact on trees; with loops, convergence and accuracy
+must be measured rather than assumed.
+
+The approximation can enter at two levels.  In the inverse problem,
+the Bethe beliefs approximate $\nabla A(\eta)$, so the potentials can
+be updated until $b_{ij}$ matches the prescribed pair tables.  In the
+Bayesian calculation, one may replace $A$ by $A_{\rm B}$ in
+\eqref{eq:future-bayes-joint}, and then approximate the remaining
+parameter integral by a finite set of particles, variational Bayes or
+a Laplace expansion around its posterior mode.  Consecutive
+checkpoints change the tables gradually, so both the messages and the
+parameter fit can be warm-started.  Sparse factors, low-rank messages
+and a \emph{tree plus a few correction edges} family provide natural
+scaling controls at the full alphabet.
+
+There is an accounting distinction important to this paper, but it
+should not be confused with the computational obstacle.  Substituting
+$A_{\rm B}$ in a batch marginal likelihood does not by itself prove
+that the resulting number is the probability of a realizable code.
+An actual arithmetic coder instead needs, at position $t$, only a
+normalized distribution over the next token.  Message passing may
+construct nonnegative scores $\widetilde s_t(y)$, after which encoder
+and decoder both compute
+\begin{equation}
+\label{eq:future-bp-code}
+  \widetilde Q_t(y\mid x^{t-1})
+  =
+  \frac{\widetilde s_t(y)}
+       {\sum_{y'}\widetilde s_t(y')},
+  \qquad
+  \widetilde Q(x^n)=\prod_t
+       \widetilde Q_t(x_t\mid x^{t-1}).
+\end{equation}
+Then the accumulated loss is the exact codelength of the implemented
+approximate-inference predictor, even though the messages and beliefs
+inside it are approximate.  The encoder and decoder must of course use
+the same deterministic message schedule, finite-precision convention
+and conversion to arithmetic-coder frequencies, but no fitted model
+has to be transmitted when every update uses only the decoded prefix.
+
+The denominator in \eqref{eq:future-bp-code} is merely one pass over
+the target alphabet, $O(V)$ for vocabulary size $V$.  Even at
+$V=10^5$ or $10^6$ that single operation need not be troublesome, and
+with checkpointed factors it can be cached for repeated contexts or
+computed from a shared background plus sparse corrections.  It is not
+the global partition function in \eqref{eq:future-exp-family}, whose
+sum ranges over all configurations of the $(k+1)$ variables and has
+nominal size $V^{k+1}$, nor is it the high-dimensional parameter
+integral in \eqref{eq:future-bayes-joint}.  Those are the computations
+for which Bethe, particles and variational approximations are being
+proposed.  The explicit $O(V)$ normalization serves chiefly to turn
+their approximate scores into an actual code.
+
+The resulting sequential length generally no longer telescopes to one
+final profile evaluation, but it meets the same honest-code standard
+as every measured route here.  Its total naive normalization cost is
+$O(nV)$ if a new score vector is formed at every position, so whether
+it matters is an implementation question: checkpointing, repeated
+contexts, vectorization and the sparse-background representation
+already used in Section~\ref{sec:pairwise} may reduce it sharply.
+This makes loopy BP a particularly useful experiment: compare its
+sequential codelength and measured computation against the exact tree
+backbone while adding correction edges until the gain saturates or the
+messages cease to be reliable.
+
+Third, retain the present checkpointed calibrated conditional as a
+finite or discretized family.  Partition functions or fitted factors
+can be computed once per checkpoint and member, after which posterior
+weights over the members update sequentially.  This does not integrate
+over a continuous parameter region, but it is a complete Bayesian code,
+provides a computable benchmark for the continuous construction, and
+reuses the infrastructure already validated in
+Section~\ref{sec:pairwise}.
+
+These alternatives answer different questions.  The unrestricted
+joint model is the faithful formulation when all prescribed pairwise
+marginals must be reproduced, but its normalizer is the obstacle.  A
+tree or decomposable model preserves exact marginal semantics while
+making normalization local; Bethe interpolation adds loops at the
+price of an approximation whose error can be measured against that
+backbone.  The conditional model gives up a joint law for all context
+variables, but it targets the quantity this paper actually codes,
+$p(\text{current}\mid\text{past})$, and is therefore the most direct
+next experiment.  The decisive comparison is not only their final
+codelength: it is codelength together with the computation needed to
+update one posterior prediction at the full alphabet.
+
 \paragraph{Route 3 --- Retrieval: a mixture over copy pointers.}
 
 \emph{Prediction.}  Again we stand at position $t$ with
@@ -1927,6 +2225,11 @@ R.~Rosenfeld.
 A maximum entropy approach to adaptive statistical language
 modeling.
 \emph{Computer Speech and Language} 10(3):187--228, 1996.
+\bibitem{yedidia}
+J.~S. Yedidia, W.~T. Freeman, Y.~Weiss.
+Constructing free-energy approximations and generalized belief
+propagation algorithms.
+\emph{IEEE Trans.\ Inform.\ Theory} 51(7):2282--2312, 2005.
 \bibitem{inductionheads}
 C.~Olsson et al.
 In-context learning and induction heads.
