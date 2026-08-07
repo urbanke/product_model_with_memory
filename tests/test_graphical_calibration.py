@@ -17,7 +17,7 @@ from product_model_with_memory.graphical_calibration import (
     check_grouped_feasibility_lp,
     conditional_ipf,
     checkpoint_in_birth_major_support,
-    exact_sparse_dual_armijo,
+    exact_sparse_dual_wolfe,
     first_pair_warm_start,
     fit_grouped_checkpoints,
     grouped_conditional_ipf,
@@ -1437,7 +1437,7 @@ def test_exact_armijo_selects_scale_and_reduces_certificate():
     initial = sparse_factorized_dual_evaluation(
         problem, lb, c1, c2, compute_certificate=True
     )
-    result = exact_sparse_dual_armijo(
+    result = exact_sparse_dual_wolfe(
         problem, lb, c1, c2, max_iterations=100, tolerance=1e-3
     )
     assert result.objective < initial.objective

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit one saved shared-graph checkpoint by exact Armijo line search."""
+"""Fit one saved shared-graph checkpoint by exact strong-Wolfe search."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from product_model_with_memory.graphical_calibration import (
     BirthMajorSparseSupport,
     SparseGroupedProblem,
     checkpoint_in_birth_major_support,
-    exact_sparse_dual_armijo,
+    exact_sparse_dual_wolfe,
     load_layered_intersection_graph,
 )
 
@@ -95,7 +95,7 @@ def main() -> None:
                 **row, "elapsed_seconds": time.perf_counter() - started,
             }), flush=True)
 
-    result = exact_sparse_dual_armijo(
+    result = exact_sparse_dual_wolfe(
         problem, *factors,
         max_iterations=args.iterations,
         tolerance=args.tolerance,

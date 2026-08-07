@@ -31,7 +31,7 @@ from threading import Lock
 from time import perf_counter
 
 import numpy as np
-from scipy.optimize import linprog, minimize
+from scipy.optimize import line_search, linprog, minimize
 from scipy.sparse import coo_matrix, csr_matrix
 from scipy.special import logsumexp
 
@@ -2576,7 +2576,7 @@ def sparse_grouped_newton_cg(
     )
 
 
-def exact_sparse_dual_armijo(
+def exact_sparse_dual_wolfe(
     problem: SparseGroupedProblem,
     log_base_y: np.ndarray,
     correction_ya: np.ndarray,
@@ -2586,8 +2586,7 @@ def exact_sparse_dual_armijo(
     tolerance: float = 1e-2,
     initial_step: float = 1.0,
     armijo: float = 1e-4,
-    contraction: float = 0.5,
-    expansion: float = 2.0,
+    curvature: float = 0.9,
     minimum_step: float = 1e-12,
     maximum_step: float = 1e12,
     margin_workers: int = 1,
@@ -2596,11 +2595,12 @@ def exact_sparse_dual_armijo(
     progress_callback: Callable[[dict[str, float | int | bool]], None]
     | None = None,
 ) -> SparseLineSearchResult:
-    """Minimize the exact convex dual by spectral GD and Armijo search.
+    """Minimize the exact convex dual by spectral GD and strong Wolfe search.
 
-    The first iteration expands from ``initial_step`` to locate the local
-    scale.  Later iterations propose the Barzilai--Borwein spectral step and
-    backtrack until the standard Armijo sufficient-decrease condition holds.
+    The first iteration starts from ``initial_step``.  Later iterations
+    propose the Barzilai--Borwein spectral step.
+    Every accepted step satisfies both sufficient decrease and the strong
+    Wolfe curvature condition, preventing nearly flat spectral overshoots.
     Nonfinite factorized trials are rejected like ordinary failed trials.
     """
 
@@ -2608,8 +2608,8 @@ def exact_sparse_dual_armijo(
         raise ValueError("invalid line-search iteration limit or tolerance")
     if not 0.0 < armijo < 1.0:
         raise ValueError("Armijo constant must lie in (0, 1)")
-    if not 0.0 < contraction < 1.0 or expansion <= 1.0:
-        raise ValueError("invalid line-search contraction or expansion")
+    if not armijo < curvature < 1.0:
+        raise ValueError("Wolfe curvature constant must lie in (armijo, 1)")
     if not 0.0 < minimum_step <= initial_step <= maximum_step:
         raise ValueError("invalid line-search step bounds")
     if (layered_graph is None) != (layered_checkpoint is None):
@@ -2664,71 +2664,73 @@ def exact_sparse_dual_armijo(
 
         if previous_parameters is None:
             proposal = initial_step
-            allow_expansion = True
         else:
             displacement = parameters - previous_parameters
             gradient_change = gradient - previous_gradient
-            curvature = float(displacement @ gradient_change)
+            secant_curvature = float(displacement @ gradient_change)
             proposal = (
-                float(displacement @ displacement) / curvature
-                if curvature > 0.0 and np.isfinite(curvature)
+                float(displacement @ displacement) / secant_curvature
+                if secant_curvature > 0.0 and np.isfinite(secant_curvature)
                 else previous_step
             )
             proposal = float(np.clip(proposal, minimum_step, maximum_step))
-            allow_expansion = False
 
-        direction = -gradient
-        slope = -float(gradient @ gradient)
+        # Scaling the descent direction by the spectral proposal lets the
+        # standard Wolfe search operate around the local curvature estimate.
+        direction = -proposal * gradient
+        cached_vector = None
+        cached_evaluation = None
 
-        def trial(step: float):
-            candidate = parameters + step * direction
+        def cached_trial(vector: np.ndarray):
+            nonlocal cached_vector, cached_evaluation
+            candidate = np.array(vector, dtype=np.float64, copy=True)
             candidate[:first] -= logsumexp(candidate[:first])
+            if cached_vector is not None and np.array_equal(
+                candidate, cached_vector
+            ):
+                return cached_evaluation
             try:
                 value = evaluate(candidate)
             except (FloatingPointError, OverflowError):
-                return candidate, None
-            if not (
+                value = None
+            if value is not None and not (
                 np.isfinite(value.objective)
                 and np.isfinite(value.certificate)
                 and np.all(np.isfinite(value.gradient()))
             ):
-                return candidate, None
-            return candidate, value
+                value = None
+            cached_vector = candidate
+            cached_evaluation = value
+            return value
 
-        step = proposal
-        candidate, candidate_value = trial(step)
-        accepted = (
-            candidate_value is not None
-            and candidate_value.objective
-            <= current.objective + armijo * step * slope
-        )
-        while not accepted and step > minimum_step:
-            step *= contraction
-            candidate, candidate_value = trial(step)
-            accepted = (
-                candidate_value is not None
-                and candidate_value.objective
-                <= current.objective + armijo * step * slope
+        def objective_at(vector: np.ndarray) -> float:
+            value = cached_trial(vector)
+            return float("inf") if value is None else float(value.objective)
+
+        def gradient_at(vector: np.ndarray) -> np.ndarray:
+            value = cached_trial(vector)
+            return (
+                np.zeros_like(parameters)
+                if value is None else value.gradient()
             )
-        if not accepted:
+
+        alpha, _, _, _, _, _ = line_search(
+            objective_at, gradient_at, parameters, direction,
+            gfk=gradient, old_fval=current.objective,
+            c1=armijo, c2=curvature,
+            amax=maximum_step / proposal,
+            maxiter=25,
+        )
+        if alpha is None or alpha * proposal < minimum_step:
             record["line_search_failed"] = True
             break
-
-        if allow_expansion:
-            while step < maximum_step:
-                expanded = min(maximum_step, step * expansion)
-                expanded_candidate, expanded_value = trial(expanded)
-                if not (
-                    expanded_value is not None
-                    and expanded_value.objective
-                    <= current.objective + armijo * expanded * slope
-                ):
-                    break
-                step = expanded
-                candidate, candidate_value = expanded_candidate, expanded_value
-                if step == maximum_step:
-                    break
-
+        step = float(alpha * proposal)
+        candidate = parameters + alpha * direction
+        candidate[:first] -= logsumexp(candidate[:first])
+        candidate_value = cached_trial(candidate)
+        if candidate_value is None:
+            record["line_search_failed"] = True
+            break
         record["accepted_step"] = float(step)
         previous_parameters = parameters
         previous_gradient = gradient
