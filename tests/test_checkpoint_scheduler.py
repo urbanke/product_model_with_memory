@@ -102,3 +102,48 @@ def test_planned_executor_launches_dependency_graph(tmp_path):
         maximum_workers=2, working_directory=tmp_path, poll_seconds=0.01,
     )
     assert {row["job_id"] for row in records} == {"A", "B", "D"}
+
+
+def test_planned_executor_uses_evaluation_only_as_capacity_filler(tmp_path):
+    events = []
+
+    def job(job_id, kind):
+        output = tmp_path / f"{job_id}.txt"
+        return CheckpointJob(
+            job_id, kind, 0,
+            (
+                sys.executable, "-c",
+                f"from pathlib import Path; Path({str(output)!r}).write_text('ok')",
+            ),
+            (), (str(output),),
+            str(tmp_path / "manifests" / f"{job_id}.json"), 1,
+        )
+
+    jobs = (job("E0", "E"), job("G0", "G"))
+    run_planned_schedule(
+        jobs, {"E0": 1, "G0": 1}, {"E0": 0.0, "G0": 1.0},
+        maximum_workers=1, working_directory=tmp_path, poll_seconds=0.01,
+        event_callback=events.append,
+    )
+    launches = [row["job_id"] for row in events if row["event"] == "launched"]
+    assert launches == ["G0", "E0"]
+
+
+def test_planned_executor_expands_job_to_available_cap(tmp_path):
+    events = []
+    output = tmp_path / "C0.txt"
+    job = CheckpointJob(
+        "C0", "E", 0,
+        (
+            sys.executable, "-c",
+            f"from pathlib import Path; Path({str(output)!r}).write_text('ok')",
+        ),
+        (), (str(output),), str(tmp_path / "C0.json"), 1,
+    )
+    run_planned_schedule(
+        (job,), {"C0": 2}, {"C0": 0.0}, maximum_workers=8,
+        worker_caps={"C0": 4}, working_directory=tmp_path,
+        poll_seconds=0.01, event_callback=events.append,
+    )
+    launch = next(row for row in events if row["event"] == "launched")
+    assert launch["workers"] == 4

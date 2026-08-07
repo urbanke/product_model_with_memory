@@ -181,6 +181,94 @@ class SparseRestrictedMargins:
     retained_ab_mass: float
 
 
+def sparse_layered_pair(
+    context_marginal: np.ndarray,
+    unseen_probability: np.ndarray,
+    active_y: np.ndarray,
+    active_context: np.ndarray,
+    active_probability: np.ndarray,
+) -> SparseProjectedPair:
+    """Represent a layered conditional estimate as its unmodified joint law.
+
+    Unlike :func:`project_sparse_layered_pair`, this performs no Sinkhorn
+    scaling.  It merely multiplies every conditional row by the supplied
+    context marginal and retains the outer-background-plus-corrections form.
+    This is the appropriate input to the statistically relaxed calibration:
+    finite-data pair estimates are allowed to be mutually incompatible.
+    """
+
+    context_marginal = np.asarray(context_marginal, dtype=np.float64)
+    unseen_probability = np.asarray(unseen_probability, dtype=np.float64)
+    active_y = np.asarray(active_y, dtype=np.int64)
+    active_context = np.asarray(active_context, dtype=np.int64)
+    active_probability = np.asarray(active_probability, dtype=np.float64)
+    v = len(context_marginal)
+    if unseen_probability.shape != (v,):
+        raise ValueError("layered background must have length V")
+    if not (active_y.shape == active_context.shape == active_probability.shape):
+        raise ValueError("active pair arrays must have identical shapes")
+    if ((active_y < 0) | (active_y >= v) | (active_context < 0)
+            | (active_context >= v)).any():
+        raise ValueError("active pair indices are outside the vocabulary")
+    if not np.isclose(float(context_marginal.sum()), 1.0):
+        raise ValueError("context marginal must sum to one")
+    return SparseProjectedPair(
+        vocabulary_size=v,
+        left=np.ones(v),
+        right=np.ones(v),
+        background=context_marginal * unseen_probability,
+        active_y=active_y,
+        active_context=active_context,
+        delta=context_marginal[active_context] * (
+            active_probability - unseen_probability[active_context]
+        ),
+    )
+
+
+def sparse_relaxed_problem_from_layered_pairs(
+    p_ya: SparseProjectedPair,
+    p_yb: SparseProjectedPair,
+    observed_a: np.ndarray,
+    observed_b: np.ndarray,
+    target_y: np.ndarray,
+) -> tuple[SparseGroupedProblem, float]:
+    """Build the relaxed problem without forcing pair compatibility.
+
+    ``P_AB`` is the stationary, one-step pair law ``P_YA`` restricted to the
+    observed context support.  ``P_Y`` and this context law remain hard.  The
+    unmodified active coordinates of ``P_YA`` and ``P_YB`` are the soft
+    finite-data targets handled by the pair-slack penalty during fitting.
+    """
+
+    if p_ya.vocabulary_size != p_yb.vocabulary_size:
+        raise ValueError("the two sparse pairs must use one vocabulary")
+    v = p_ya.vocabulary_size
+    edge_a = np.asarray(observed_a, dtype=np.int64)
+    edge_b = np.asarray(observed_b, dtype=np.int64)
+    target_y = np.asarray(target_y, dtype=np.float64)
+    if edge_a.shape != edge_b.shape or not len(edge_a):
+        raise ValueError("observed context edge arrays must match and be nonempty")
+    if target_y.shape != (v,) or not np.isclose(float(target_y.sum()), 1.0):
+        raise ValueError("target_y must be a probability vector of length V")
+    ab = p_ya.values(edge_b, edge_a)
+    retained = float(ab.sum())
+    if not 0.0 < retained <= 1.0 + 1e-10:
+        raise ValueError("observed context support has invalid probability mass")
+    return SparseGroupedProblem(
+        vocabulary_size=v,
+        edge_a=edge_a,
+        edge_b=edge_b,
+        edge_probability=ab / retained,
+        target_y=target_y,
+        active_ya_y=p_ya.active_y,
+        active_ya_a=p_ya.active_context,
+        target_ya=p_ya.active_values(),
+        active_yb_y=p_yb.active_y,
+        active_yb_b=p_yb.active_context,
+        target_yb=p_yb.active_values(),
+    ), retained
+
+
 def _sparse_pair_margins(
     pair: SparseProjectedPair,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -479,7 +567,11 @@ class SparseGroupedResult:
 
 @dataclass(frozen=True)
 class SparseGroupedCheckpoint:
-    """One sparse calibration problem and its layered unigram baseline."""
+    """One sparse calibration problem and its layered unigram baseline.
+
+    The ``projected_*`` field names are retained for state compatibility.
+    They may contain the unprojected layered pair laws used by relaxed fits.
+    """
 
     problem: SparseGroupedProblem
     log_base_y: np.ndarray

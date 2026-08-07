@@ -8,7 +8,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 @dataclass(frozen=True)
@@ -144,9 +144,11 @@ def run_planned_schedule(
     priorities: dict[str, float],
     *,
     maximum_workers: int,
+    worker_caps: dict[str, int] | None = None,
     working_directory: str | Path,
     environment: dict[str, str] | None = None,
     poll_seconds: float = 0.1,
+    event_callback: Callable[[dict], None] | None = None,
 ) -> tuple[dict, ...]:
     """Execute a dependency graph whenever workers become available."""
 
@@ -158,12 +160,18 @@ def run_planned_schedule(
         raise ValueError("planned worker map must contain every job")
     if set(priorities) != set(by_id):
         raise ValueError("priority map must contain every job")
+    if worker_caps is not None and set(worker_caps) != set(by_id):
+        raise ValueError("worker cap map must contain every job")
     for job in jobs:
         unknown = set(job.dependencies) - set(by_id)
         if unknown:
             raise ValueError(f"{job.job_id} has unknown dependencies")
         if not 1 <= planned_workers[job.job_id] <= maximum_workers:
             raise ValueError(f"invalid worker allocation for {job.job_id}")
+        if worker_caps is not None and not (
+            1 <= worker_caps[job.job_id] <= maximum_workers
+        ):
+            raise ValueError(f"invalid worker cap for {job.job_id}")
 
     completed = {job.job_id for job in jobs if _completed(job)}
     launched = set(completed)
@@ -200,6 +208,17 @@ def run_planned_schedule(
                 if absent:
                     record["missing_outputs"] = absent
                 _publish_completion(job, record)
+                if event_callback:
+                    event_callback({
+                        "event": "failed", "job_id": job_id,
+                        "elapsed_seconds": record["elapsed_seconds"],
+                        "return_code": return_code,
+                        "missing_outputs": absent,
+                        "assigned_workers": sum(
+                            row[3] for key, row in running.items()
+                            if key != job_id
+                        ),
+                    })
                 for _, other, _, _ in running.values():
                     if other.poll() is None:
                         other.terminate()
@@ -208,18 +227,35 @@ def run_planned_schedule(
             _publish_completion(job, record)
             records.append(record)
             del running[job_id]
+            if event_callback:
+                event_callback({
+                    "event": "finished", "job_id": job_id,
+                    "elapsed_seconds": record["elapsed_seconds"],
+                    "assigned_workers": sum(
+                        row[3] for row in running.values()
+                    ),
+                    "running": sorted(running),
+                })
 
         available = maximum_workers - sum(row[3] for row in running.values())
         ready = [
             job for job in jobs
             if job.job_id not in launched
             and set(job.dependencies) <= completed
-            and planned_workers[job.job_id] <= available
+            and (worker_caps is not None or planned_workers[job.job_id] <= available)
         ]
-        ready.sort(key=lambda job: (priorities[job.job_id], job.job_id))
+        # E jobs have no descendants.  They fill otherwise idle capacity but
+        # must never delay a ready causal-chain job because of an imperfect
+        # analytic duration estimate.
+        ready.sort(key=lambda job: (
+            job.job_type == "E", priorities[job.job_id], job.job_id,
+        ))
         launched_now = False
         for job in ready:
-            workers = planned_workers[job.job_id]
+            workers = (
+                min(worker_caps[job.job_id], available)
+                if worker_caps is not None else planned_workers[job.job_id]
+            )
             if workers > available:
                 continue
             command = command_with_workers(job, workers)
@@ -229,6 +265,13 @@ def run_planned_schedule(
             launched.add(job.job_id)
             available -= workers
             launched_now = True
+            if event_callback:
+                event_callback({
+                    "event": "launched", "job_id": job.job_id,
+                    "workers": workers,
+                    "assigned_workers": maximum_workers - available,
+                    "running": sorted(running),
+                })
         if not running and not launched_now and len(completed) < len(jobs):
             raise RuntimeError("planned schedule cannot make progress")
         if running:

@@ -24,6 +24,8 @@ from product_model_with_memory.graphical_calibration import (
     build_sparse_intersection_plan,
     fit_sparse_grouped_checkpoints,
     project_sparse_layered_pair,
+    sparse_layered_pair,
+    sparse_relaxed_problem_from_layered_pairs,
     restrict_margins_to_observed_contexts,
     restrict_sparse_margins_to_observed_contexts,
     sparse_factorized_dual_evaluation,
@@ -248,8 +250,9 @@ def main() -> None:
         "top_k": args.top_k,
         "edges": [int(edge) for edge in edges],
         "sparse_upstream": args.sparse_upstream,
-        "projection_tolerance": args.projection_tolerance,
-        "projection_iterations": args.projection_iterations,
+        "margin_preprocessing": (
+            "raw_relaxed" if args.sparse_upstream else "projected_exact"
+        ),
         "universal_tables": os.environ["PMM_UNIVERSAL_TABLES"],
         "phi_ladder_every": os.environ["PMM_PHI_LADDER_EVERY"],
         "phi_ladder_degree": os.environ["PMM_PHI_LADDER_DEGREE"],
@@ -316,6 +319,9 @@ def main() -> None:
         problem = point.problem
         state = {
             "prefix": np.asarray(edges[index]),
+            "margin_preprocessing": np.asarray(
+                "raw_relaxed" if args.sparse_upstream else "projected_exact"
+            ),
             "edge_a": problem.edge_a,
             "edge_b": problem.edge_b,
             "edge_probability": problem.edge_probability,
@@ -458,29 +464,23 @@ def main() -> None:
             )
             marginal = np.exp2(log_m)
 
-            def projected_pair(table, marginal=marginal):
+            def layered_pair(table, marginal=marginal):
                 contexts = np.repeat(np.arange(v), np.diff(table["ptr"]))
-                return project_sparse_layered_pair(
+                return sparse_layered_pair(
                     marginal,
                     np.exp2(table["unseen"]),
                     table["idx"],
                     contexts,
                     np.exp2(table["val"]),
-                    marginal,
-                    max_iterations=args.projection_iterations,
-                    tolerance=args.projection_tolerance,
                 )
 
-            p_ya = projected_pair(sparse_tables[0])
-            p_yb = projected_pair(sparse_tables[1])
+            p_ya = layered_pair(sparse_tables[0])
+            p_yb = layered_pair(sparse_tables[1])
             observed_a = keys12 // v
             observed_b = keys12 % v
-            restricted = restrict_sparse_margins_to_observed_contexts(
-                p_ya, p_yb, observed_a, observed_b,
-                max_iterations=args.projection_iterations,
-                tolerance=args.projection_tolerance,
+            problem, retained_ab_mass = sparse_relaxed_problem_from_layered_pairs(
+                p_ya, p_yb, observed_a, observed_b, marginal,
             )
-            problem = sparse_problem_from_projected(restricted)
         else:
             log_m, (log_p1, log_p2) = _layered_log_tables(
                 builder, unigram, [n1, n2]
@@ -502,13 +502,16 @@ def main() -> None:
         points.append(SparseGroupedCheckpoint(
             problem,
             np.log(marginal),
-            restricted.p_ya if args.sparse_upstream else None,
-            restricted.p_yb if args.sparse_upstream else None,
+            p_ya if args.sparse_upstream else None,
+            p_yb if args.sparse_upstream else None,
         ))
         fallback_margins.append((p_ya, p_yb))
         construction.append({
             "prefix": int(edge),
-            "retained_ab_mass": restricted.retained_ab_mass,
+            "retained_ab_mass": (
+                retained_ab_mass if args.sparse_upstream
+                else restricted.retained_ab_mass
+            ),
             "context_edges": len(problem.edge_probability),
             "ya_corrections": len(problem.target_ya),
             "yb_corrections": len(problem.target_yb),
@@ -706,6 +709,9 @@ def main() -> None:
             "initialization": args.initialization,
             "checkpoint_transfer": args.checkpoint_transfer,
             "sparse_upstream": args.sparse_upstream,
+            "margin_preprocessing": (
+                "raw_relaxed" if args.sparse_upstream else "projected_exact"
+            ),
             "stream_checkpoints": True,
             "construct_only": args.construct_only,
             "construction_jobs": args.jobs,
@@ -766,6 +772,9 @@ def main() -> None:
         problem = point.problem
         state = {
             "prefix": np.asarray(edges[index]),
+            "margin_preprocessing": np.asarray(
+                "raw_relaxed" if args.sparse_upstream else "projected_exact"
+            ),
             "edge_a": problem.edge_a,
             "edge_b": problem.edge_b,
             "edge_probability": problem.edge_probability,
@@ -920,6 +929,9 @@ def main() -> None:
         "initialization": args.initialization,
         "checkpoint_transfer": args.checkpoint_transfer,
         "sparse_upstream": args.sparse_upstream,
+        "margin_preprocessing": (
+            "raw_relaxed" if args.sparse_upstream else "projected_exact"
+        ),
         "tolerance": args.tolerance,
         "max_iterations_per_phase": args.iterations,
         "construction_seconds": construction_seconds,

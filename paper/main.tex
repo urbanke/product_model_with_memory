@@ -1202,6 +1202,19 @@ row is consequently a useful scaling and coding result, but the relaxation
 and its stopping rule remain provisional choices to be standardized before
 the final comparison across corpora.
 
+For subsequent runs we removed an unnecessary compatibility preprocessing
+step from construction.  Let \(\widehat P_{YA}\), \(\widehat P_{YB}\), and
+\(\widehat P_{AB}\) denote the pair laws delivered by the layered estimator.
+Construction now passes these estimates to calibration without
+Sinkhorn-projecting them to common finite-sample marginals.  The unigram law
+\(P_Y\) and context law \(P_{AB}\) define the hard reference distribution,
+whereas the active coordinates of \(\widehat P_{YA}\) and
+\(\widehat P_{YB}\) are soft targets with the sampling-variance penalty.
+Thus disagreement among separately estimated pair laws is handled once, by
+the statistical relaxation, instead of first being hidden by a deterministic
+projection.  This also removes a costly and occasionally nonconvergent
+operation from every checkpoint construction.
+
 \appendix
 
 \section{The bias of the empirical conditional entropy}

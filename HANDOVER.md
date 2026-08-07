@@ -5023,3 +5023,24 @@ were bitwise identical and both score records were identical after excluding
 elapsed time.  Phase one is therefore operational.  Phase two may now audit
 analytic work against real completion manifests; do not alter the numerical
 pipeline while calibrating the scheduler model.
+
+### 2026-08-07 --- Raw pair estimates replace compatibility projection
+
+The numerical pipeline did need one deliberate correction before further
+scheduler timing.  Sparse construction had continued to Sinkhorn-project the
+two layered pair estimates to a common unigram and then reproject them to the
+context margins induced by the restricted AB law.  This duplicated and partly
+defeated the later statistical relaxation.  Production sparse C now stores the
+unmodified layered joint estimates.  The unigram Y law and stationary AB
+context law remain hard; active YA and YB coordinates remain soft targets with
+the universal plug-in variance penalty in relaxed F.  The old projection code
+is retained only for legacy exact/dense validation and is not emitted by new
+scheduler C jobs.
+
+The formerly failing text8 V256 checkpoint 13 then constructed in 24.8 s.
+Its G and relaxed F stages completed; F reached regularized stationarity
+8.6e-5 in 0.20 s without fallback.  A fresh V32/C3 run, containing no legacy
+projected checkpoint, completed C, G, relaxed F, and interval E throughout.
+The focused suite has 49 passing tests, including an explicit check that raw
+incompatible pair targets are preserved.  Do not restore projection-tolerance
+workarounds to this sparse relaxed path.

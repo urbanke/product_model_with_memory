@@ -54,6 +54,8 @@ from product_model_with_memory.graphical_calibration import (
     sparse_factorized_margins_reference,
     sparse_deltas_as_layered_graph,
     sparse_gated_log_probabilities,
+    sparse_layered_pair,
+    sparse_relaxed_problem_from_layered_pairs,
     sparse_grouped_newton_cg,
     sparse_grouped_ipf,
     sparse_problem_from_dense,
@@ -155,6 +157,33 @@ def test_projected_first_pair_start_is_exact_with_inactive_cells():
     )
     assert result.grouped_residual_ya_l1 < 2e-14
     assert result.residual_y_l1 < 2e-14
+
+
+def test_relaxed_problem_preserves_unprojected_layered_pair_targets():
+    marginal = np.array([0.7, 0.3])
+    contexts = np.array([0, 1])
+    first = sparse_layered_pair(
+        marginal, np.array([0.2, 0.4]),
+        np.array([0, 0]), contexts, np.array([0.8, 0.6]),
+    )
+    second = sparse_layered_pair(
+        marginal, np.array([0.6, 0.1]),
+        np.array([1, 1]), contexts, np.array([0.4, 0.9]),
+    )
+    raw_first_target = first.dense().sum(axis=1)
+    assert not np.allclose(raw_first_target, marginal)
+
+    edge_a = np.repeat(np.arange(2), 2)
+    edge_b = np.tile(np.arange(2), 2)
+    problem, retained = sparse_relaxed_problem_from_layered_pairs(
+        first, second, edge_a, edge_b, marginal,
+    )
+
+    assert retained == pytest.approx(1.0)
+    assert problem.edge_probability.sum() == pytest.approx(1.0)
+    assert np.array_equal(problem.target_ya, first.active_values())
+    assert np.array_equal(problem.target_yb, second.active_values())
+    assert np.array_equal(problem.target_y, marginal)
 
 
 def test_grouped_feasibility_lp_detects_incompatible_pair_margins():
