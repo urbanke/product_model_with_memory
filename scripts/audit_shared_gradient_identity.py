@@ -95,6 +95,35 @@ def main() -> None:
     exact_evaluation = exact(factors)
     exact_gradient = exact_evaluation.gradient()
 
+    edge_mass_a = np.bincount(
+        problem.edge_a, weights=problem.edge_probability,
+        minlength=problem.vocabulary_size,
+    )
+    edge_mass_b = np.bincount(
+        problem.edge_b, weights=problem.edge_probability,
+        minlength=problem.vocabulary_size,
+    )
+    target_mass_a = np.bincount(
+        problem.active_ya_a, weights=problem.target_ya,
+        minlength=problem.vocabulary_size,
+    )
+    target_mass_b = np.bincount(
+        problem.active_yb_b, weights=problem.target_yb,
+        minlength=problem.vocabulary_size,
+    )
+    count_a = np.bincount(
+        problem.active_ya_a, minlength=problem.vocabulary_size
+    )
+    count_b = np.bincount(
+        problem.active_yb_b, minlength=problem.vocabulary_size
+    )
+    saturated_a = count_a == problem.vocabulary_size
+    saturated_b = count_b == problem.vocabulary_size
+    saturated_error_a = target_mass_a[saturated_a] - edge_mass_a[saturated_a]
+    saturated_error_b = target_mass_b[saturated_b] - edge_mass_b[saturated_b]
+    inactive_mass_a = edge_mass_a - target_mass_a
+    inactive_mass_b = edge_mass_b - target_mass_b
+
     active = np.r_[0, np.cumsum(
         ab_graph.birth <= args.checkpoint, dtype=np.int64
     )]
@@ -219,6 +248,26 @@ def main() -> None:
             np.linalg.norm(difference)
             / max(np.linalg.norm(exact_gradient), np.finfo(float).tiny)
         ),
+        "target_consistency": {
+            "edge_mass_sum": float(problem.edge_probability.sum()),
+            "target_y_sum": float(problem.target_y.sum()),
+            "saturated_a_rows": int(saturated_a.sum()),
+            "saturated_b_rows": int(saturated_b.sum()),
+            "saturated_a_error_l1": float(
+                np.abs(saturated_error_a).sum()
+            ),
+            "saturated_b_error_l1": float(
+                np.abs(saturated_error_b).sum()
+            ),
+            "saturated_a_error_linf": float(
+                np.max(np.abs(saturated_error_a), initial=0.0)
+            ),
+            "saturated_b_error_linf": float(
+                np.max(np.abs(saturated_error_b), initial=0.0)
+            ),
+            "most_negative_inactive_a_mass": float(inactive_mass_a.min()),
+            "most_negative_inactive_b_mass": float(inactive_mass_b.min()),
+        },
         "directional_derivatives": directional,
         "negative_exact_gradient_steps": step_rows,
         "first_exact_adam_steps": adam_rows,
