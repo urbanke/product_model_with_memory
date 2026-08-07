@@ -2663,10 +2663,26 @@ def sparse_grouped_newton_cg(
                 ).gradient()
                 return value + regularizer_diagonal * candidate
 
-            product = (
-                gradient_at(full + epsilon * full_direction)
-                - gradient_at(full - epsilon * full_direction)
-            ) / (2.0 * epsilon)
+            # Near the edge of the representable factor range, the usual
+            # cube-root-epsilon perturbation can itself be too large.  Halve
+            # it until the symmetric derivative is evaluable.  This is a
+            # numerical differentiation safeguard, not a model parameter.
+            while True:
+                try:
+                    plus = gradient_at(full + epsilon * full_direction)
+                    minus = gradient_at(full - epsilon * full_direction)
+                    if np.isfinite(plus).all() and np.isfinite(minus).all():
+                        product = (plus - minus) / (2.0 * epsilon)
+                        break
+                except (FloatingPointError, OverflowError, ValueError):
+                    pass
+                epsilon *= 0.5
+                if epsilon * direction_norm <= np.finfo(float).eps * (
+                    1.0 + float(np.linalg.norm(full))
+                ):
+                    raise FloatingPointError(
+                        "unable to evaluate a finite layered Hessian product"
+                    )
         return scale[free] * product[free]
 
     accepted_iterations = 0
