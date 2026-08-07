@@ -5003,3 +5003,16 @@ three-checkpoint/two-interval text8 test produced bitwise-identical C and F
 states and identical E scores under both orders.  Resumed and uninterrupted C
 states match bitwise; direct-delta and matched legacy fits match bitwise; and
 the bridge-free fixed schedules create no cumulative materialized graph.
+
+An initial automatic scheduler now exists without machine-specific
+premeasurement.  `analytic_schedule.py` estimates pair support and compatible
+triangle growth from a binned unigram law, assigns dimensionless C/G/F/E work,
+and plans the exact DAG with a conservative 1--4 worker speedup prior.  The
+event-driven executor accounts for workers allocated to its own live jobs and
+launches newly ready work whenever a process completes; it does not wait for
+waves or react to noisy instantaneous CPU load.  A real enwik8 V1024/C32
+plan contains 127 jobs, passes dependency/chain/capacity audits, and peaks at
+9 of 12 workers because C/F currently cap at four and G/E expose one-worker
+modes.  Next validate a small end-to-end automatic execution against the two
+bitwise-validated fixed orders.  Only after that should completion manifests
+be used to compare and update the analytic priors online.

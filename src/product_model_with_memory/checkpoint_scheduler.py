@@ -123,6 +123,119 @@ def _publish_completion(job: CheckpointJob, record: dict) -> None:
     temporary.replace(destination)
 
 
+def command_with_workers(job: CheckpointJob, workers: int) -> tuple[str, ...]:
+    """Set the phase's worker option without changing its other arguments."""
+
+    option = "--jobs" if job.job_type == "C" else "--workers"
+    if job.job_type not in {"C", "F"}:
+        return job.command
+    command = list(job.command)
+    try:
+        position = command.index(option)
+    except ValueError as error:
+        raise ValueError(f"{job.job_id} command lacks {option}") from error
+    command[position + 1] = str(workers)
+    return tuple(command)
+
+
+def run_planned_schedule(
+    jobs: tuple[CheckpointJob, ...],
+    planned_workers: dict[str, int],
+    priorities: dict[str, float],
+    *,
+    maximum_workers: int,
+    working_directory: str | Path,
+    environment: dict[str, str] | None = None,
+    poll_seconds: float = 0.1,
+) -> tuple[dict, ...]:
+    """Execute a dependency graph whenever workers become available."""
+
+    if maximum_workers < 1 or poll_seconds <= 0:
+        raise ValueError("invalid executor resource setting")
+    root = Path(working_directory)
+    by_id = {job.job_id: job for job in jobs}
+    if set(planned_workers) != set(by_id):
+        raise ValueError("planned worker map must contain every job")
+    if set(priorities) != set(by_id):
+        raise ValueError("priority map must contain every job")
+    for job in jobs:
+        unknown = set(job.dependencies) - set(by_id)
+        if unknown:
+            raise ValueError(f"{job.job_id} has unknown dependencies")
+        if not 1 <= planned_workers[job.job_id] <= maximum_workers:
+            raise ValueError(f"invalid worker allocation for {job.job_id}")
+
+    completed = {job.job_id for job in jobs if _completed(job)}
+    launched = set(completed)
+    running: dict[str, tuple[CheckpointJob, subprocess.Popen, float, int]] = {}
+    records: list[dict] = []
+    base_environment = os.environ.copy()
+    if environment:
+        base_environment.update(environment)
+
+    while len(completed) < len(jobs):
+        for job_id, (job, process, started, workers) in list(running.items()):
+            return_code = process.poll()
+            if return_code is None:
+                continue
+            finished = time.time()
+            record = {
+                "version": 1,
+                "status": "completed" if return_code == 0 else "failed",
+                "job_id": job.job_id,
+                "job_type": job.job_type,
+                "checkpoint": job.checkpoint,
+                "workers": workers,
+                "started_unix_seconds": started,
+                "finished_unix_seconds": finished,
+                "elapsed_seconds": finished - started,
+                "return_code": return_code,
+                "command": list(command_with_workers(job, workers)),
+                "dependencies": list(job.dependencies),
+                "outputs": list(job.outputs),
+            }
+            absent = [path for path in job.outputs if not Path(path).exists()]
+            if return_code or absent:
+                record["status"] = "failed"
+                if absent:
+                    record["missing_outputs"] = absent
+                _publish_completion(job, record)
+                for _, other, _, _ in running.values():
+                    if other.poll() is None:
+                        other.terminate()
+                raise RuntimeError(f"planned job {job_id} failed")
+            completed.add(job_id)
+            _publish_completion(job, record)
+            records.append(record)
+            del running[job_id]
+
+        available = maximum_workers - sum(row[3] for row in running.values())
+        ready = [
+            job for job in jobs
+            if job.job_id not in launched
+            and set(job.dependencies) <= completed
+            and planned_workers[job.job_id] <= available
+        ]
+        ready.sort(key=lambda job: (priorities[job.job_id], job.job_id))
+        launched_now = False
+        for job in ready:
+            workers = planned_workers[job.job_id]
+            if workers > available:
+                continue
+            command = command_with_workers(job, workers)
+            started = time.time()
+            process = subprocess.Popen(command, cwd=root, env=base_environment)
+            running[job.job_id] = (job, process, started, workers)
+            launched.add(job.job_id)
+            available -= workers
+            launched_now = True
+        if not running and not launched_now and len(completed) < len(jobs):
+            raise RuntimeError("planned schedule cannot make progress")
+        if running:
+            time.sleep(poll_seconds)
+    return tuple(records)
+
+
 def run_fixed_schedule(
     schedule: FixedSchedule,
     *,

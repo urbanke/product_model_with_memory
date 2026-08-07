@@ -17,12 +17,13 @@ F_{k-1}\longrightarrow F_k.
 
 The first edge reflects cumulative counting.  The second preserves the fitted
 warm start.  A fit additionally requires its checkpoint problem and graph
-layer, and evaluation requires its own fitted state:
+layer.  Interval evaluation requires its own fitted state and the next
+construction boundary:
 
 \[
 C_k,\,G_k,\,F_{k-1}\longrightarrow F_k,
 \qquad
-F_k\longrightarrow E_k.
+F_k,\,C_{k+1}\longrightarrow E_k.
 \]
 
 There are 32 construction jobs, 32 fits, and 31 scored intervals.  Initial
@@ -139,3 +140,43 @@ path on the test problem.  The comparison was repeated after removing count
 replay and cumulative graph materialization: all C and F states remained
 bitwise identical and both E records remained identical.  No cumulative
 materialized graph directory was created.
+
+## Portable analytic scheduler, phase one
+
+The first automatic scheduler deliberately uses no measured wall-clock times.
+It estimates work in transparent dimensionless primitive-visit units from the
+known checkpoint prefixes, fitting parameters, and reduced unigram law.  A
+small logarithmic histogram of unigram probabilities estimates expected
+distinct pair supports and compatible triangles without constructing a
+quadratic or cubic vocabulary table.  Its phase estimates are
+
+\[
+ W_C(k)=\Delta N_k+3\Delta D_2(k),\qquad
+ W_G(k)=\Delta T(k),\qquad
+ W_E(k)=N_{k+1}-N_k,
+\]
+
+and fitting is the active triangle count times the analytically known number
+of sampled and exact passes.  These quantities establish priorities; they are
+not reported as seconds.
+
+The initial portable speedup prior exposes modes 1--4 with speedups
+\(1,1.9,2.25,2.4\), saturating thereafter.  This encodes the agreed
+conservative qualitative model rather than a benchmark of the current host.
+G and E presently expose only their implemented one-worker modes.  An
+event-driven critical-path list planner assigns a fixed worker count when each
+job launches.  The executor tracks its own allocated workers, and whenever a
+process finishes it immediately starts the highest-priority ready jobs that
+fit the released capacity.  It does not wait for fixed waves and does not use
+noisy instantaneous system CPU utilization.
+
+`plan_analytic_checkpoint_schedule.py` writes the analytic profile, task DAG,
+worker allocations, and predicted dimensionless event times.
+`run_analytic_checkpoint_schedule.py` combines that plan with the existing
+restartable job definitions.  On the local enwik8 V1024/C32 planning case the
+127-job plan respects every dependency and serial C/G/F chain and peaks at
+nine of the twelve available workers; the remaining capacity follows from the
+current four-worker cap for C/F and one-worker G/E modes, not an executor
+barrier.  Phase two will compare completion manifests with the analytic model
+and may update phase costs and speed curves online.  That measurement-based
+adaptation is intentionally not part of phase one.
