@@ -925,6 +925,20 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
         fitted_explicit.grouped_residual_yb_l1,
         rtol=0.0, atol=2e-10,
     )
+    recovered_extreme = sparse_grouped_ipf(
+        problem, solver="lbfgs", evaluator="layered",
+        tolerance=1e-8, max_iterations=2_000,
+        log_base_y=log_base,
+        correction_ya=np.full(len(problem.target_ya), 800.0),
+        correction_yb=np.full(len(problem.target_yb), 800.0),
+        _layered_graph=graph, _layered_checkpoint=layers - 1,
+    )
+    assert recovered_extreme.converged
+    assert max(
+        recovered_extreme.residual_y_l1,
+        recovered_extreme.grouped_residual_ya_l1,
+        recovered_extreme.grouped_residual_yb_l1,
+    ) < 1e-8
 
 
 def test_birth_major_support_makes_every_checkpoint_a_graph_prefix(tmp_path):

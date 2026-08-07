@@ -1148,8 +1148,11 @@ def sparse_factorized_margins_layered(
     log_base = np.asarray(log_base_y, dtype=np.float64)
     normalized_log_base = log_base - logsumexp(log_base)
     base = np.exp(normalized_log_base)
-    r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
-    r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    # Extreme solver trials are rejected by the caller after the finite check;
+    # overflow here is therefore a control signal, not a user-facing warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
+        r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
     target_y, active_ya, active_yb, log_z, unstable = (
         _graphical_margin_c.fused_margins_layered(
             np.ascontiguousarray(base),
@@ -2210,8 +2213,9 @@ def diagnose_sparse_factorized_normalizers(
     base = np.exp(log_base)
     c1 = np.asarray(correction_ya, dtype=np.float64)
     c2 = np.asarray(correction_yb, dtype=np.float64)
-    r1 = np.expm1(c1)
-    r2 = np.expm1(c2)
+    with np.errstate(over="ignore", invalid="ignore"):
+        r1 = np.expm1(c1)
+        r2 = np.expm1(c2)
     s1 = np.bincount(
         problem.active_ya_a,
         weights=base[problem.active_ya_y] * r1,
@@ -4520,6 +4524,36 @@ def sparse_grouped_ipf(
         })
 
     if solver == "lbfgs":
+        # A stochastic warm point can be mathematically finite while its
+        # factorized expm1 expansion overflows in floating point.  Recover by
+        # moving on the straight line from the neutral model to the proposed
+        # warm point.  This changes only the initialization, never the target
+        # or the final certificate.  It is also the natural backtracking rule:
+        # retain as much of the warm start as the exact evaluator can certify.
+        proposed_lb = lb.copy()
+        proposed_c1 = c1.copy()
+        proposed_c2 = c2.copy()
+        try:
+            preflight_margins = margins()
+        except FloatingPointError:
+            neutral_lb = np.log(np.maximum(problem.target_y, tiny))
+            recovered = False
+            for exponent in range(1, 21):
+                fraction = 2.0 ** -exponent
+                lb[:] = neutral_lb + fraction * (proposed_lb - neutral_lb)
+                c1[:] = fraction * proposed_c1
+                c2[:] = fraction * proposed_c2
+                try:
+                    preflight_margins = margins()
+                except FloatingPointError:
+                    continue
+                recovered = True
+                break
+            if not recovered:
+                raise FloatingPointError(
+                    "no finite exact margin point on the neutral-to-warm "
+                    "initialization segment"
+                )
         full_initial = np.concatenate([lb, c1, c2])
         free = np.ones(len(full_initial), dtype=bool)
         if reduce_gauge:
@@ -4538,6 +4572,7 @@ def sparse_grouped_ipf(
         initial = full_initial[free]
         best_parameters = full_initial.copy()
         best_certificate = float("inf")
+        best_objective = float("inf")
         function_evaluations = 0
         accepted_iterations = 0
         last_reduced: np.ndarray | None = None
@@ -4547,14 +4582,36 @@ def sparse_grouped_ipf(
             pass
 
         def objective_gradient(reduced_parameters):
-            nonlocal best_parameters, best_certificate, function_evaluations
+            nonlocal best_parameters, best_certificate, best_objective
+            nonlocal function_evaluations
             nonlocal last_reduced, last_certificate
             parameters = fixed_parameters.copy()
             parameters[free] = reduced_parameters
             lb[:] = parameters[:n_base]
             c1[:] = parameters[n_base:n_first]
             c2[:] = parameters[n_first:]
-            my, m1, m2, log_z = margins()
+            try:
+                if (
+                    function_evaluations == 0
+                    and np.array_equal(reduced_parameters, initial)
+                ):
+                    my, m1, m2, log_z = preflight_margins
+                else:
+                    my, m1, m2, log_z = margins()
+            except FloatingPointError:
+                # L-BFGS line searches are allowed to propose invalid points.
+                # Return a smooth finite barrier pointing back toward the
+                # certified initialization instead of aborting the run.  The
+                # optimizer will shorten/reject this trial in the usual way.
+                displacement = reduced_parameters - initial
+                scale = 1e12 / max(1, len(displacement))
+                function_evaluations += 1
+                last_reduced = np.array(reduced_parameters, copy=True)
+                last_certificate = float("inf")
+                return (
+                    1e12 + scale * float(displacement @ displacement),
+                    2.0 * scale * displacement,
+                )
             log_base = lb - logsumexp(lb)
             objective = (
                 float(edge_weight @ log_z)
@@ -4576,8 +4633,15 @@ def sparse_grouped_ipf(
                     my, m1, m2, log_z,
                 )
             function_evaluations += 1
-            if certificate < best_certificate:
+            if (
+                certificate < best_certificate
+                or (
+                    certificate == best_certificate
+                    and objective < best_objective
+                )
+            ):
                 best_certificate = certificate
+                best_objective = objective
                 best_parameters = parameters.copy()
             return objective, gradient[free]
 
@@ -4690,20 +4754,44 @@ def sparse_grouped_ipf(
     iteration_best_state = (lb.copy(), c1.copy(), c2.copy())
     iteration_best_residuals = (residual_y, grouped_ya, grouped_yb)
 
+    def finite_mixed_update(array, before, before_margins):
+        """Accept a full IPF sub-update or a finite old/new mixture."""
+
+        proposed = array.copy()
+        delta = proposed - before
+        for exponent in range(21):
+            if exponent:
+                array[:] = before + (2.0 ** -exponent) * delta
+            try:
+                return margins()
+            except FloatingPointError:
+                continue
+        # Reject this sub-update.  The previous state was certified finite.
+        array[:] = before
+        return before_margins
+
     for iteration in range(1, max_iterations + 1):
         x_before = np.concatenate([lb, c1, c2])
-        my, _, _, _ = margins()
+        before_margins = margins()
+        my = before_margins[0]
+        lb_before = lb.copy()
         lb += np.log(np.maximum(problem.target_y, tiny)) - np.log(
             np.maximum(my, tiny)
         )
         lb -= lb.max()
-        _, m1, _, _ = margins()
+        after_lb = finite_mixed_update(lb, lb_before, before_margins)
+        m1 = after_lb[1]
+        c1_before = c1.copy()
         update(c1, problem.target_ya, m1, problem.active_ya_a,
                pa, target_active_a)
-        _, _, m2, _ = margins()
+        after_c1 = finite_mixed_update(c1, c1_before, after_lb)
+        m2 = after_c1[2]
+        c2_before = c2.copy()
         update(c2, problem.target_yb, m2, problem.active_yb_b,
                pb, target_active_b)
-        my, m1, m2, log_z = margins()
+        my, m1, m2, log_z = finite_mixed_update(
+            c2, c2_before, after_c1
+        )
         residual_y, grouped_ya, grouped_yb = diagnostics(my, m1, m2)
         if iteration % trace_interval == 0 or iteration == max_iterations:
             record_trace(
