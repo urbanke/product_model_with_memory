@@ -4988,3 +4988,16 @@ The next implementation step is a native incremental builder that enumerates
 only triangles newly enabled by new YA, YB, or AB edges.  After that, add a
 native multi-delta traversal and compare its exact/stochastic margins with the
 current monolithic store before modifying the production workflow.
+
+The orchestration priority was subsequently changed: establish coarse C/G/F/E
+jobs and fixed hand-authored schedules before the automatic scheduler.  The
+fixed scheduler now validates explicit dependency waves and declared core and
+private-memory limits, runs jobs concurrently within a wave, checks outputs,
+and atomically records completion.  Construction can stop after one checkpoint
+(currently replaying counts on the next invocation); G_k publishes one sparse
+delta; a temporary materializer converts deltas through k into the legacy
+fitter store; the existing fitter can run only k; and the new interval scorer
+uses F_k plus an explicit next boundary rather than F_{k+1}.  Small smoke tests
+confirmed incremental C0/C1 publication, G0--G2 publication/materialization,
+and standalone E0 scoring.  Replace the correctness bridge's replay and graph
+materialization only after fixed schedules reproduce the sequential totals.

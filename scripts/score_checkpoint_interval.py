@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Score one checkpoint interval independently of later fitted states."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from calibration_score_states import load_state
+from product_model_with_memory.graphical_calibration import (
+    sparse_gated_log_probabilities,
+    sparse_star_log_probabilities,
+)
+from product_model_with_memory.streams import load_stream, reduce_ids
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state", required=True)
+    parser.add_argument("--ids", required=True)
+    parser.add_argument("--top-k", type=int, required=True)
+    parser.add_argument("--n", type=int, required=True)
+    parser.add_argument("--next-prefix", type=int, required=True)
+    parser.add_argument("--checkpoint", type=int, required=True)
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args()
+
+    started = time.time()
+    problem, result, p_ya, p_yb, prefix = load_state(Path(args.state))
+    if args.next_prefix <= prefix:
+        parser.error("next prefix must lie after the fitted prefix")
+    ids, _ = load_stream(args.ids)
+    original = ids[:args.n].astype(np.int64)
+    x, _, _ = reduce_ids(original, args.top_k)
+    if args.next_prefix > len(x):
+        parser.error("next prefix lies beyond the reduced stream")
+    target = x[prefix:args.next_prefix]
+    lag1 = x[prefix - 1:args.next_prefix - 1]
+    lag2 = x[prefix - 2:args.next_prefix - 2]
+    candidate = sparse_gated_log_probabilities(
+        problem, result, target, lag1, lag2, p_ya, p_yb
+    )
+    star = sparse_star_log_probabilities(p_ya, p_yb, target, lag1, lag2)
+    support = np.sort(
+        problem.edge_a * problem.vocabulary_size + problem.edge_b
+    )
+    keys = lag1 * problem.vocabulary_size + lag2
+    positions = np.searchsorted(support, keys)
+    covered = (positions < len(support)) & (
+        support[np.minimum(positions, len(support) - 1)] == keys
+    )
+    candidate_bits = -float(candidate.sum()) / np.log(2.0)
+    star_bits = -float(star.sum()) / np.log(2.0)
+    payload = {
+        "version": 1,
+        "checkpoint": args.checkpoint,
+        "fit_prefix": prefix,
+        "next_prefix": args.next_prefix,
+        "scored_records": len(target),
+        "supported_fraction": float(covered.mean()),
+        "candidate_bits": candidate_bits,
+        "star_bits": star_bits,
+        "candidate_bits_per_reduced_token": candidate_bits / len(target),
+        "star_bits_per_reduced_token": star_bits / len(target),
+        "elapsed_seconds": time.time() - started,
+    }
+    destination = Path(args.out)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2))
+    temporary.replace(destination)
+    print(json.dumps(payload, indent=2))
+
+
+if __name__ == "__main__":
+    main()

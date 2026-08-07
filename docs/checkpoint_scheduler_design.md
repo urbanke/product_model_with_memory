@@ -96,3 +96,22 @@ single fitting chain dominates total completion time.
 6. Measure isolated and overlapping job classes.
 7. Implement the online resource-constrained scheduler.
 8. Validate end-to-end code lengths against the current sequential workflow.
+
+## Current correctness bridge
+
+The first implementation intentionally favors independently testable jobs over
+optimal execution.  `calibration_checkpoint_probe.py --stop-after-checkpoint k`
+publishes one additional construction state; it currently replays cumulative
+counts from the beginning when invoked again.  `publish_checkpoint_graph_delta.py`
+publishes the append-only graph delta, and
+`materialize_checkpoint_delta_store.py` temporarily assembles deltas through
+`k` into the legacy fitter format.  The existing fitter already accepts
+`--start k --stop k+1`.  `score_checkpoint_interval.py` evaluates one interval
+from `F_k` and an explicit next boundary, without waiting for `F_{k+1}`.
+
+`run_fixed_checkpoint_schedule.py` executes a JSON list of jobs in explicit
+concurrent waves.  It checks strict dependencies, worker capacity, and private
+memory declarations, verifies expected outputs, and publishes one completion
+manifest per job.  This bridge permits correctness comparisons among fixed
+orders before the compatibility materialization and count replay are replaced
+by direct incremental traversal and persisted count states.

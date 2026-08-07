@@ -928,6 +928,34 @@ def sparse_deltas_as_layered_graph(
     )
 
 
+def sparse_deltas_as_ab_major_graph(
+    deltas: Sequence[SparseIntersectionDelta],
+    ab_edges: int,
+) -> ABMajorIntersectionGraph:
+    """Materialize sparse AB-major deltas for compatibility testing."""
+
+    counts = np.zeros(ab_edges, dtype=np.int64)
+    for delta in deltas:
+        if np.any(delta.ab_row < 0) or np.any(delta.ab_row >= ab_edges):
+            raise ValueError("delta AB row lies outside current support")
+        counts[delta.ab_row] += np.diff(delta.ab_ptr)
+    edge_ptr = np.r_[0, np.cumsum(counts, dtype=np.int64)]
+    first = np.empty(edge_ptr[-1], dtype=np.int32)
+    second = np.empty(edge_ptr[-1], dtype=np.int32)
+    birth = np.empty(edge_ptr[-1], dtype=np.uint8)
+    cursor = edge_ptr[:-1].copy()
+    for delta in deltas:
+        for local, edge in enumerate(delta.ab_row):
+            lo, hi = delta.ab_ptr[local:local + 2]
+            count = hi - lo
+            out = cursor[edge]
+            first[out:out + count] = delta.ab_correction_ya[lo:hi]
+            second[out:out + count] = delta.ab_correction_yb[lo:hi]
+            birth[out:out + count] = delta.checkpoint
+            cursor[edge] += count
+    return ABMajorIntersectionGraph(edge_ptr, first, second, birth)
+
+
 def save_sparse_intersection_delta(
     delta: SparseIntersectionDelta,
     directory: str | Path,

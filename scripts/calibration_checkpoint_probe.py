@@ -170,6 +170,13 @@ def main() -> None:
             "projection are skipped"
         ),
     )
+    parser.add_argument(
+        "--stop-after-checkpoint", type=int,
+        help=(
+            "stop after publishing this construction checkpoint; requires "
+            "--construct-only --stream-checkpoints --interleave 1"
+        ),
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.stream_checkpoints and args.reference_tolerance is not None:
@@ -184,6 +191,13 @@ def main() -> None:
         parser.error(
             "resume-streamed currently requires --stream-checkpoints "
             "--construct-only"
+        )
+    if args.stop_after_checkpoint is not None and not (
+        args.construct_only and args.stream_checkpoints and args.interleave == 1
+    ):
+        parser.error(
+            "--stop-after-checkpoint requires construction-only streamed "
+            "checkpoints with --interleave 1"
         )
     if args.solver == "exact-first-stochastic" and (
         not args.stream_checkpoints or args.interleave != 1
@@ -403,6 +417,11 @@ def main() -> None:
                         resource.RUSAGE_SELF
                     ).ru_maxrss,
                 }), flush=True)
+                if (
+                    args.stop_after_checkpoint is not None
+                    and checkpoint_index >= args.stop_after_checkpoint
+                ):
+                    break
                 continue
         if args.sparse_upstream:
             sparse_counts1 = SparseCountRows.from_sorted_keys(
@@ -513,6 +532,11 @@ def main() -> None:
                     }), flush=True)
                 points.clear()
                 fallback_margins.clear()
+                if (
+                    args.stop_after_checkpoint is not None
+                    and checkpoint_index >= args.stop_after_checkpoint
+                ):
+                    break
                 continue
             starts = []
             for local_index, point in enumerate(points):
@@ -679,8 +703,14 @@ def main() -> None:
             "rows": streamed_rows,
             "predictive_comparison": None,
         }
-        path = out / "results.json"
-        path.write_text(json.dumps(payload, indent=2))
+        completed_all = len(streamed_rows) == len(edges)
+        payload["complete"] = completed_all
+        path = out / (
+            "results.json" if completed_all else "partial_results.json"
+        )
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, indent=2))
+        temporary.replace(path)
         print(json.dumps(payload, indent=2), flush=True)
         print(f"written: {path}", flush=True)
         return
