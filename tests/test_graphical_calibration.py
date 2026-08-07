@@ -13,6 +13,7 @@ from product_model_with_memory.graphical_calibration import (
     build_sparse_edge_blocks,
     build_ab_major_intersection_graph,
     build_sparse_intersection_delta,
+    build_sparse_intersection_delta_incremental,
     build_sparse_intersection_plan,
     build_layered_intersection_graph,
     birth_major_sparse_support,
@@ -815,6 +816,32 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
             incremental_support.birth_ab,
             checkpoint,
         ))
+        direct_delta = build_sparse_intersection_delta_incremental(
+            incremental_support.problem,
+            incremental_support.birth_ya,
+            incremental_support.birth_yb,
+            incremental_support.birth_ab,
+            checkpoint,
+        )
+        expected_delta = incremental_deltas[-1]
+        assert direct_delta.triangles == expected_delta.triangles
+        for actual, expected in zip(
+            (
+                direct_delta.ya_row, direct_delta.ya_ptr,
+                direct_delta.ya_correction_yb, direct_delta.ya_edge_ab,
+                direct_delta.ab_row, direct_delta.ab_ptr,
+                direct_delta.ab_correction_ya,
+                direct_delta.ab_correction_yb,
+            ),
+            (
+                expected_delta.ya_row, expected_delta.ya_ptr,
+                expected_delta.ya_correction_yb, expected_delta.ya_edge_ab,
+                expected_delta.ab_row, expected_delta.ab_ptr,
+                expected_delta.ab_correction_ya,
+                expected_delta.ab_correction_yb,
+            ),
+        ):
+            np.testing.assert_array_equal(actual, expected)
     final_support = birth_major_sparse_support(
         problem, birth_ya, birth_yb, birth_ab
     )

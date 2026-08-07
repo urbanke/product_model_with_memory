@@ -722,11 +722,18 @@ class SparseIntersectionDelta:
         ))
 
 
-def _sparse_csr_order(major: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _sparse_csr_order(
+    major: np.ndarray,
+    secondary: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return stable order, represented major rows, and their CSR pointer."""
 
     major = np.asarray(major, dtype=np.int32)
-    order = np.argsort(major, kind="stable")
+    order = (
+        np.argsort(major, kind="stable")
+        if secondary is None
+        else np.lexsort((np.asarray(secondary), major))
+    )
     sorted_major = major[order]
     rows, counts = np.unique(sorted_major, return_counts=True)
     ptr = np.r_[0, np.cumsum(counts, dtype=np.int64)]
@@ -770,8 +777,122 @@ def build_sparse_intersection_delta(
     second = np.asarray(plan.correction_yb[selected], dtype=np.int32)
     edge = np.asarray(plan.edge[selected], dtype=np.int32)
 
-    ya_order, ya_row, ya_ptr = _sparse_csr_order(first)
-    ab_order, ab_row, ab_ptr = _sparse_csr_order(edge)
+    ya_order, ya_row, ya_ptr = _sparse_csr_order(first, edge)
+    ab_order, ab_row, ab_ptr = _sparse_csr_order(
+        edge, problem.active_ya_y[first]
+    )
+    return SparseIntersectionDelta(
+        checkpoint=checkpoint,
+        ya_row=ya_row,
+        ya_ptr=ya_ptr,
+        ya_correction_yb=second[ya_order],
+        ya_edge_ab=edge[ya_order],
+        ab_row=ab_row,
+        ab_ptr=ab_ptr,
+        ab_correction_ya=first[ab_order],
+        ab_correction_yb=second[ab_order],
+    )
+
+
+def build_sparse_intersection_delta_incremental(
+    problem: SparseGroupedProblem,
+    birth_ya: np.ndarray,
+    birth_yb: np.ndarray,
+    birth_ab: np.ndarray,
+    checkpoint: int,
+) -> SparseIntersectionDelta:
+    """Generate only triangles newly enabled at ``checkpoint``.
+
+    The three loops are deliberately disjoint.  A triangle is owned first by
+    a new YA edge, otherwise by a new YB edge, and otherwise by a new AB edge.
+    No triangle born earlier is revisited.  This Python implementation is the
+    specification for the production native builder.
+    """
+
+    if checkpoint < 0:
+        raise ValueError("checkpoint must be nonnegative")
+    first_birth = np.asarray(birth_ya, dtype=np.int64)
+    second_birth = np.asarray(birth_yb, dtype=np.int64)
+    context_birth = np.asarray(birth_ab, dtype=np.int64)
+    if (
+        first_birth.shape != problem.target_ya.shape
+        or second_birth.shape != problem.target_yb.shape
+        or context_birth.shape != problem.edge_probability.shape
+    ):
+        raise ValueError("pair-edge births and sparse problem disagree")
+    if any(np.any(values > checkpoint) for values in (
+        first_birth, second_birth, context_birth
+    )):
+        raise ValueError("incremental support contains future edge births")
+
+    v = problem.vocabulary_size
+    ab_lookup = {
+        int(a) * v + int(b): edge
+        for edge, (a, b) in enumerate(zip(problem.edge_a, problem.edge_b))
+    }
+    yb_by_y: dict[int, list[int]] = {}
+    old_ya_by_y: dict[int, list[int]] = {}
+    old_ya_by_a: dict[int, list[int]] = {}
+    old_yb_by_context_y: dict[int, int] = {}
+    for second, y in enumerate(problem.active_yb_y):
+        yb_by_y.setdefault(int(y), []).append(second)
+        if second_birth[second] < checkpoint:
+            key = int(problem.active_yb_b[second]) * v + int(y)
+            old_yb_by_context_y[key] = second
+    for first, y in enumerate(problem.active_ya_y):
+        if first_birth[first] < checkpoint:
+            old_ya_by_y.setdefault(int(y), []).append(first)
+            old_ya_by_a.setdefault(
+                int(problem.active_ya_a[first]), []
+            ).append(first)
+
+    out_first: list[int] = []
+    out_second: list[int] = []
+    out_edge: list[int] = []
+
+    # Case 1: a new YA edge owns every compatible triangle using it.
+    for first in np.flatnonzero(first_birth == checkpoint):
+        y = int(problem.active_ya_y[first])
+        a = int(problem.active_ya_a[first])
+        for second in yb_by_y.get(y, ()):
+            b = int(problem.active_yb_b[second])
+            edge = ab_lookup.get(a * v + b)
+            if edge is not None:
+                out_first.append(int(first))
+                out_second.append(second)
+                out_edge.append(edge)
+
+    # Case 2: a new YB edge owns triangles whose YA edge is older.
+    for second in np.flatnonzero(second_birth == checkpoint):
+        y = int(problem.active_yb_y[second])
+        b = int(problem.active_yb_b[second])
+        for first in old_ya_by_y.get(y, ()):
+            a = int(problem.active_ya_a[first])
+            edge = ab_lookup.get(a * v + b)
+            if edge is not None:
+                out_first.append(first)
+                out_second.append(int(second))
+                out_edge.append(edge)
+
+    # Case 3: a new AB edge owns triangles whose two pair edges are older.
+    for edge in np.flatnonzero(context_birth == checkpoint):
+        a = int(problem.edge_a[edge])
+        b = int(problem.edge_b[edge])
+        for first in old_ya_by_a.get(a, ()):
+            y = int(problem.active_ya_y[first])
+            second = old_yb_by_context_y.get(b * v + y)
+            if second is not None:
+                out_first.append(first)
+                out_second.append(second)
+                out_edge.append(int(edge))
+
+    first = np.asarray(out_first, dtype=np.int32)
+    second = np.asarray(out_second, dtype=np.int32)
+    edge = np.asarray(out_edge, dtype=np.int32)
+    ya_order, ya_row, ya_ptr = _sparse_csr_order(first, edge)
+    ab_order, ab_row, ab_ptr = _sparse_csr_order(
+        edge, problem.active_ya_y[first]
+    )
     return SparseIntersectionDelta(
         checkpoint=checkpoint,
         ya_row=ya_row,
