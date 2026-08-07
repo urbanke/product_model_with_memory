@@ -134,12 +134,42 @@ def main() -> None:
             "certificate": float(evaluation.certificate),
         })
 
-    variables = problem.vocabulary_size * len(problem.edge_probability)
+    edges = len(problem.edge_probability)
+    variables = problem.vocabulary_size * edges
+    degree_a = np.bincount(
+        problem.edge_a, minlength=problem.vocabulary_size
+    )
+    degree_b = np.bincount(
+        problem.edge_b, minlength=problem.vocabulary_size
+    )
+    fixed_edge_nnz = variables
+    global_y_nnz = variables
+    active_ya_nnz = int(degree_a[problem.active_ya_a].sum())
+    active_yb_nnz = int(degree_b[problem.active_yb_b].sum())
+    matrix_nnz = (
+        fixed_edge_nnz + global_y_nnz + active_ya_nnz + active_yb_nnz
+    )
+    equality_constraints = (
+        edges + problem.vocabulary_size
+        + len(problem.target_ya) + len(problem.target_yb)
+    )
+    # SciPy can use int32 sparse indices at this size.  Report both the final
+    # CSR arrays and the temporary COO triplets required by a direct build;
+    # the LP solver itself will need additional, implementation-dependent
+    # working memory beyond these lower bounds.
+    csr_bytes = (
+        matrix_nnz * (8 + 4) + (equality_constraints + 1) * 4
+    )
+    coo_bytes = matrix_nnz * (8 + 4 + 4)
     print(json.dumps({
         "checkpoint": args.checkpoint,
         "vocabulary_size": problem.vocabulary_size,
         "retained_ab_edges": len(problem.edge_probability),
         "dense_feasibility_lp_variables": variables,
+        "dense_feasibility_lp_equalities": equality_constraints,
+        "dense_feasibility_lp_nonzeros": matrix_nnz,
+        "dense_feasibility_lp_csr_bytes_lower_bound": csr_bytes,
+        "dense_feasibility_lp_coo_bytes_lower_bound": coo_bytes,
         "direction_raw_linf": raw_linf,
         "rows": rows,
         "interpretation": (
