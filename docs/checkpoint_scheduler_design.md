@@ -97,24 +97,28 @@ single fitting chain dominates total completion time.
 7. Implement the online resource-constrained scheduler.
 8. Validate end-to-end code lengths against the current sequential workflow.
 
-## Current correctness bridge
+## Incremental executable path
 
-The first implementation intentionally favors independently testable jobs over
-optimal execution.  `calibration_checkpoint_probe.py --stop-after-checkpoint k`
-publishes one additional construction state; it currently replays cumulative
-counts from the beginning when invoked again.  `publish_checkpoint_graph_delta.py`
-publishes the append-only graph delta, and
-`materialize_checkpoint_delta_store.py` temporarily assembles deltas through
-`k` into the legacy fitter format.  The existing fitter already accepts
-`--start k --stop k+1`.  `score_checkpoint_interval.py` evaluates one interval
-from `F_k` and an explicit next boundary, without waiting for `F_{k+1}`.
+`calibration_checkpoint_probe.py --stop-after-checkpoint k` publishes one
+additional construction state.  Every state carries the cumulative unigram
+and three sparse sufficient-statistic maps, so the next invocation begins at
+the stored prefix and never replays earlier tokens.  A resumed
+three-checkpoint construction is bitwise identical to uninterrupted
+construction.
 
-`run_fixed_checkpoint_schedule.py` executes a JSON list of jobs in explicit
-concurrent waves.  It checks strict dependencies, worker capacity, and private
-memory declarations, verifies expected outputs, and publishes one completion
-manifest per job.  This bridge permits correctness comparisons among fixed
-orders before the compatibility materialization and count replay are replaced
-by direct incremental traversal and persisted count states.
+`publish_checkpoint_graph_delta.py` loads only the previous stable support
+state and the new checkpoint problem, then publishes the new immutable graph
+delta.  The fitter's `--delta-store` path memory-maps triangle payloads from
+all deltas through k.  It expands only their small YA row directories for one
+native exact call; it does not concatenate or copy triangle payloads.  Sampled
+updates construct and cache intersections only for sampled AB blocks.  The
+old cumulative materializer remains solely as a validation utility.
+
+The fitter accepts `--start k --stop k+1`.  The interval scorer evaluates one
+interval from `F_k` and an explicit next boundary, without waiting for
+`F_{k+1}`.  `run_fixed_checkpoint_schedule.py` executes a JSON list of jobs in
+explicit concurrent waves, checks dependencies and resource declarations,
+verifies outputs, and publishes completion manifests.
 
 `make_fixed_checkpoint_schedule.py` generates two deliberately simple fixed
 orders.  Both enforce the serial chains
@@ -131,4 +135,7 @@ already exist.  A three-checkpoint text8 smoke test ran all 11 jobs in both
 orders.  The three construction states and three fitted states were bitwise
 identical, and both interval score records were identical after excluding
 elapsed time.  This establishes scheduling-order invariance for the current
-bridge on the test problem.
+path on the test problem.  The comparison was repeated after removing count
+replay and cumulative graph materialization: all C and F states remained
+bitwise identical and both E records remained identical.  No cumulative
+materialized graph directory was created.

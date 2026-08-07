@@ -4984,25 +4984,22 @@ final birth-major topology exactly.  The incremental builder emits each
 triangle once, when its last required edge is born.  All 44 scheduler and
 calibration tests pass.
 
-Do not yet use the delta path for a large production run: although delta
-construction is incremental, the correctness bridge still materializes all
-deltas through k into a legacy graph store for each fitting job.  The next
-representation step is native multi-delta traversal, followed by comparison
-of exact and stochastic margins with the current monolithic store.
+The delta path now avoids a cumulative graph store.  F memory-maps immutable
+triangle payloads directly, expands only the small exact YA row directories,
+and constructs/caches intersections only for sampled AB blocks.  The legacy
+materializer remains a validation utility, not part of scheduled execution.
 
 The orchestration priority was subsequently changed: establish coarse C/G/F/E
 jobs and fixed hand-authored schedules before the automatic scheduler.  The
 fixed scheduler now validates explicit dependency waves and declared core and
 private-memory limits, runs jobs concurrently within a wave, checks outputs,
 and atomically records completion.  Construction can stop after one checkpoint
-(currently replaying counts on the next invocation); G_k publishes one sparse
-delta; a temporary materializer converts deltas through k into the legacy
-fitter store; the existing fitter can run only k; and the new interval scorer
-uses F_k plus an explicit next boundary rather than F_{k+1}.  Small smoke tests
-confirmed incremental C0/C1 publication, G0--G2 publication/materialization,
-and standalone E0 scoring.  `make_fixed_checkpoint_schedule.py` now emits
+and resumes from persisted cumulative unigram and sparse YA/YB/AB counts.  G_k
+loads only G_{k-1}'s support state and the new C_k problem.  The fitter can run
+only k directly from the delta store, and the interval scorer uses F_k plus an
+explicit next boundary rather than F_{k+1}.  `make_fixed_checkpoint_schedule.py` emits
 `phased` and `pipeline` fixed orders while enforcing serial C and F chains.  A
 three-checkpoint/two-interval text8 test produced bitwise-identical C and F
-states and identical E scores under both orders.  Replace the correctness
-bridge's replay and graph materialization only after this invariant is also
-covered by a durable integration test.
+states and identical E scores under both orders.  Resumed and uninterrupted C
+states match bitwise; direct-delta and matched legacy fits match bitwise; and
+the bridge-free fixed schedules create no cumulative materialized graph.

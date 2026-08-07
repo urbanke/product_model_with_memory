@@ -18,14 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from intersection_topology_audit import load_problem
 from validate_layered_checkpoint_store import reorder_values
 from product_model_with_memory.graphical_calibration import (
-    BirthMajorSparseSupport, SparseGroupedProblem, SparseGroupedResult,
+    AppendOnlySparseSupportState, BirthMajorSparseSupport,
+    SparseGroupedProblem, SparseGroupedResult, append_checkpoint_support,
     first_pair_warm_start,
     checkpoint_in_birth_major_support, load_ab_major_intersection_graph,
-    load_layered_intersection_graph, pair_midpoint_warm_start,
+    load_layered_intersection_graph, load_sparse_intersection_delta,
+    pair_midpoint_warm_start,
     pair_product_warm_start, second_pair_warm_start,
     empirical_pair_slack_variances, exact_sparse_dual_wolfe,
     sparse_factorized_dual_evaluation, sparse_grouped_ipf,
-    stochastic_sparse_dual_approach, transfer_sparse_warm_start,
+    sparse_deltas_as_layered_graph, stochastic_sparse_dual_approach,
+    transfer_sparse_warm_start,
 )
 
 
@@ -98,7 +101,11 @@ def select_warm_start(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", required=True)
+    topology = parser.add_mutually_exclusive_group(required=True)
+    topology.add_argument("--store", help="legacy cumulative graph store")
+    topology.add_argument(
+        "--delta-store", help="append-only graph-delta store"
+    )
     parser.add_argument("--problems", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=12)
@@ -171,6 +178,13 @@ def main() -> None:
             "reference refreshes; diagnostic until its memory scaling is known"
         ),
     )
+    parser.add_argument(
+        "--lazy-sampled-intersections", action="store_true",
+        help=(
+            "construct and cache only sampled block intersections even when "
+            "a legacy AB-major graph is available"
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-2)
     parser.add_argument(
         "--minimum-learning-rate", type=float, default=3e-3,
@@ -223,28 +237,59 @@ def main() -> None:
     if any(value <= 0.0 for value in snapshot_thresholds):
         parser.error("snapshot certificate thresholds must be positive")
 
-    store = Path(args.store)
-    manifest = json.loads((store / "manifest.json").read_text())
-    support_dir = store / "support"
-    load = lambda name: np.load(  # noqa: E731
-        support_dir / f"{name}.npy", mmap_mode="r"
-    )
-    final = SparseGroupedProblem(
-        int(manifest["vocabulary_size"]), load("edge_a"), load("edge_b"),
-        np.zeros(len(load("edge_a"))), load("target_y"),
-        load("active_ya_y"), load("active_ya_a"),
-        np.zeros(len(load("active_ya_y"))), load("active_yb_y"),
-        load("active_yb_b"), np.zeros(len(load("active_yb_y"))),
-    )
-    support = BirthMajorSparseSupport(
-        final, load("birth_ya"), load("birth_yb"), load("birth_ab")
-    )
-    exact_graph = load_layered_intersection_graph(store / "graph")
-    sampled_graph = load_ab_major_intersection_graph(store / "ab_graph")
     paths = sorted((Path(args.problems) / "states").glob("checkpoint_*.npz"))
     stop = len(paths) if args.stop is None else min(args.stop, len(paths))
     if not 0 <= args.start < stop:
         parser.error("invalid checkpoint range")
+    if args.delta_store:
+        delta_store = Path(args.delta_store)
+        support_path = (
+            delta_store / "support" / f"checkpoint_{stop - 1:03d}.npz"
+        )
+        with np.load(support_path, allow_pickle=False) as saved:
+            state = AppendOnlySparseSupportState(
+                int(saved["vocabulary_size"]), saved["keys_ya"],
+                saved["keys_yb"], saved["keys_ab"], saved["birth_ya"],
+                saved["birth_yb"], saved["birth_ab"],
+            )
+        state, support = append_checkpoint_support(
+            state, load_problem(paths[stop - 1]), stop - 1
+        )
+        deltas = tuple(
+            load_sparse_intersection_delta(
+                delta_store / "deltas" / f"checkpoint_{k:03d}"
+            )
+            for k in range(stop)
+        )
+        # Only the O(number of YA edges x layers) row directories are
+        # expanded.  Triangle payloads remain mmap-backed in their immutable
+        # deltas and are never copied into a cumulative graph.
+        exact_graph = sparse_deltas_as_layered_graph(
+            deltas, len(support.problem.target_ya)
+        )
+        sampled_graph = None
+    else:
+        store = Path(args.store)
+        manifest = json.loads((store / "manifest.json").read_text())
+        support_dir = store / "support"
+        load = lambda name: np.load(  # noqa: E731
+            support_dir / f"{name}.npy", mmap_mode="r"
+        )
+        final = SparseGroupedProblem(
+            int(manifest["vocabulary_size"]), load("edge_a"),
+            load("edge_b"), np.zeros(len(load("edge_a"))),
+            load("target_y"), load("active_ya_y"), load("active_ya_a"),
+            np.zeros(len(load("active_ya_y"))), load("active_yb_y"),
+            load("active_yb_b"), np.zeros(len(load("active_yb_y"))),
+        )
+        support = BirthMajorSparseSupport(
+            final, load("birth_ya"), load("birth_yb"), load("birth_ab")
+        )
+        exact_graph = load_layered_intersection_graph(store / "graph")
+        sampled_graph = (
+            None if args.lazy_sampled_intersections
+            else load_ab_major_intersection_graph(store / "ab_graph")
+        )
     out = Path(args.out)
     (out / "states").mkdir(parents=True, exist_ok=True)
     previous_problem = None
@@ -533,7 +578,10 @@ def main() -> None:
             problem.vocabulary_size,
         )
         with np.load(paths[checkpoint], allow_pickle=False) as source:
-            payload = {name: source[name] for name in source.files}
+            payload = {
+                name: source[name] for name in source.files
+                if not name.startswith("construction_")
+            }
         payload.update({
             "log_base_y": result.log_base_y,
             "correction_ya": original_c1,

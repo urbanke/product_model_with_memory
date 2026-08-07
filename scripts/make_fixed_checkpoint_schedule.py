@@ -73,17 +73,20 @@ def main() -> None:
         g_dependencies = [f"C{checkpoint}"]
         if checkpoint:
             g_dependencies.append(f"G{checkpoint - 1}")
-        graph = root / "materialized" / f"checkpoint_{checkpoint:03d}"
+        delta_manifest = (
+            deltas / "deltas" / f"checkpoint_{checkpoint:03d}"
+            / "manifest.json"
+        )
         add(
             f"G{checkpoint}", "G", checkpoint,
             [
                 args.python, "-u", "scripts/prepare_checkpoint_graph.py",
                 "--problems", str(problems),
                 "--delta-store", str(deltas),
-                "--checkpoint", str(checkpoint), "--out", str(graph),
+                "--checkpoint", str(checkpoint),
             ],
             g_dependencies,
-            [graph / "manifest.json"], 1,
+            [delta_manifest], 1,
         )
         f_dependencies = [f"G{checkpoint}"]
         if checkpoint:
@@ -92,7 +95,7 @@ def main() -> None:
             f"F{checkpoint}", "F", checkpoint,
             [
                 args.python, "-u", "scripts/fit_shared_graph_checkpoints.py",
-                "--store", str(graph), "--problems", str(problems),
+                "--delta-store", str(deltas), "--problems", str(problems),
                 "--out", str(fitted),
                 "--workers", str(args.fitting_workers), "--replicas", "4",
                 "--max-stochastic-steps", str(args.fitting_steps),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish G_k and its temporary legacy compatibility store."""
+"""Publish the immutable append-only graph delta G_k."""
 
 from __future__ import annotations
 
@@ -14,27 +14,16 @@ def main() -> None:
     parser.add_argument("--problems", required=True)
     parser.add_argument("--delta-store", required=True)
     parser.add_argument("--checkpoint", type=int, required=True)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--out", help="deprecated; no store is materialized")
     args = parser.parse_args()
     scripts = Path(__file__).resolve().parent
-    commands = (
-        (
-            sys.executable, str(scripts / "publish_checkpoint_graph_delta.py"),
-            "--problems", args.problems,
-            "--store", args.delta_store,
-            "--checkpoint", str(args.checkpoint),
-        ),
-        (
-            sys.executable,
-            str(scripts / "materialize_checkpoint_delta_store.py"),
-            "--problems", args.problems,
-            "--delta-store", args.delta_store,
-            "--checkpoint", str(args.checkpoint),
-            "--out", args.out,
-        ),
+    command = (
+        sys.executable, str(scripts / "publish_checkpoint_graph_delta.py"),
+        "--problems", args.problems,
+        "--store", args.delta_store,
+        "--checkpoint", str(args.checkpoint),
     )
-    for command in commands:
-        subprocess.run(command, check=True)
+    subprocess.run(command, check=True)
 
 
 if __name__ == "__main__":

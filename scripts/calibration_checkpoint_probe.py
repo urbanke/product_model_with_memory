@@ -166,8 +166,7 @@ def main() -> None:
         "--resume-streamed", action="store_true",
         help=(
             "reuse structurally valid completed checkpoint files in --out; "
-            "the token counts are replayed, but layered construction and "
-            "projection are skipped"
+            "resume cumulative token counts from the newest completed state"
         ),
     )
     parser.add_argument(
@@ -192,6 +191,8 @@ def main() -> None:
             "resume-streamed currently requires --stream-checkpoints "
             "--construct-only"
         )
+    if args.resume_streamed and not args.sparse_upstream:
+        parser.error("resume-streamed requires sparse upstream counts")
     if args.stop_after_checkpoint is not None and not (
         args.construct_only and args.stream_checkpoints and args.interleave == 1
     ):
@@ -276,6 +277,7 @@ def main() -> None:
         n2 = np.zeros((v, v), dtype=np.float64)
         n12 = np.zeros((v, v), dtype=np.float64)
     previous_edge = 0
+    first_checkpoint_to_build = 0
 
     def compact_result(point, result):
         problem = point.problem
@@ -329,6 +331,15 @@ def main() -> None:
             "correction_yb": result.correction_yb,
         }
         if args.sparse_upstream:
+            state.update({
+                "construction_unigram": unigram,
+                "construction_keys1": keys1,
+                "construction_counts1": counts1,
+                "construction_keys2": keys2,
+                "construction_counts2": counts2,
+                "construction_keys12": keys12,
+                "construction_counts12": counts12,
+            })
             for name, pair in zip(("ya", "yb"), fallback):
                 state.update({
                     f"fallback_{name}_left": pair.left,
@@ -346,8 +357,66 @@ def main() -> None:
         writer(out / "states" / f"checkpoint_{index:03d}.npz", **state)
         return time.perf_counter() - started
 
+    # Resume from the newest contiguous checkpoint carrying the cumulative
+    # sufficient statistics.  Older checkpoint files predate this contract;
+    # refusing them avoids silently replaying the stream and distorting C_k
+    # costs seen by the scheduler.
+    if args.resume_streamed:
+        required_counts = (
+            "construction_unigram", "construction_keys1",
+            "construction_counts1", "construction_keys2",
+            "construction_counts2", "construction_keys12",
+            "construction_counts12",
+        )
+        for index, edge in enumerate(edges):
+            state_path = out / "states" / f"checkpoint_{index:03d}.npz"
+            if not state_path.exists():
+                break
+            with np.load(state_path, allow_pickle=False) as saved:
+                if int(saved["prefix"]) != int(edge):
+                    raise RuntimeError(
+                        f"checkpoint {index} has the wrong prefix"
+                    )
+                if not all(name in saved for name in required_counts):
+                    raise RuntimeError(
+                        f"checkpoint {index} lacks persisted construction "
+                        "counts; rebuild this construction chain once"
+                    )
+                unigram = np.asarray(saved["construction_unigram"]).copy()
+                keys1 = np.asarray(saved["construction_keys1"]).copy()
+                counts1 = np.asarray(saved["construction_counts1"]).copy()
+                keys2 = np.asarray(saved["construction_keys2"]).copy()
+                counts2 = np.asarray(saved["construction_counts2"]).copy()
+                keys12 = np.asarray(saved["construction_keys12"]).copy()
+                counts12 = np.asarray(saved["construction_counts12"]).copy()
+            previous_edge = int(edge)
+            first_checkpoint_to_build = index + 1
+            row = {
+                "prefix": int(edge), "retained_ab_mass": None,
+                "context_edges": 0, "ya_corrections": 0,
+                "yb_corrections": 0, "construction_seconds": 0.0,
+                "persistence_seconds": 0.0, "constructed_only": True,
+                "resumed": True,
+            }
+            construction.append(row)
+            streamed_rows.append(row)
+
+    if (
+        args.stop_after_checkpoint is not None
+        and first_checkpoint_to_build > args.stop_after_checkpoint
+    ):
+        print(json.dumps({
+            "checkpoint": args.stop_after_checkpoint,
+            "prefix": int(edges[args.stop_after_checkpoint]),
+            "resumed": True,
+            "peak_resident_bytes": resource.getrusage(
+                resource.RUSAGE_SELF
+            ).ru_maxrss,
+        }), flush=True)
+
     construction_started = time.time()
-    for checkpoint_index, edge in enumerate(edges):
+    for checkpoint_index in range(first_checkpoint_to_build, len(edges)):
+        edge = edges[checkpoint_index]
         started = time.time()
         unigram += np.bincount(
             x[previous_edge:edge], minlength=v
@@ -377,52 +446,6 @@ def main() -> None:
                 lag1 * v + lag2, minlength=v * v
             ).reshape(v, v)
         previous_edge = int(edge)
-        resume_state = out / "states" / f"checkpoint_{checkpoint_index:03d}.npz"
-        if args.resume_streamed and resume_state.exists():
-            try:
-                with np.load(resume_state, allow_pickle=False) as saved:
-                    saved_prefix = int(saved["prefix"])
-                    saved_v = len(saved["target_y"])
-                    context_edges = len(saved["edge_probability"])
-                    ya_corrections = len(saved["target_ya"])
-                    yb_corrections = len(saved["target_yb"])
-            except (OSError, ValueError, KeyError, EOFError):
-                # An interrupted write is not a completed checkpoint.
-                resume_state.unlink(missing_ok=True)
-            else:
-                if saved_prefix != int(edge) or saved_v != v:
-                    raise RuntimeError(
-                        f"refusing checkpoint {checkpoint_index}: expected "
-                        f"prefix={int(edge)}, V={v}; found "
-                        f"prefix={saved_prefix}, V={saved_v}"
-                    )
-                row = {
-                    "prefix": int(edge),
-                    "retained_ab_mass": None,
-                    "context_edges": context_edges,
-                    "ya_corrections": ya_corrections,
-                    "yb_corrections": yb_corrections,
-                    "construction_seconds": 0.0,
-                    "persistence_seconds": 0.0,
-                    "constructed_only": True,
-                    "resumed": True,
-                }
-                construction.append(row)
-                streamed_rows.append(row)
-                print(json.dumps({
-                    "checkpoint": checkpoint_index,
-                    "prefix": int(edge),
-                    "resumed": True,
-                    "peak_resident_bytes": resource.getrusage(
-                        resource.RUSAGE_SELF
-                    ).ru_maxrss,
-                }), flush=True)
-                if (
-                    args.stop_after_checkpoint is not None
-                    and checkpoint_index >= args.stop_after_checkpoint
-                ):
-                    break
-                continue
         if args.sparse_upstream:
             sparse_counts1 = SparseCountRows.from_sorted_keys(
                 v, keys1, counts1

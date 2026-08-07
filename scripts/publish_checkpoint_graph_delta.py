@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from intersection_topology_audit import load_problem
 from product_model_with_memory.graphical_calibration import (
-    append_checkpoint_support,
+    AppendOnlySparseSupportState, append_checkpoint_support,
     build_sparse_intersection_delta_incremental,
     save_sparse_intersection_delta,
 )
@@ -47,11 +47,25 @@ def main() -> None:
         return
 
     state = None
-    support = None
-    for checkpoint, path in enumerate(problem_paths[:args.checkpoint + 1]):
-        state, support = append_checkpoint_support(
-            state, load_problem(path), checkpoint
+    if args.checkpoint:
+        previous_path = (
+            Path(args.store) / "support"
+            / f"checkpoint_{args.checkpoint - 1:03d}.npz"
         )
+        if not previous_path.exists():
+            raise FileNotFoundError(
+                "previous append-only support state is unavailable"
+            )
+        with np.load(previous_path, allow_pickle=False) as previous:
+            state = AppendOnlySparseSupportState(
+                int(previous["vocabulary_size"]),
+                previous["keys_ya"], previous["keys_yb"],
+                previous["keys_ab"], previous["birth_ya"],
+                previous["birth_yb"], previous["birth_ab"],
+            )
+    state, support = append_checkpoint_support(
+        state, load_problem(problem_paths[args.checkpoint]), args.checkpoint
+    )
     delta = build_sparse_intersection_delta_incremental(
         support.problem, support.birth_ya, support.birth_yb,
         support.birth_ab, args.checkpoint,
