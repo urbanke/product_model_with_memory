@@ -1,0 +1,276 @@
+{
+  "source": "output/calibration_text8_v16384_c32_m4/fitted_w12",
+  "V": 16384,
+  "n": 19429294,
+  "scored_records": 19167150,
+  "candidate_bpc": 8.74699036637452,
+  "star_bpc": 8.941664833357482,
+  "calibrated_gain_over_star_bpc": 0.19467446698296093,
+  "accounting": {
+    "unit": "bits_per_bpe_token",
+    "initial_prefix_tokens": 262144,
+    "initial_prefix_reduced_bits": 2743534.1643144195,
+    "reduced_alphabet_predictive_bpc": 8.770180252826984,
+    "tokenizer_vocabulary_bits": 6208152.0,
+    "selected_subset_description_bits": 64402.587469688806,
+    "vocabulary_description_bpc": 0.3228400675531334,
+    "escaped_tokens": 493699,
+    "escape_fraction": 0.02541003291215831,
+    "escaped_token_payload_bpc": 0.3582789839962808,
+    "oracle_escape_payload_bpc_noncode": 0.3478447545930926,
+    "honest_full_stream_bpc": 9.4512993043764,
+    "honest_full_stream_bits_per_input_byte": 1.8363207286672456
+  },
+  "scoring_seconds": 922.1846871376038,
+  "workers": 15,
+  "rows": [
+    {
+      "fit_prefix": 262144,
+      "scored_records": 275026,
+      "supported_fraction": 0.51565306552835,
+      "candidate_bpc": 11.655790585190829,
+      "star_bpc": 11.557164533163334,
+      "calibrated_gain_over_star_bpc": -0.09862605202749491
+    },
+    {
+      "fit_prefix": 537170,
+      "scored_records": 288542,
+      "supported_fraction": 0.5982248684766862,
+      "candidate_bpc": 10.826798205142584,
+      "star_bpc": 10.867321696049983,
+      "calibrated_gain_over_star_bpc": 0.040523490907397444
+    },
+    {
+      "fit_prefix": 825712,
+      "scored_records": 302724,
+      "supported_fraction": 0.65017309496439,
+      "candidate_bpc": 10.285073926252764,
+      "star_bpc": 10.37294936605248,
+      "calibrated_gain_over_star_bpc": 0.08787543979971621
+    },
+    {
+      "fit_prefix": 1128436,
+      "scored_records": 317601,
+      "supported_fraction": 0.703533679050129,
+      "candidate_bpc": 9.672178872211061,
+      "star_bpc": 9.827073483168322,
+      "calibrated_gain_over_star_bpc": 0.15489461095726137
+    },
+    {
+      "fit_prefix": 1446037,
+      "scored_records": 333211,
+      "supported_fraction": 0.7010963023429598,
+      "candidate_bpc": 9.802947782715238,
+      "star_bpc": 9.963871736048306,
+      "calibrated_gain_over_star_bpc": 0.16092395333306733
+    },
+    {
+      "fit_prefix": 1779248,
+      "scored_records": 349588,
+      "supported_fraction": 0.7151589871505887,
+      "candidate_bpc": 9.688903866473932,
+      "star_bpc": 9.862001459897755,
+      "calibrated_gain_over_star_bpc": 0.1730975934238227
+    },
+    {
+      "fit_prefix": 2128836,
+      "scored_records": 366768,
+      "supported_fraction": 0.7314378571740173,
+      "candidate_bpc": 9.549295259721125,
+      "star_bpc": 9.742118118611854,
+      "calibrated_gain_over_star_bpc": 0.19282285889073028
+    },
+    {
+      "fit_prefix": 2495604,
+      "scored_records": 384795,
+      "supported_fraction": 0.7424706661988851,
+      "candidate_bpc": 9.393554491112852,
+      "star_bpc": 9.588782903907212,
+      "calibrated_gain_over_star_bpc": 0.19522841279435948
+    },
+    {
+      "fit_prefix": 2880399,
+      "scored_records": 403706,
+      "supported_fraction": 0.7475910687480494,
+      "candidate_bpc": 9.478492965815583,
+      "star_bpc": 9.66905051915398,
+      "calibrated_gain_over_star_bpc": 0.19055755333839797
+    },
+    {
+      "fit_prefix": 3284105,
+      "scored_records": 423547,
+      "supported_fraction": 0.7707668806531507,
+      "candidate_bpc": 9.253550204982494,
+      "star_bpc": 9.458680066971299,
+      "calibrated_gain_over_star_bpc": 0.2051298619888064
+    },
+    {
+      "fit_prefix": 3707652,
+      "scored_records": 444364,
+      "supported_fraction": 0.7734717483864579,
+      "candidate_bpc": 9.211549032563,
+      "star_bpc": 9.405224254050975,
+      "calibrated_gain_over_star_bpc": 0.19367522148797567
+    },
+    {
+      "fit_prefix": 4152016,
+      "scored_records": 466203,
+      "supported_fraction": 0.7802931341068161,
+      "candidate_bpc": 9.118517743263983,
+      "star_bpc": 9.313749794830589,
+      "calibrated_gain_over_star_bpc": 0.19523205156660597
+    },
+    {
+      "fit_prefix": 4618219,
+      "scored_records": 489116,
+      "supported_fraction": 0.7949647936276875,
+      "candidate_bpc": 8.888358151179576,
+      "star_bpc": 9.087047313444938,
+      "calibrated_gain_over_star_bpc": 0.1986891622653619
+    },
+    {
+      "fit_prefix": 5107335,
+      "scored_records": 513154,
+      "supported_fraction": 0.8002860739660999,
+      "candidate_bpc": 8.951257290752112,
+      "star_bpc": 9.14781400039641,
+      "calibrated_gain_over_star_bpc": 0.1965567096442966
+    },
+    {
+      "fit_prefix": 5620489,
+      "scored_records": 538375,
+      "supported_fraction": 0.7929547248664964,
+      "candidate_bpc": 9.087871203666197,
+      "star_bpc": 9.285914379460056,
+      "calibrated_gain_over_star_bpc": 0.19804317579386033
+    },
+    {
+      "fit_prefix": 6158864,
+      "scored_records": 564834,
+      "supported_fraction": 0.8081135342419189,
+      "candidate_bpc": 8.963350693755302,
+      "star_bpc": 9.162560556770876,
+      "calibrated_gain_over_star_bpc": 0.19920986301557436
+    },
+    {
+      "fit_prefix": 6723698,
+      "scored_records": 592595,
+      "supported_fraction": 0.8178384900311343,
+      "candidate_bpc": 8.796653224086105,
+      "star_bpc": 8.997140212216275,
+      "calibrated_gain_over_star_bpc": 0.2004869881301699
+    },
+    {
+      "fit_prefix": 7316293,
+      "scored_records": 621719,
+      "supported_fraction": 0.8211651887749932,
+      "candidate_bpc": 8.787301911313065,
+      "star_bpc": 8.992470677151553,
+      "calibrated_gain_over_star_bpc": 0.20516876583848695
+    },
+    {
+      "fit_prefix": 7938012,
+      "scored_records": 652275,
+      "supported_fraction": 0.8332911732014872,
+      "candidate_bpc": 8.606439566161397,
+      "star_bpc": 8.80568047734105,
+      "calibrated_gain_over_star_bpc": 0.19924091117965395
+    },
+    {
+      "fit_prefix": 8590287,
+      "scored_records": 684333,
+      "supported_fraction": 0.8350276838907374,
+      "candidate_bpc": 8.649008469487491,
+      "star_bpc": 8.856372346365347,
+      "calibrated_gain_over_star_bpc": 0.20736387687785607
+    },
+    {
+      "fit_prefix": 9274620,
+      "scored_records": 717966,
+      "supported_fraction": 0.8389881972126814,
+      "candidate_bpc": 8.549910880222113,
+      "star_bpc": 8.753078180946813,
+      "calibrated_gain_over_star_bpc": 0.2031673007247018
+    },
+    {
+      "fit_prefix": 9992586,
+      "scored_records": 753252,
+      "supported_fraction": 0.8311800035048031,
+      "candidate_bpc": 8.677886382576443,
+      "star_bpc": 8.88101706829061,
+      "calibrated_gain_over_star_bpc": 0.20313068571416737
+    },
+    {
+      "fit_prefix": 10745838,
+      "scored_records": 790272,
+      "supported_fraction": 0.8526798368156786,
+      "candidate_bpc": 8.42556174904615,
+      "star_bpc": 8.621037954649474,
+      "calibrated_gain_over_star_bpc": 0.19547620560332368
+    },
+    {
+      "fit_prefix": 11536110,
+      "scored_records": 829113,
+      "supported_fraction": 0.8588370945818,
+      "candidate_bpc": 8.366692936892505,
+      "star_bpc": 8.577591465108664,
+      "calibrated_gain_over_star_bpc": 0.2108985282161584
+    },
+    {
+      "fit_prefix": 12365223,
+      "scored_records": 869861,
+      "supported_fraction": 0.8620342790399845,
+      "candidate_bpc": 8.37088154504538,
+      "star_bpc": 8.577936922590258,
+      "calibrated_gain_over_star_bpc": 0.2070553775448776
+    },
+    {
+      "fit_prefix": 13235084,
+      "scored_records": 912613,
+      "supported_fraction": 0.861282931538341,
+      "candidate_bpc": 8.42271038352844,
+      "star_bpc": 8.62056427095649,
+      "calibrated_gain_over_star_bpc": 0.19785388742804988
+    },
+    {
+      "fit_prefix": 14147697,
+      "scored_records": 957465,
+      "supported_fraction": 0.8860678980432705,
+      "candidate_bpc": 7.773033389663792,
+      "star_bpc": 7.994484674549049,
+      "calibrated_gain_over_star_bpc": 0.22145128488525748
+    },
+    {
+      "fit_prefix": 15105162,
+      "scored_records": 1004522,
+      "supported_fraction": 0.869884382820884,
+      "candidate_bpc": 8.264356816551247,
+      "star_bpc": 8.491411934325576,
+      "calibrated_gain_over_star_bpc": 0.22705511777432782
+    },
+    {
+      "fit_prefix": 16109684,
+      "scored_records": 1053892,
+      "supported_fraction": 0.8689372345553434,
+      "candidate_bpc": 8.308366853436132,
+      "star_bpc": 8.51959276692698,
+      "calibrated_gain_over_star_bpc": 0.21122591349084874
+    },
+    {
+      "fit_prefix": 17163576,
+      "scored_records": 1105688,
+      "supported_fraction": 0.8788437606268676,
+      "candidate_bpc": 8.066637928079167,
+      "star_bpc": 8.2762118040207,
+      "calibrated_gain_over_star_bpc": 0.20957387594153407
+    },
+    {
+      "fit_prefix": 18269264,
+      "scored_records": 1160030,
+      "supported_fraction": 0.8791410566968095,
+      "candidate_bpc": 8.203148168311724,
+      "star_bpc": 8.419838828752594,
+      "calibrated_gain_over_star_bpc": 0.2166906604408692
+    }
+  ]
+}
