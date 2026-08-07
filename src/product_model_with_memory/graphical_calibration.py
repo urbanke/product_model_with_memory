@@ -3634,6 +3634,8 @@ def check_grouped_feasibility_lp(
     problem: SparseGroupedProblem,
     *,
     max_variables: int = 2_000_000,
+    time_limit: float | None = None,
+    progress: bool = False,
 ) -> GroupedFeasibilityResult:
     """Check grouped-margin feasibility by a small-reference linear program.
 
@@ -3650,46 +3652,69 @@ def check_grouped_feasibility_lp(
             f"feasibility LP has {variables} variables; limit is "
             f"{max_variables}"
         )
-    row = []
-    column = []
-    value = []
-    rhs = []
+    index_dtype = np.int32 if variables <= np.iinfo(np.int32).max else np.int64
+    variable_index = np.arange(variables, dtype=index_dtype)
+    row_parts = [
+        np.repeat(np.arange(edges, dtype=index_dtype), v),
+        edges + np.tile(np.arange(v, dtype=index_dtype), edges),
+    ]
+    column_parts = [variable_index, variable_index]
+    next_row = edges + v
 
-    def add_constraint(columns: np.ndarray, target: float) -> None:
-        constraint = len(rhs)
-        row.extend([constraint] * len(columns))
-        column.extend(columns.tolist())
-        value.extend([1.0] * len(columns))
-        rhs.append(float(target))
+    def append_grouped_constraints(
+        active_y: np.ndarray,
+        active_context: np.ndarray,
+        edge_context: np.ndarray,
+    ) -> None:
+        nonlocal next_row
+        order = np.argsort(edge_context, kind="stable")
+        ptr = np.r_[0, np.cumsum(np.bincount(
+            edge_context, minlength=v
+        ), dtype=np.int64)]
+        local_rows = []
+        local_columns = []
+        for offset, (y, context) in enumerate(zip(
+            active_y, active_context
+        )):
+            selected = order[ptr[context]:ptr[context + 1]]
+            if len(selected):
+                local_rows.append(np.full(
+                    len(selected), next_row + offset, dtype=index_dtype
+                ))
+                local_columns.append(np.asarray(
+                    selected * v + y, dtype=index_dtype
+                ))
+        if local_rows:
+            row_parts.append(np.concatenate(local_rows))
+            column_parts.append(np.concatenate(local_columns))
+        next_row += len(active_y)
 
-    # Fixed AB edge masses.
-    for edge, target in enumerate(problem.edge_probability):
-        add_constraint(edge * v + np.arange(v), target)
-    # Global target marginal.
-    for y, target in enumerate(problem.target_y):
-        add_constraint(np.arange(edges) * v + y, target)
-    # Explicit grouped YA and YB cells.  The inactive aggregate in each
-    # context row follows from its fixed AB marginal minus its active cells.
-    for y, a, target in zip(
-        problem.active_ya_y, problem.active_ya_a, problem.target_ya
-    ):
-        selected = np.flatnonzero(problem.edge_a == a)
-        add_constraint(selected * v + y, target)
-    for y, b, target in zip(
-        problem.active_yb_y, problem.active_yb_b, problem.target_yb
-    ):
-        selected = np.flatnonzero(problem.edge_b == b)
-        add_constraint(selected * v + y, target)
-
+    append_grouped_constraints(
+        problem.active_ya_y, problem.active_ya_a, problem.edge_a
+    )
+    append_grouped_constraints(
+        problem.active_yb_y, problem.active_yb_b, problem.edge_b
+    )
+    rows = np.concatenate(row_parts)
+    columns = np.concatenate(column_parts)
     matrix = coo_matrix(
-        (value, (row, column)), shape=(len(rhs), variables)
+        (np.ones(len(rows), dtype=np.float64), (rows, columns)),
+        shape=(next_row, variables),
     ).tocsr()
+    rhs = np.concatenate([
+        problem.edge_probability, problem.target_y,
+        problem.target_ya, problem.target_yb,
+    ])
+    options = {"disp": progress}
+    if time_limit is not None:
+        options["time_limit"] = float(time_limit)
     result = linprog(
         np.zeros(variables),
         A_eq=matrix,
-        b_eq=np.asarray(rhs),
+        b_eq=rhs,
         bounds=(0.0, None),
         method="highs",
+        options=options,
     )
     residual = (
         float(np.max(np.abs(matrix @ result.x - rhs)))
