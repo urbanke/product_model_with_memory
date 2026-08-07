@@ -148,6 +148,13 @@ def main() -> None:
         help="include the exact-check scheduler trajectory in each result row",
     )
     parser.add_argument(
+        "--progress-interval", type=int, default=0,
+        help=(
+            "print a live certificate record every this many stochastic "
+            "steps; zero disables live progress"
+        ),
+    )
+    parser.add_argument(
         "--save-fallback-candidates", action="store_true",
         help="persist the post-stochastic state before each exact fallback",
     )
@@ -169,6 +176,8 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.progress_interval < 0:
+        parser.error("--progress-interval must be nonnegative")
     snapshot_thresholds = (
         [] if not args.snapshot_certificates else sorted(
             {float(value) for value in args.snapshot_certificates.split(",")},
@@ -316,6 +325,16 @@ def main() -> None:
             )
 
         def snapshot_callback(step, certificate_value, sb, s1, s2):
+            if (
+                args.progress_interval > 0
+                and step % args.progress_interval == 0
+            ):
+                print(json.dumps({
+                    "checkpoint": checkpoint,
+                    "stochastic_step": step,
+                    "certificate": certificate_value,
+                    "elapsed_seconds": time.perf_counter() - started,
+                }), flush=True)
             for threshold in snapshot_thresholds:
                 if threshold in saved_thresholds or certificate_value > threshold:
                     continue
@@ -354,7 +373,9 @@ def main() -> None:
             sampled_ab_major_graph=sampled_graph,
             lazy_block_cache=args.cache,
             exact_record_callback=(
-                snapshot_callback if snapshot_thresholds else None
+                snapshot_callback
+                if snapshot_thresholds or args.progress_interval > 0
+                else None
             ),
         )
         stochastic_seconds = time.perf_counter() - started
