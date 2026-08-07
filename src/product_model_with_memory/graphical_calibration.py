@@ -546,6 +546,7 @@ class SparseStochasticResult:
     best_exact_objective: float
     best_exact_certificate: float
     trace: tuple[dict[str, float | int], ...]
+    stop_reason: str = "safety_limit"
     exact_seconds: float = 0.0
     sampled_gradient_seconds: float = 0.0
     optimizer_seconds: float = 0.0
@@ -2703,6 +2704,7 @@ def stochastic_sparse_dual_approach(
     scheduler_bad_records = 0
     scheduler_exhausted = False
     adam_step = 0
+    stop_reason = "safety_limit"
 
     def exact_record(step: int) -> bool:
         nonlocal best, best_objective, best_certificate, exact_evaluations
@@ -2711,6 +2713,7 @@ def stochastic_sparse_dual_approach(
         nonlocal scheduler_best, scheduler_bad_records
         nonlocal scheduler_exhausted
         nonlocal adam_step
+        nonlocal stop_reason
         started = perf_counter()
         evaluation = sparse_factorized_dual_evaluation(
             problem, parameters[:first], parameters[first:second],
@@ -2767,6 +2770,8 @@ def stochastic_sparse_dual_approach(
                 "rejected_nonfinite": True,
                 **diagnostic,
             })
+            if scheduler_exhausted:
+                stop_reason = "nonfinite"
             return scheduler_exhausted
         if certificate < best_certificate:
             best_certificate = certificate
@@ -2823,13 +2828,16 @@ def stochastic_sparse_dual_approach(
             "scheduler_exhausted": scheduler_exhausted,
             "rejected_nonfinite": False,
         })
-        return (
-            scheduler_exhausted
-            or (
-                certificate_tolerance is not None
-                and certificate <= certificate_tolerance
-            )
-        )
+        if (
+            certificate_tolerance is not None
+            and certificate <= certificate_tolerance
+        ):
+            stop_reason = "tolerance"
+            return True
+        if scheduler_exhausted:
+            stop_reason = "plateau"
+            return True
+        return False
 
     reached_certificate = exact_record(0)
     replica_executor = (
@@ -3072,6 +3080,7 @@ def stochastic_sparse_dual_approach(
                 current_step_size * plateau_factor,
             )
             if current_step_size <= minimum_learning_rate:
+                stop_reason = "nonfinite"
                 break
             continue
         optimizer_started = perf_counter()
@@ -3100,6 +3109,7 @@ def stochastic_sparse_dual_approach(
                 current_step_size * plateau_factor,
             )
             if current_step_size <= minimum_learning_rate:
+                stop_reason = "nonfinite"
                 break
             continue
         if optimizer != "adam_plateau":
@@ -3155,6 +3165,7 @@ def stochastic_sparse_dual_approach(
         best_exact_objective=best_objective,
         best_exact_certificate=best_certificate,
         trace=tuple(trace),
+        stop_reason=stop_reason,
         exact_seconds=exact_seconds,
         sampled_gradient_seconds=sampled_gradient_seconds,
         optimizer_seconds=optimizer_seconds,

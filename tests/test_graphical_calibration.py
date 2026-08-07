@@ -1477,6 +1477,7 @@ def test_adam_plateau_stops_when_minimum_rate_is_exhausted():
     )
     assert result.steps < 100
     assert result.trace[-1]["scheduler_exhausted"]
+    assert result.stop_reason == "plateau"
 
 
 def test_native_sparse_margins_match_numpy_reference(monkeypatch):

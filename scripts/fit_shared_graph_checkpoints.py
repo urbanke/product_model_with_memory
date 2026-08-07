@@ -31,7 +31,14 @@ def main() -> None:
     parser.add_argument("--problems", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=12)
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument(
+        "--max-stochastic-steps", "--steps", dest="steps", type=int,
+        default=20_000,
+        help=(
+            "safety limit; normal termination is controlled adaptively by "
+            "the exact certificate and plateau scheduler"
+        ),
+    )
     parser.add_argument("--tolerance", type=float, default=1e-2)
     parser.add_argument("--exact-interval", type=int, default=50)
     parser.add_argument("--blocks", type=int, default=128)
@@ -152,6 +159,7 @@ def main() -> None:
                 result.grouped_residual_yb_l1,
             ),
             "steps": stochastic.steps,
+            "stochastic_stop_reason": stochastic.stop_reason,
             "sampled_topology_cache_bytes": stochastic.intersection_plan_bytes,
             "reference_cache_bytes": stochastic.reference_cache_bytes,
         }
