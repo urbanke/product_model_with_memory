@@ -474,6 +474,54 @@ def _layered_log_sparse_tables(
     return log_q0, tables
 
 
+def _layered_log_sparse_conditionals(
+    builder: _LayeredPredictiveBuilder,
+    lag_counts: list[SparseCountRows],
+) -> list[dict[str, np.ndarray]]:
+    """Sparse conditional rows without also evaluating the unigram.
+
+    This is the split-construction counterpart of
+    :func:`_layered_log_sparse_tables`: a separately persisted unigram can be
+    shared by several lag estimators, while each lag family is evaluated
+    exactly once.  Family provisioning and row normalization are otherwise
+    identical to the monolithic path.
+    """
+
+    v = builder.V
+    if any(table.vocabulary_size != v for table in lag_counts):
+        raise ValueError("all sparse counts must use the builder vocabulary")
+    families: dict[tuple, set[int]] = {}
+    for table in lag_counts:
+        for row in np.flatnonzero(np.diff(table.ptr)):
+            values = table.count[table.ptr[row]:table.ptr[row + 1]]
+            base = tuple(sorted(int(value) for value in values))
+            cs = set(base) if len(base) >= v else set(base) | {0}
+            families.setdefault(base, set()).update(cs)
+    builder._ensure_families({
+        base: tuple(sorted(cs)) for base, cs in families.items()
+    })
+
+    tables = []
+    for counts in lag_counts:
+        unseen = np.full(v, -math.log2(v), dtype=np.float64)
+        values = np.empty(len(counts.idx), dtype=np.float64)
+        for row in np.flatnonzero(np.diff(counts.ptr)):
+            lo, hi = counts.ptr[row], counts.ptr[row + 1]
+            ids, logp, log_unseen = builder.row_log_sparse_entries(
+                counts.idx[lo:hi], counts.count[lo:hi]
+            )
+            if not np.array_equal(ids, counts.idx[lo:hi]):
+                raise RuntimeError("sparse layered row changed symbol order")
+            values[lo:hi] = logp
+            unseen[row] = log_unseen
+        tables.append({
+            "ptr": counts.ptr.copy(), "idx": counts.idx.copy(),
+            "val": values, "unseen": unseen,
+            "rho": np.where(np.isfinite(unseen), unseen, 0.0),
+        })
+    return tables
+
+
 def _gather_entries(table, states):
     """All support entries of the given per-step states, flattened:
     (step index, symbol, value, unseen value of that step's row)."""

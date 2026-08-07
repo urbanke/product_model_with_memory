@@ -31,8 +31,8 @@ def test_work_profile_uses_incremental_C_G_and_interval_E():
 
 def test_initial_worker_prior_is_concave_and_saturates_after_four():
     speed = [worker_speedup(p) for p in range(1, 9)]
-    assert speed[:4] == [1.0, 1.9, 2.25, 2.4]
-    assert speed[4:] == [2.4] * 4
+    assert speed[:4] == [1.0, 1.5, 1.62, 1.68]
+    assert speed[4:] == [1.68] * 4
     assert worker_modes(12) == (1, 2, 3, 4)
 
 
@@ -70,7 +70,13 @@ def test_checkpoint_tasks_encode_the_actual_dependency_graph():
         stochastic_steps=20, replicas=4, blocks=8, exact_interval=5,
     )
     tasks = {task.task_id: task for task in checkpoint_tasks(profile)}
-    assert tasks["C1"].dependencies == ("C0",)
+    assert tasks["S"].dependencies == ()
+    assert tasks["D1"].dependencies == ("S",)
+    assert tasks["U1"].dependencies == ("D1", "U0")
+    assert tasks["M1"].dependencies == ("U1",)
+    assert tasks["A1"].dependencies == ("M1",)
+    assert tasks["B1"].dependencies == ("M1",)
+    assert tasks["C1"].dependencies == ("A1", "B1")
     assert tasks["G1"].dependencies == ("C1", "G0")
     assert tasks["F1"].dependencies == ("G1", "F0")
     assert tasks["E1"].dependencies == ("F1", "C2")

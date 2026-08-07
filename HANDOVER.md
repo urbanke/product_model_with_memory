@@ -5044,3 +5044,40 @@ projected checkpoint, completed C, G, relaxed F, and interval E throughout.
 The focused suite has 49 passing tests, including an explicit check that raw
 incompatible pair targets are preserved.  Do not restore projection-tolerance
 workarounds to this sparse relaxed path.
+# Split construction scheduler (7 August 2026, late evening)
+
+The former monolithic construction task has been decomposed without changing
+the estimator or its output.  The new dependency graph is
+
+``S -> D_k -> U_k -> M_k -> {A_k,B_k} -> C_k``.
+
+`S` reduces the corpus once and persists a read-only `.npy` token stream.
+Every `D_k` independently counts its disjoint checkpoint interval.  The only
+causal construction chain is the inexpensive sorted merge
+`U_k = U_{k-1} + D_k`.  `M_k` estimates the shared unigram exactly once;
+`A_k` and `B_k` independently estimate YA and YB; `C_k` only assembles the
+relaxed calibration problem.  Count snapshots and estimator components are
+separate mmap-friendly `.npy` files, so each process maps only its inputs and
+process exit releases its private mappings.
+
+The split construction was compared with the raw-relaxed monolithic path on a
+deterministic V32 checkpoint.  All 27 shared state fields were bit-for-bit
+identical.  Both checkpoints' seven cumulative count arrays were also exactly
+identical between incremental monolithic counting and independent deltas plus
+prefix merging.  A complete two-checkpoint S/D/U/M/A/B/C/G/F/E smoke run
+succeeded, and the focused scheduler/layered tests pass.
+
+A construction-only text8 V256, N=2,000,000, C=16 trial with a 13-worker
+budget completed the estimator/assembly portion in 119.9 seconds.  It averaged
+9.21 scheduler-assigned workers, reached all 13, and Activity Monitor showed a
+sustained peak near 77% user CPU (versus the former approximately 30% barrier).
+All 16 independent deltas finished together in roughly 0.25 seconds; prefix
+merges took about 0.1--0.2 seconds each.  The main remaining loss was a tail
+YB task launched with one worker that could not grow after other jobs ended.
+
+The portable intra-task speed prior is now deliberately conservative:
+`(1, 1.5, 1.62, 1.68)` for one through four workers.  Live allocation is
+breadth-first: one worker per ready task, then second workers, then third and
+fourth workers only if capacity remains.  Existing tasks are moldable rather
+than malleable; resizing a running tail task remains a possible later
+improvement.

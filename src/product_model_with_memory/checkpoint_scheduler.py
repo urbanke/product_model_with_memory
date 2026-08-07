@@ -136,10 +136,15 @@ def _publish_completion(job: CheckpointJob, record: dict) -> None:
 def command_with_workers(job: CheckpointJob, workers: int) -> tuple[str, ...]:
     """Set the phase's worker option without changing its other arguments."""
 
-    option = "--jobs" if job.job_type == "C" else "--workers"
-    if job.job_type not in {"C", "F"}:
+    option = "--jobs" if job.job_type in {"C", "M", "A", "B"} else "--workers"
+    if job.job_type not in {"C", "M", "A", "B", "F"}:
         return job.command
     command = list(job.command)
+    # C meant the parallel monolithic constructor in version-1 schedules;
+    # it is the one-worker assembler in split schedules.  Retain resumability
+    # of old schedules without inventing an option for the new assembler.
+    if job.job_type == "C" and option not in command:
+        return job.command
     try:
         position = command.index(option)
     except ValueError as error:
@@ -261,9 +266,28 @@ def run_planned_schedule(
             job.job_type == "E", priorities[job.job_id], job.job_id,
         ))
         launched_now = False
+        assignments: dict[str, int] = {}
+        if worker_caps is not None:
+            # Breadth before depth: give every ready independent task one
+            # worker, then distribute second workers, and only use third or
+            # fourth workers when capacity remains.  This matches the weak
+            # measured scaling within one memory-heavy task while retaining
+            # full utilization near the tail of the DAG.
+            selected = ready[:available]
+            assignments = {job.job_id: 1 for job in selected}
+            remaining = available - len(selected)
+            level = 2
+            while remaining and any(
+                worker_caps[job.job_id] >= level for job in selected
+            ):
+                for job in selected:
+                    if remaining and worker_caps[job.job_id] >= level:
+                        assignments[job.job_id] += 1
+                        remaining -= 1
+                level += 1
         for job in ready:
             workers = (
-                min(worker_caps[job.job_id], available)
+                assignments.get(job.job_id, 0)
                 if worker_caps is not None else planned_workers[job.job_id]
             )
             if workers < 1 or workers > available:

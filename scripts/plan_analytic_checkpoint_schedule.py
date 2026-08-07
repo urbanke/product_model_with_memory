@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan C/G/F/E checkpoint work without machine timing measurements."""
+"""Plan U/M/A/B/C/G/F/E work without machine timing measurements."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--blocks", type=int, default=16)
     parser.add_argument("--exact-interval", type=int, default=5)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--construction-only", action="store_true")
     args = parser.parse_args()
 
     ids, metadata = load_stream(args.ids)
@@ -59,6 +60,8 @@ def main() -> None:
         construction_maximum_workers=args.construction_maximum_workers,
         fitting_maximum_workers=args.fitting_maximum_workers,
     )
+    if args.construction_only:
+        tasks = tuple(task for task in tasks if task.task_id[0] in "SDUMABC")
     plan = plan_moldable_tasks(tasks, args.maximum_workers)
     payload = {
         "version": 1,
@@ -70,7 +73,7 @@ def main() -> None:
         "vocabulary_size": vocabulary_size,
         "capped_positions": capped,
         "maximum_workers": args.maximum_workers,
-        "worker_speedup_prior": {"1": 1.0, "2": 1.9, "3": 2.25, "4": 2.4},
+        "worker_speedup_prior": {"1": 1.0, "2": 1.5, "3": 1.62, "4": 1.68},
         "profile": [asdict(row) for row in profile],
         "tasks": [asdict(task) for task in tasks],
         "plan": [asdict(row) for row in plan],

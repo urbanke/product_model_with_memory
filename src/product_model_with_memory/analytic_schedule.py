@@ -43,15 +43,40 @@ def checkpoint_tasks(
     construction_maximum_workers: int = 4,
     fitting_maximum_workers: int = 4,
 ) -> tuple[MoldableTask, ...]:
-    """Translate checkpoint work into the actual C/G/F/E dependency graph."""
+    """Translate work into the split U/M/A/B/C/G/F/E dependency graph."""
 
     tasks: list[MoldableTask] = []
+    tasks.append(MoldableTask(
+        "S", max(float(profile[-1].prefix), 1.0), (), 1
+    ))
     for row in profile:
         k = row.checkpoint
+        # U is the only causal construction chain.  M is the shared unigram;
+        # A and B independently estimate the two conditional pair laws; C is
+        # deliberately a small assembly task.  The relative split is a
+        # portable work prior, not a wall-clock calibration.
+        pair_work = max(row.expected_pairs, 1.0)
         tasks.append(MoldableTask(
-            f"C{k}", max(row.construction, 1.0),
-            () if k == 0 else (f"C{k - 1}",),
+            f"D{k}", max(row.construction, 1.0), ("S",), 1,
+        ))
+        u_dependencies = [f"D{k}"]
+        if k:
+            u_dependencies.append(f"U{k - 1}")
+        tasks.append(MoldableTask(
+            f"U{k}", pair_work, tuple(u_dependencies), 1,
+        ))
+        tasks.append(MoldableTask(
+            f"M{k}", max(pair_work ** 0.5, 1.0), (f"U{k}",),
             construction_maximum_workers,
+        ))
+        tasks.append(MoldableTask(
+            f"A{k}", pair_work, (f"M{k}",), construction_maximum_workers,
+        ))
+        tasks.append(MoldableTask(
+            f"B{k}", pair_work, (f"M{k}",), construction_maximum_workers,
+        ))
+        tasks.append(MoldableTask(
+            f"C{k}", pair_work, (f"A{k}", f"B{k}"), 1,
         ))
         graph_dependencies = [f"C{k}"]
         if k:
@@ -84,7 +109,7 @@ def worker_speedup(workers: int) -> float:
 
     if workers < 1:
         raise ValueError("workers must be positive")
-    return (1.0, 1.9, 2.25, 2.4)[min(workers, 4) - 1]
+    return (1.0, 1.5, 1.62, 1.68)[min(workers, 4) - 1]
 
 
 def worker_modes(maximum_workers: int) -> tuple[int, ...]:
