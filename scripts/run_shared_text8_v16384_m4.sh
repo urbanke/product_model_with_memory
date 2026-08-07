@@ -48,7 +48,7 @@ if [ ! -f "$FITTED/summary.json" ]; then
   "$PY" -u scripts/fit_shared_graph_checkpoints.py \
     --store "$STORE" --problems "$PROBLEMS" --out "$FITTED" \
     --workers 12 --max-stochastic-steps 20000 --tolerance 1e-2 \
-    --exact-interval 50 --blocks 128 --cache 16 --stop 32
+    --exact-interval 5 --blocks 128 --cache 16 --stop 32
 else
   echo "reusing $FITTED/summary.json"
 fi

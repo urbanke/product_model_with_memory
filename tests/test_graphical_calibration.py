@@ -868,6 +868,27 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
          explicit_block.active_yb, explicit_block.log_normalizer),
     ):
         np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-15)
+    selected_edges = np.asarray([2, 5, 7, 7, 15], dtype=np.int32)
+    selected_probability = np.asarray([1, 2, 3, 4, 5], dtype=float)
+    indexed_problem = sparse_problem_with_edge_distribution(
+        problem, selected_edges, selected_probability
+    )
+    indexed_plan = build_sparse_intersection_plan(indexed_problem)
+    explicit_indexed = sparse_factorized_margins(
+        indexed_problem, indexed_plan, log_base, full_c1, full_c2
+    )
+    ab_indexed = sparse_factorized_margins_ab_major(
+        indexed_problem, ab_graph, layers - 1, 0,
+        log_base, full_c1, full_c2, workers=4,
+        edge_indices=selected_edges,
+    )
+    for actual, expected in zip(
+        (ab_indexed.target_y, ab_indexed.active_ya,
+         ab_indexed.active_yb, ab_indexed.log_normalizer),
+        (explicit_indexed.target_y, explicit_indexed.active_ya,
+         explicit_indexed.active_yb, explicit_indexed.log_normalizer),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-15)
     dual_explicit = sparse_factorized_dual_evaluation(
         problem, log_base, full_c1, full_c2,
         intersection_plan=plan, compute_certificate=True,
@@ -913,10 +934,29 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
         exact_layered_checkpoint=layers - 1,
         sampled_ab_major_graph=ab_graph,
         lazy_block_cache=1,
+        fused_ab_batch=True,
     )
     assert stochastic_ab.steps == 2
     assert stochastic_ab.intersection_plan_bytes == 0
     assert np.isfinite(stochastic_ab.best_exact_certificate)
+    stochastic_ab_legacy = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=2, batch_size=1, sampling="blocks", edge_blocks=4,
+        replicas=2, stochastic_workers=2, variance_reduction=True,
+        exact_interval=1, exact_margin_workers=2,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+        sampled_ab_major_graph=ab_graph,
+        lazy_block_cache=4, fused_ab_batch=False,
+    )
+    for actual, expected in zip(
+        (stochastic_ab.log_base_y, stochastic_ab.correction_ya,
+         stochastic_ab.correction_yb),
+        (stochastic_ab_legacy.log_base_y,
+         stochastic_ab_legacy.correction_ya,
+         stochastic_ab_legacy.correction_yb),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-13)
     fitted_explicit = sparse_grouped_ipf(
         problem, solver="lbfgs", evaluator="factorized",
         tolerance=1e-9, max_iterations=2_000,

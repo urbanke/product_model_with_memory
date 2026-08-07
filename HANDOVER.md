@@ -4762,3 +4762,46 @@ causal scoring, honest accounting, measured complexity, and optimization
 targets.  `paper/complexity.tex` was deliberately preserved because it is an
 older broader note about the layered-mixture machinery rather than this
 current three-pair pipeline.
+
+### 2026-08-07 --- Shared-fit regression audit and SVRG refresh cost
+
+The previously fast fixed-batch stochastic implementation was recovered and
+matched against the shared-graph implementation at the same V1024 final
+checkpoint.  The old native path took 8.89 s and the shared AB-major path
+9.71 s for 250 updates.  The apparent loss of parallelism at V4096 is
+therefore not a lost algorithm: as the support grows, native triangle
+traversal and memory traffic dominate.  On V4096 checkpoint 14, 400 updates
+took 22.38, 19.79, and 18.24 s with 4, 8, and 12 workers respectively.
+Preparing exponential factors once per update reduced the 12-worker time to
+16.68 s.  Fixed 12 replicas remain independent of the worker count, and each
+worker evaluates and reduces its assigned replicas locally.
+
+The V4096/C32 legacy warm-start audit completed checkpoints 15--31 without a
+fallback.  It used 5,750 updates, 669.97 stochastic seconds, 732.56 total
+seconds, and peaked at roughly 11.6 GiB RSS.  Per-update time rose from 54 ms
+at checkpoint 15 to 251 ms at checkpoint 31; it correlates strongly with
+support/reference size and triangle count.  The final checkpoint has
+3,692,490 active parameters, so one dense gradient is 28.17 MiB and twelve
+unreduced replica gradients would already be about .33 GiB per update.
+
+Phase instrumentation was added to the stochastic result and shared fitting
+driver.  A controlled checkpoint-31 experiment, always restarting from the
+same checkpoint-30 state, found the following SVRG reference-refresh results:
+`interval 150: 450 updates, 89.45 s`; `100: 500, 97.61 s`; `50: 150,
+34.87 s`; `25: 125, 30.30 s`; `10: 90, 27.13 s`; `5: 60, 23.74 s`; and
+`2: 48, 30.35 s`.  Thus stale references cost far more updates, while an
+almost-every-step refresh spends too much time in exact evaluation.  The
+same interval-5 setting reduced checkpoint 15 from about 27.0 s/500 updates
+at interval 50 to 9.55 s/115 updates.  The shared fitting scripts now default
+to interval 5, while retaining an explicit override.  This is an epoch
+length, not a maximum-iteration cap; convergence still stops on the exact
+certificate and retains exact fallback.
+
+An experimental indexed AB-edge evaluator and fused fixed-batch traversal
+were also tested.  Fusing the current and reference traversals, and then a
+current-only variant with cached references, were both slower than the
+worker-local legacy route.  The fused route remains opt-in for experiments;
+production defaults to the proven worker-local route.  The useful parts are
+the indexed native evaluator, O(1)-range context lookup for numerical repair,
+and phase timings.  At checkpoint 31 the central reduction was only about
+3--4% of elapsed time; replica evaluation/native traversal is the real target.

@@ -43,6 +43,10 @@ def main() -> None:
     parser.add_argument("--cache", type=int, default=8)
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--replicas", type=int, default=12)
+    parser.add_argument(
+        "--fused-ab-batch", action="store_true",
+        help="use experimental indexed fusion of the fixed replica batch",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exact-interval", type=int, default=50)
     parser.add_argument("--tolerance", type=float)
@@ -134,6 +138,7 @@ def main() -> None:
             exact_layered_graph=graph if layered else None,
             exact_layered_checkpoint=args.checkpoint if layered else None,
             sampled_ab_major_graph=ab_graph if direct_ab else None,
+            fused_ab_batch=args.fused_ab_batch,
             lazy_block_cache=args.cache,
         )
         rows.append({
@@ -144,6 +149,10 @@ def main() -> None:
             "intersection_plan_bytes": result.intersection_plan_bytes,
             "reference_cache_bytes": result.reference_cache_bytes,
             "reference_cache_seconds": result.reference_cache_seconds,
+            "sampled_phase_timing": result.sampled_phase_timing,
+            "sampled_gradient_seconds": result.sampled_gradient_seconds,
+            "optimizer_seconds": result.optimizer_seconds,
+            "exact_seconds": result.exact_seconds,
         })
         print(json.dumps(rows[-1]), flush=True)
     print(json.dumps({"rows": rows}, indent=2))

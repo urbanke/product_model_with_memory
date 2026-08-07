@@ -24,7 +24,7 @@ import json
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 from threading import Lock
@@ -553,6 +553,7 @@ class SparseStochasticResult:
     reference_cache_seconds: float = 0.0
     intersection_plan_bytes: int = 0
     reference_cache_bytes: int = 0
+    sampled_phase_timing: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1252,14 +1253,23 @@ def sparse_factorized_margins_ab_major(
     prepared_factors: tuple[
         np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
     ] | None = None,
+    edge_indices: np.ndarray | None = None,
+    context_rows: tuple[
+        tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]
+    ] | None = None,
+    phase_timing: dict[str, float] | None = None,
 ) -> SparseFactorizedMargins:
-    """Evaluate one contiguous AB-edge range from the shared AB-major graph."""
+    """Evaluate a contiguous or indexed AB batch from the shared graph."""
 
     if checkpoint < 0 or edge_offset < 0 or workers < 1:
         raise ValueError("invalid AB-major checkpoint or edge offset")
     ne = len(problem.edge_probability)
-    if edge_offset + ne + 1 > len(graph.edge_ptr):
+    if edge_indices is None and edge_offset + ne + 1 > len(graph.edge_ptr):
         raise ValueError("AB-major edge range lies outside the graph")
+    if edge_indices is not None:
+        edge_indices = np.ascontiguousarray(edge_indices, dtype=np.int32)
+        if edge_indices.shape != (ne,):
+            raise ValueError("indexed AB batch must match its edge law")
     if prepared_factors is None:
         log_base = np.asarray(log_base_y, dtype=np.float64)
         normalized_log_base = log_base - logsumexp(log_base)
@@ -1278,8 +1288,7 @@ def sparse_factorized_margins_ab_major(
         max(1, max_parallel_scratch_bytes // max(1, scratch_per_worker)),
         max(1, ne),
     )
-    target_y, active_ya, active_yb, log_z, unstable = (
-        _graphical_margin_c.fused_margins_ab_major(
+    native_arguments = (
             np.ascontiguousarray(base), np.ascontiguousarray(r1),
             np.ascontiguousarray(r2),
             np.ascontiguousarray(problem.edge_a, dtype=np.int32),
@@ -1294,13 +1303,36 @@ def sparse_factorized_margins_ab_major(
             np.ascontiguousarray(graph.correction_yb, dtype=np.int32),
             np.ascontiguousarray(graph.birth, dtype=np.uint8),
             checkpoint, edge_offset, effective_workers,
-        )
     )
-    for edge in np.flatnonzero(unstable):
+    if edge_indices is not None:
+        native_arguments += (edge_indices,)
+    native_started = perf_counter()
+    target_y, active_ya, active_yb, log_z, unstable = (
+        _graphical_margin_c.fused_margins_ab_major(*native_arguments)
+    )
+    if phase_timing is not None:
+        phase_timing["ab_native_seconds"] = (
+            phase_timing.get("ab_native_seconds", 0.0)
+            + perf_counter() - native_started
+        )
+    if context_rows is None:
+        order1 = np.argsort(problem.active_ya_a, kind="stable")
+        order2 = np.argsort(problem.active_yb_b, kind="stable")
+        ptr1 = np.r_[0, np.cumsum(np.bincount(
+            problem.active_ya_a, minlength=problem.vocabulary_size
+        ), dtype=np.int64)]
+        ptr2 = np.r_[0, np.cumsum(np.bincount(
+            problem.active_yb_b, minlength=problem.vocabulary_size
+        ), dtype=np.int64)]
+    else:
+        (ptr1, order1), (ptr2, order2) = context_rows
+    unstable_edges = np.flatnonzero(unstable)
+    repair_started = perf_counter()
+    for edge in unstable_edges:
         a = problem.edge_a[edge]
         b = problem.edge_b[edge]
-        selected1 = np.flatnonzero(problem.active_ya_a == a)
-        selected2 = np.flatnonzero(problem.active_yb_b == b)
+        selected1 = order1[ptr1[a]:ptr1[a + 1]]
+        selected2 = order2[ptr2[b]:ptr2[b + 1]]
         score = normalized_log_base.copy()
         score[problem.active_ya_y[selected1]] += c1[selected1]
         score[problem.active_yb_y[selected2]] += c2[selected2]
@@ -1312,6 +1344,15 @@ def sparse_factorized_margins_ab_major(
         active_ya[selected1] += joint[problem.active_ya_y[selected1]]
         active_yb[selected2] += joint[problem.active_yb_y[selected2]]
         log_z[edge] = direct_log_z
+    if phase_timing is not None:
+        phase_timing["ab_repair_seconds"] = (
+            phase_timing.get("ab_repair_seconds", 0.0)
+            + perf_counter() - repair_started
+        )
+        phase_timing["ab_unstable_edges"] = (
+            phase_timing.get("ab_unstable_edges", 0.0)
+            + len(unstable_edges)
+        )
     if not all(np.all(np.isfinite(array)) for array in (
         target_y, active_ya, active_yb, log_z
     )):
@@ -2548,6 +2589,7 @@ def stochastic_sparse_dual_approach(
     exact_layered_checkpoint: int | None = None,
     lazy_block_cache: int = 16,
     sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
+    fused_ab_batch: bool = False,
     exact_record_callback: Callable[
         [int, float, np.ndarray, np.ndarray, np.ndarray], None
     ] | None = None,
@@ -2628,6 +2670,17 @@ def stochastic_sparse_dual_approach(
     rngs = [np.random.default_rng(seed + 1_000_003 * replica)
             for replica in range(replicas)]
     direct_ab_blocks = sampled_ab_major_graph is not None
+    ab_context_rows = None
+    if direct_ab_blocks:
+        ab_context_rows = tuple(
+            (
+                np.r_[0, np.cumsum(np.bincount(
+                    contexts, minlength=problem.vocabulary_size
+                ), dtype=np.int64)],
+                np.argsort(contexts, kind="stable"),
+            )
+            for contexts in (problem.active_ya_a, problem.active_yb_b)
+        )
     lazy_blocks = sampling == "blocks" and (
         exact_layered_graph is not None or direct_ab_blocks
     )
@@ -2658,6 +2711,8 @@ def stochastic_sparse_dual_approach(
     block_cache_lock = Lock()
     peak_cached_plan_bytes = 0
     block_cdf = np.empty(0)
+    direct_block_edges: list[np.ndarray] = []
+    direct_block_probabilities: list[np.ndarray] = []
     if sampling == "stratified":
         effective_strata = min(
             strata, len(problem.edge_probability), batch_size
@@ -2700,6 +2755,17 @@ def stochastic_sparse_dual_approach(
                 problem.edge_probability[lo:hi].sum()
                 for lo, hi in block_bounds
             ])
+            if direct_ab_blocks:
+                direct_block_edges = [
+                    np.arange(lo, hi, dtype=np.int32)
+                    for lo, hi in block_bounds
+                ]
+                direct_block_probabilities = [
+                    np.ascontiguousarray(
+                        problem.edge_probability[lo:hi] / block_masses[index]
+                    )
+                    for index, (lo, hi) in enumerate(block_bounds)
+                ]
         else:
             prepared_blocks = build_sparse_edge_blocks(
                 problem, full_plan, edge_blocks
@@ -2762,6 +2828,7 @@ def stochastic_sparse_dual_approach(
     sampled_gradient_seconds = 0.0
     optimizer_seconds = 0.0
     reference_cache_seconds = 0.0
+    ab_phase_timing: dict[str, float] = {}
     rejected_nonfinite_steps = 0
     trace: list[dict[str, float | int]] = []
     current_step_size = learning_rate
@@ -2945,7 +3012,7 @@ def stochastic_sparse_dual_approach(
     peak_lazy_reference_bytes = 0
 
     def reference_for_block(index: int) -> SparseReferenceMargins:
-        nonlocal peak_lazy_reference_bytes
+        nonlocal peak_lazy_reference_bytes, reference_cache_seconds
         if not lazy_blocks:
             return reference_block_margins[index]
         with lazy_reference_lock:
@@ -2955,6 +3022,7 @@ def stochastic_sparse_dual_approach(
                 return cached
         # As above, the numerical reference calculation is independent and
         # should run concurrently; only insertion/eviction is serialized.
+        reference_started = perf_counter()
         block = get_block(index)
         ya_position = np.flatnonzero(np.isin(
             problem.active_ya_a, np.unique(block.problem.edge_a)
@@ -2970,6 +3038,7 @@ def stochastic_sparse_dual_approach(
                 snapshot_parameters[first:second],
                 snapshot_parameters[second:],
                 prepared_factors=snapshot_ab_factors,
+                context_rows=ab_context_rows,
             ) if direct_ab_blocks else sparse_factorized_margins(
                 block.problem, block.intersection_plan,
                 snapshot_parameters[:first],
@@ -2988,6 +3057,7 @@ def stochastic_sparse_dual_approach(
                 lazy_reference_cache.move_to_end(index)
                 return cached
             reference = candidate
+            reference_cache_seconds += perf_counter() - reference_started
             lazy_reference_cache[index] = reference
             while len(lazy_reference_cache) > lazy_block_cache:
                 lazy_reference_cache.popitem(last=False)
@@ -3057,6 +3127,7 @@ def stochastic_sparse_dual_approach(
                     parameters[:first], parameters[first:second],
                     parameters[second:],
                     prepared_factors=current_ab_factors,
+                    context_rows=ab_context_rows,
                 ) if direct_ab_blocks else sparse_factorized_margins(
                     block.problem, block.intersection_plan,
                     parameters[:first], parameters[first:second],
@@ -3143,6 +3214,59 @@ def stochastic_sparse_dual_approach(
             local_edges += edges_used
         return local_gradient, local_edges
 
+    def sampled_gradient_fused_ab() -> tuple[np.ndarray, int]:
+        """Fuse the fixed replica batch into one indexed native traversal."""
+
+        chosen = [
+            int(np.searchsorted(
+                block_cdf, rngs[replica].random(), side="right"
+            ))
+            for replica in range(replicas)
+        ]
+        selected_edges = np.ascontiguousarray(np.concatenate([
+            direct_block_edges[index] for index in chosen
+        ]), dtype=np.int32)
+        selected_probability = np.ascontiguousarray(np.concatenate([
+            direct_block_probabilities[index] / replicas for index in chosen
+        ]))
+        sampled = SparseGroupedProblem(
+            vocabulary_size=problem.vocabulary_size,
+            edge_a=problem.edge_a[selected_edges],
+            edge_b=problem.edge_b[selected_edges],
+            edge_probability=selected_probability,
+            target_y=problem.target_y,
+            active_ya_y=problem.active_ya_y,
+            active_ya_a=problem.active_ya_a,
+            target_ya=problem.target_ya,
+            active_yb_y=problem.active_yb_y,
+            active_yb_b=problem.active_yb_b,
+            target_yb=problem.target_yb,
+        )
+        current_margins = sparse_factorized_margins_ab_major(
+            sampled, sampled_ab_major_graph, exact_layered_checkpoint, 0,
+            parameters[:first], parameters[first:second], parameters[second:],
+            workers=stochastic_workers,
+            prepared_factors=current_ab_factors,
+            edge_indices=selected_edges,
+            context_rows=ab_context_rows,
+            phase_timing=ab_phase_timing,
+        )
+        gradient = snapshot_gradient.copy()
+        gradient[:first] += current_margins.target_y
+        gradient[first:second] += current_margins.active_ya
+        gradient[second:] += current_margins.active_yb
+        inverse_replicas = 1.0 / replicas
+        for index in chosen:
+            reference = reference_for_block(index)
+            gradient[:first] -= inverse_replicas * reference.target_y
+            gradient[first + reference.ya_position] -= (
+                inverse_replicas * reference.active_ya
+            )
+            gradient[second + reference.yb_position] -= (
+                inverse_replicas * reference.active_yb
+            )
+        return gradient, 2 * len(selected_edges)
+
     sampled_edge_evaluations = 0
     completed_steps = 0
     for step in (range(1, steps + 1) if not reached_certificate else ()):
@@ -3154,17 +3278,38 @@ def stochastic_sparse_dual_approach(
             ) * (1.0 + np.cos(np.pi * progress))
         sampled_started = perf_counter()
         if direct_ab_blocks:
+            preparation_started = perf_counter()
             current_ab_factors = prepare_ab_factors(parameters)
-        gradients = (
-            map(sampled_gradient_group, replica_groups)
-            if replica_executor is None
-            else replica_executor.map(sampled_gradient_group, replica_groups)
-        )
-        gradient = np.zeros_like(parameters)
-        for contribution, edges_used in gradients:
-            gradient += contribution
+            ab_phase_timing["factor_prepare_seconds"] = (
+                ab_phase_timing.get("factor_prepare_seconds", 0.0)
+                + perf_counter() - preparation_started
+            )
+        if direct_ab_blocks and variance_reduction and fused_ab_batch:
+            gradient, edges_used = sampled_gradient_fused_ab()
             sampled_edge_evaluations += edges_used
-        gradient /= replicas
+        else:
+            evaluation_started = perf_counter()
+            gradients = list(
+                map(sampled_gradient_group, replica_groups)
+                if replica_executor is None
+                else replica_executor.map(
+                    sampled_gradient_group, replica_groups
+                )
+            )
+            ab_phase_timing["replica_evaluation_seconds"] = (
+                ab_phase_timing.get("replica_evaluation_seconds", 0.0)
+                + perf_counter() - evaluation_started
+            )
+            reduction_started = perf_counter()
+            gradient = np.zeros_like(parameters)
+            for contribution, edges_used in gradients:
+                gradient += contribution
+                sampled_edge_evaluations += edges_used
+            gradient /= replicas
+            ab_phase_timing["replica_reduction_seconds"] = (
+                ab_phase_timing.get("replica_reduction_seconds", 0.0)
+                + perf_counter() - reduction_started
+            )
         sampled_gradient_seconds += perf_counter() - sampled_started
         if not np.all(np.isfinite(gradient)):
             rejected_nonfinite_steps += 1
@@ -3269,6 +3414,7 @@ def stochastic_sparse_dual_approach(
         reference_cache_seconds=reference_cache_seconds,
         intersection_plan_bytes=intersection_plan_bytes,
         reference_cache_bytes=reference_cache_bytes,
+        sampled_phase_timing=dict(ab_phase_timing),
     )
 
 

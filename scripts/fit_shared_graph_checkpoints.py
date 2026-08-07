@@ -122,7 +122,13 @@ def main() -> None:
         ),
     )
     parser.add_argument("--tolerance", type=float, default=1e-2)
-    parser.add_argument("--exact-interval", type=int, default=50)
+    parser.add_argument(
+        "--exact-interval", type=int, default=5,
+        help=(
+            "SVRG reference-refresh and exact-certificate interval; shared-"
+            "graph timing audits favor 5 over the historical value 50"
+        ),
+    )
     parser.add_argument("--blocks", type=int, default=128)
     parser.add_argument("--cache", type=int, default=16)
     parser.add_argument(
@@ -374,6 +380,11 @@ def main() -> None:
             "stochastic_stop_reason": stochastic.stop_reason,
             "sampled_topology_cache_bytes": stochastic.intersection_plan_bytes,
             "reference_cache_bytes": stochastic.reference_cache_bytes,
+            "reference_cache_seconds": stochastic.reference_cache_seconds,
+            "sampled_gradient_seconds": stochastic.sampled_gradient_seconds,
+            "optimizer_seconds": stochastic.optimizer_seconds,
+            "exact_seconds": stochastic.exact_seconds,
+            "sampled_phase_timing": stochastic.sampled_phase_timing,
         }
         rows.append(row)
         print(json.dumps(row), flush=True)
