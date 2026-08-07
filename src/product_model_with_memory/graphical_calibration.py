@@ -2582,7 +2582,7 @@ def stochastic_sparse_dual_approach(
     minimum_learning_rate: float = 0.003,
     plateau_patience: int = 3,
     plateau_factor: float = 1.0 / 3.0,
-    plateau_relative_threshold: float = 1e-3,
+    plateau_relative_threshold: float = 1e-4,
     bb_min_step: float = 1e-7,
     bb_max_step: float = 1.0,
     exact_layered_graph: LayeredIntersectionGraph | None = None,
@@ -2912,8 +2912,15 @@ def stochastic_sparse_dual_approach(
             best = parameters.copy()
         learning_rate_reduced = False
         if optimizer == "adam_plateau":
-            if certificate < scheduler_best * (1.0 - plateau_relative_threshold):
-                scheduler_best = certificate
+            # ReduceLROnPlateau monitors the smooth quantity being optimized,
+            # not the nonsmooth maximum-L1 certificate used for termination.
+            # Individual margin residuals can temporarily trade off while the
+            # exact convex dual objective decreases steadily.
+            scheduler_value = float(evaluation.objective)
+            if scheduler_value < scheduler_best * (
+                1.0 - plateau_relative_threshold
+            ):
+                scheduler_best = scheduler_value
                 scheduler_bad_records = 0
             elif step > 0:
                 scheduler_bad_records += 1
@@ -2959,6 +2966,7 @@ def stochastic_sparse_dual_approach(
             "residual_ya_l1": float(evaluation.residual_ya_l1),
             "residual_yb_l1": float(evaluation.residual_yb_l1),
             "step_size": current_step_size,
+            "scheduler_value": float(evaluation.objective),
             "learning_rate_reduced": learning_rate_reduced,
             "scheduler_exhausted": scheduler_exhausted,
             "rejected_nonfinite": False,

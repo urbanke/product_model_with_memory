@@ -140,6 +140,10 @@ def main() -> None:
         "--minimum-learning-rate", type=float, default=3e-3,
     )
     parser.add_argument(
+        "--plateau-relative-threshold", type=float, default=1e-4,
+        help="relative exact-dual improvement counted by the plateau scheduler",
+    )
+    parser.add_argument(
         "--record-trace", action="store_true",
         help="include the exact-check scheduler trajectory in each result row",
     )
@@ -343,6 +347,7 @@ def main() -> None:
             optimizer="adam_plateau",
             learning_rate=args.learning_rate,
             minimum_learning_rate=args.minimum_learning_rate,
+            plateau_relative_threshold=args.plateau_relative_threshold,
             seed=args.seed + checkpoint,
             exact_layered_graph=exact_graph,
             exact_layered_checkpoint=checkpoint,
