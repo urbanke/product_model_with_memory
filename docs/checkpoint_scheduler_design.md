@@ -180,3 +180,10 @@ current four-worker cap for C/F and one-worker G/E modes, not an executor
 barrier.  Phase two will compare completion manifests with the analytic model
 and may update phase costs and speed curves online.  That measurement-based
 adaptation is intentionally not part of phase one.
+
+The first automatic end-to-end smoke test used three text8 checkpoints and
+eleven C/G/F/E jobs.  Against a matching fixed phased execution, every array
+in all three construction states and all three fitted states was bitwise
+identical.  Both interval score records were identical after removing elapsed
+time.  Thus the event-driven executor passes the same scheduling-order
+invariance criterion as the earlier hand-authored pipeline.

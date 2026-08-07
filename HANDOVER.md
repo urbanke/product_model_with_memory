@@ -5016,3 +5016,10 @@ plan contains 127 jobs, passes dependency/chain/capacity audits, and peaks at
 modes.  Next validate a small end-to-end automatic execution against the two
 bitwise-validated fixed orders.  Only after that should completion manifests
 be used to compare and update the analytic priors online.
+
+That automatic three-checkpoint execution has now passed its correctness
+gate: versus a matching fixed phased run, all construction and fitted arrays
+were bitwise identical and both score records were identical after excluding
+elapsed time.  Phase one is therefore operational.  Phase two may now audit
+analytic work against real completion manifests; do not alter the numerical
+pipeline while calibrating the scheduler model.
