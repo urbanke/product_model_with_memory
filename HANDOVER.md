@@ -4893,6 +4893,15 @@ triangles for derivative margins.  This preserves cache locality and removes
 the large cross/directional-cross reduction.  Checkpoint 0 is too small to
 measure scaling; use a later support for all worker-scaling conclusions.
 
+The proposed AB-major Hessian was implemented and measured before being
+discarded.  It matched the verified Hessian to `2.1e-14` relative error, but
+on the same final checkpoint one product took 1.036 s with one worker and
+0.277 s with twelve, versus 0.416 and 0.102 s for YA-major.  Random writes to
+both factor families outweighed the context locality.  Do not repeat a plain
+AB-major conversion.  A viable successor must preserve YA-contiguous access
+while reducing triangle reads, for example by tiling within YA-major rows or
+by compressing repeated factor-index patterns.
+
 The restored bounded relaxed-Newton protocol was also smoke-tested locally.
 At V1024 checkpoint 0, 40 products improved the independently evaluated
 relaxed objective from 2.74569 to 2.72961 in 0.048 s; 80 products improved it
