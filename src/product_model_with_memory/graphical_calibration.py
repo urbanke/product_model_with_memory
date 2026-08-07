@@ -2502,6 +2502,84 @@ def sparse_factorized_dual_hessian_product_layered_reference(
     return np.concatenate([dy, dm1, dm2])
 
 
+def sparse_factorized_dual_hessian_product_layered(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    direction: np.ndarray,
+    *,
+    workers: int = 1,
+) -> np.ndarray:
+    """Apply the layered Hessian with the native parallel traversal."""
+
+    if not (
+        _graphical_margin_c is not None
+        and hasattr(_graphical_margin_c, "fused_hessian_layered")
+    ):
+        return sparse_factorized_dual_hessian_product_layered_reference(
+            problem, graph, checkpoint, log_base_y, correction_ya,
+            correction_yb, direction,
+        )
+    v = problem.vocabulary_size
+    n1, n2 = len(problem.target_ya), len(problem.target_yb)
+    vector = np.asarray(direction, dtype=np.float64)
+    if vector.shape != (v + n1 + n2,):
+        raise ValueError("Hessian direction has the wrong shape")
+    d0, d1, d2 = vector[:v], vector[v:v + n1], vector[v + n1:]
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    log_base = log_base - logsumexp(log_base)
+    base = np.exp(log_base)
+    centered_d0 = d0 - float(base @ d0)
+    dbase = base * centered_d0
+    r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
+    r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    dr1, dr2 = (1.0 + r1) * d1, (1.0 + r2) * d2
+    dy, dm1, dm2, unstable = _graphical_margin_c.fused_hessian_layered(
+        np.ascontiguousarray(base), np.ascontiguousarray(dbase),
+        np.ascontiguousarray(r1), np.ascontiguousarray(dr1),
+        np.ascontiguousarray(r2), np.ascontiguousarray(dr2),
+        np.ascontiguousarray(problem.edge_a, dtype=np.int32),
+        np.ascontiguousarray(problem.edge_b, dtype=np.int32),
+        np.ascontiguousarray(problem.edge_probability, dtype=np.float64),
+        np.ascontiguousarray(problem.active_ya_y, dtype=np.int32),
+        np.ascontiguousarray(problem.active_ya_a, dtype=np.int32),
+        np.ascontiguousarray(problem.active_yb_y, dtype=np.int32),
+        np.ascontiguousarray(problem.active_yb_b, dtype=np.int32),
+        tuple(np.ascontiguousarray(x, dtype=np.int64) for x in graph.row_ptr),
+        tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.correction_yb),
+        tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.edge_ab),
+        checkpoint, workers,
+    )
+    y1, a1 = problem.active_ya_y, problem.active_ya_a
+    y2, b2 = problem.active_yb_y, problem.active_yb_b
+    order1 = np.argsort(a1, kind="stable")
+    order2 = np.argsort(b2, kind="stable")
+    ptr1 = np.r_[0, np.cumsum(np.bincount(a1, minlength=v), dtype=np.int64)]
+    ptr2 = np.r_[0, np.cumsum(np.bincount(b2, minlength=v), dtype=np.int64)]
+    for edge in np.flatnonzero(unstable):
+        a, b = problem.edge_a[edge], problem.edge_b[edge]
+        selected1 = order1[ptr1[a]:ptr1[a + 1]]
+        selected2 = order2[ptr2[b]:ptr2[b + 1]]
+        score = log_base.copy()
+        directional_score = centered_d0.copy()
+        score[y1[selected1]] += np.asarray(correction_ya)[selected1]
+        score[y2[selected2]] += np.asarray(correction_yb)[selected2]
+        directional_score[y1[selected1]] += d1[selected1]
+        directional_score[y2[selected2]] += d2[selected2]
+        probability = np.exp(score - logsumexp(score))
+        joint = problem.edge_probability[edge] * probability
+        djoint = joint * (
+            directional_score - float(probability @ directional_score)
+        )
+        dy += djoint
+        dm1[selected1] += djoint[y1[selected1]]
+        dm2[selected2] += djoint[y2[selected2]]
+    return np.concatenate([dy, dm1, dm2])
+
+
 def diagnose_sparse_factorized_normalizers(
     problem: SparseGroupedProblem,
     plan: SparseIntersectionPlan,
@@ -2802,9 +2880,10 @@ def sparse_grouped_newton_cg(
             )
             product += regularizer_diagonal * full_direction
         else:
-            product = sparse_factorized_dual_hessian_product_layered_reference(
+            product = sparse_factorized_dual_hessian_product_layered(
                 problem, layered_graph, layered_checkpoint,
                 full[:v], full[v:v + n1], full[v + n1:], full_direction,
+                workers=margin_workers,
             )
             product += regularizer_diagonal * full_direction
         return scale[free] * product[free]
@@ -2820,21 +2899,29 @@ def sparse_grouped_newton_cg(
         if value <= tolerance:
             raise _ConvergenceReached
 
-    try:
-        optimized = minimize(
-            objective_gradient,
-            np.zeros(np.count_nonzero(free), dtype=np.float64),
-            method="trust-ncg",
-            jac=True,
-            hessp=hessian_product,
-            callback=stop_at_convergence,
-            options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
-        )
-        iterations = int(optimized.nit)
-    except _ConvergenceReached:
-        iterations = accepted_iterations
-    except _HessianBudgetReached:
-        iterations = accepted_iterations
+    initial_reduced = np.zeros(np.count_nonzero(free), dtype=np.float64)
+    objective_gradient(initial_reduced)
+    initial_stopping_value = (
+        minimum_stationarity if relaxed else best_certificate
+    )
+    if initial_stopping_value <= tolerance:
+        iterations = 0
+    else:
+        try:
+            optimized = minimize(
+                objective_gradient,
+                initial_reduced,
+                method="trust-ncg",
+                jac=True,
+                hessp=hessian_product,
+                callback=stop_at_convergence,
+                options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
+            )
+            iterations = int(optimized.nit)
+        except _ConvergenceReached:
+            iterations = accepted_iterations
+        except _HessianBudgetReached:
+            iterations = accepted_iterations
     return SparseGroupedResult(
         best_parameters[:v],
         best_parameters[v:v + n1],

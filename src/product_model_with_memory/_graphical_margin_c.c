@@ -530,6 +530,152 @@ fail_layered:
 }
 
 typedef struct {
+    npy_intp row_lo,row_hi,n2,v;
+    int layers,phase;
+    const LayerView *view;
+    const double *b,*db,*q1,*dq1,*q2,*dq2,*me,*dme;
+    const int *ya_y;
+    double *cross,*dcross,*out1,*out2,*outy;
+} LayerHessianTask;
+
+static void *layer_hessian_worker(void *raw){
+    LayerHessianTask *t=(LayerHessianTask*)raw;
+    if(t->phase==0){
+        for(int d=0;d<t->layers;d++)for(npy_intp i=t->row_lo;i<t->row_hi;i++){
+            int y=t->ya_y[i];
+            double left=t->b[y]*t->q1[i];
+            double dleft=t->db[y]*t->q1[i]+t->b[y]*t->dq1[i];
+            for(npy_int64 p=t->view[d].ptr[i];p<t->view[d].ptr[i+1];p++){
+                int j=t->view[d].yb[p],e=t->view[d].ab[p];
+                t->cross[e]+=left*t->q2[j];
+                t->dcross[e]+=dleft*t->q2[j]+left*t->dq2[j];
+            }
+        }
+    }else{
+        for(int d=0;d<t->layers;d++)for(npy_intp i=t->row_lo;i<t->row_hi;i++){
+            int y=t->ya_y[i];
+            for(npy_int64 p=t->view[d].ptr[i];p<t->view[d].ptr[i+1];p++){
+                int j=t->view[d].yb[p],e=t->view[d].ab[p];
+                double common=t->b[y]*t->me[e];
+                double dcommon=t->db[y]*t->me[e]+t->b[y]*t->dme[e];
+                t->out1[i]+=dcommon*(1+t->q1[i])*t->q2[j]
+                    +common*t->dq1[i]*t->q2[j]
+                    +common*(1+t->q1[i])*t->dq2[j];
+                t->out2[j]+=dcommon*(1+t->q2[j])*t->q1[i]
+                    +common*t->dq2[j]*t->q1[i]
+                    +common*(1+t->q2[j])*t->dq1[i];
+                t->outy[y]+=dcommon*t->q1[i]*t->q2[j]
+                    +common*t->dq1[i]*t->q2[j]
+                    +common*t->q1[i]*t->dq2[j];
+            }
+        }
+    }
+    return NULL;
+}
+
+static PyObject *fused_hessian_layered(PyObject *self, PyObject *args){
+    PyArrayObject *base,*dbase,*r1,*dr1,*r2,*dr2,*edge_a,*edge_b,*edge_p;
+    PyArrayObject *ya_y,*ya_a,*yb_y,*yb_b;
+    PyObject *row_layers,*yb_layers,*ab_layers;
+    int checkpoint,workers=1;
+    if(!PyArg_ParseTuple(args,
+        "O!O!O!O!O!O!O!O!O!O!O!O!O!O!O!O!i|i",
+        &PyArray_Type,&base,&PyArray_Type,&dbase,
+        &PyArray_Type,&r1,&PyArray_Type,&dr1,
+        &PyArray_Type,&r2,&PyArray_Type,&dr2,
+        &PyArray_Type,&edge_a,&PyArray_Type,&edge_b,&PyArray_Type,&edge_p,
+        &PyArray_Type,&ya_y,&PyArray_Type,&ya_a,
+        &PyArray_Type,&yb_y,&PyArray_Type,&yb_b,
+        &PyTuple_Type,&row_layers,&PyTuple_Type,&yb_layers,
+        &PyTuple_Type,&ab_layers,&checkpoint,&workers))return NULL;
+    if(workers<1)workers=1;
+    npy_intp v=PyArray_SIZE(base),n1=PyArray_SIZE(r1),n2=PyArray_SIZE(r2);
+    npy_intp ne=PyArray_SIZE(edge_p),dims[1];
+    if(PyArray_SIZE(dbase)!=v||PyArray_SIZE(dr1)!=n1||PyArray_SIZE(dr2)!=n2||
+       PyArray_SIZE(edge_a)!=ne||PyArray_SIZE(edge_b)!=ne||
+       PyArray_SIZE(ya_y)!=n1||PyArray_SIZE(ya_a)!=n1||
+       PyArray_SIZE(yb_y)!=n2||PyArray_SIZE(yb_b)!=n2){
+        PyErr_SetString(PyExc_ValueError,"invalid layered Hessian inputs");return NULL;
+    }
+    Py_ssize_t layer_count=PyTuple_GET_SIZE(row_layers);
+    if(layer_count<1||PyTuple_GET_SIZE(yb_layers)!=layer_count||
+       PyTuple_GET_SIZE(ab_layers)!=layer_count||checkpoint<0||checkpoint>=layer_count){
+        PyErr_SetString(PyExc_ValueError,"invalid layered Hessian graph");return NULL;
+    }
+    dims[0]=v;PyArrayObject *oy=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n1;PyArrayObject *o1=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=n2;PyArrayObject *o2=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_DOUBLE,0);
+    dims[0]=ne;PyArrayObject *unstable=(PyArrayObject*)PyArray_ZEROS(1,dims,NPY_UINT8,0);
+    double *s1=calloc((size_t)v,sizeof(double)),*s2=calloc((size_t)v,sizeof(double));
+    double *ds1=calloc((size_t)v,sizeof(double)),*ds2=calloc((size_t)v,sizeof(double));
+    double *cross=calloc((size_t)ne,sizeof(double)),*dcross=calloc((size_t)ne,sizeof(double));
+    double *me=calloc((size_t)ne,sizeof(double)),*dme=calloc((size_t)ne,sizeof(double));
+    double *row=calloc((size_t)v,sizeof(double)),*col=calloc((size_t)v,sizeof(double));
+    double *drow=calloc((size_t)v,sizeof(double)),*dcol=calloc((size_t)v,sizeof(double));
+    LayerView *view=NULL;pthread_t *threads=NULL;LayerHessianTask *tasks=NULL;
+    double *local_cross=NULL,*local_dcross=NULL,*local_y=NULL,*local_2=NULL;
+    if(!oy||!o1||!o2||!unstable||!s1||!s2||!ds1||!ds2||!cross||!dcross||
+       !me||!dme||!row||!col||!drow||!dcol){PyErr_NoMemory();goto fail_hessian;}
+    double *b=PyArray_DATA(base),*db=PyArray_DATA(dbase),*q1=PyArray_DATA(r1),
+        *dq1=PyArray_DATA(dr1),*q2=PyArray_DATA(r2),*dq2=PyArray_DATA(dr2);
+    double *ep=PyArray_DATA(edge_p),*dy=PyArray_DATA(oy),*dm1=PyArray_DATA(o1),
+        *dm2=PyArray_DATA(o2);npy_uint8 *bad=PyArray_DATA(unstable);
+    int *ea=PyArray_DATA(edge_a),*eb=PyArray_DATA(edge_b),*ay=PyArray_DATA(ya_y),
+        *aa=PyArray_DATA(ya_a),*by=PyArray_DATA(yb_y),*bb=PyArray_DATA(yb_b);
+    view=malloc((size_t)(checkpoint+1)*sizeof(*view));
+    if(!view){PyErr_NoMemory();goto fail_hessian;}
+    for(int d=0;d<=checkpoint;d++){
+        PyObject *rp=PyTuple_GET_ITEM(row_layers,d),*yb=PyTuple_GET_ITEM(yb_layers,d),
+            *ab=PyTuple_GET_ITEM(ab_layers,d);
+        if(!PyArray_Check(rp)||!PyArray_Check(yb)||!PyArray_Check(ab)||
+           PyArray_SIZE((PyArrayObject*)rp)<n1+1){
+            PyErr_SetString(PyExc_ValueError,"invalid layered Hessian CSR");goto fail_hessian;
+        }
+        view[d]=(LayerView){PyArray_DATA((PyArrayObject*)rp),
+            PyArray_DATA((PyArrayObject*)yb),PyArray_DATA((PyArrayObject*)ab)};
+    }
+    if(workers>1){
+        threads=malloc((size_t)workers*sizeof(*threads));tasks=calloc((size_t)workers,sizeof(*tasks));
+        local_cross=calloc((size_t)workers*(size_t)ne,sizeof(double));
+        local_dcross=calloc((size_t)workers*(size_t)ne,sizeof(double));
+        local_y=calloc((size_t)workers*(size_t)v,sizeof(double));
+        local_2=calloc((size_t)workers*(size_t)n2,sizeof(double));
+        if(!threads||!tasks||!local_cross||!local_dcross||!local_y||!local_2){PyErr_NoMemory();goto fail_hessian;}
+    }
+    Py_BEGIN_ALLOW_THREADS
+    for(npy_intp i=0;i<n1;i++){int a=aa[i],y=ay[i];s1[a]+=b[y]*q1[i];ds1[a]+=db[y]*q1[i]+b[y]*dq1[i];}
+    for(npy_intp i=0;i<n2;i++){int a=bb[i],y=by[i];s2[a]+=b[y]*q2[i];ds2[a]+=db[y]*q2[i]+b[y]*dq2[i];}
+    if(workers==1){LayerHessianTask t={0,n1,n2,v,checkpoint+1,0,view,b,db,q1,dq1,q2,dq2,NULL,NULL,ay,cross,dcross,NULL,NULL,NULL};layer_hessian_worker(&t);}
+    else{
+        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){n1*w/workers,n1*(w+1)/workers,n2,v,checkpoint+1,0,view,b,db,q1,dq1,q2,dq2,NULL,NULL,ay,local_cross+(size_t)w*ne,local_dcross+(size_t)w*ne,NULL,NULL,NULL};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(npy_intp e=0;e<ne;e++)for(int w=0;w<workers;w++){cross[e]+=local_cross[(size_t)w*ne+e];dcross[e]+=local_dcross[(size_t)w*ne+e];}
+    }
+    double sm=0,dsm=0;
+    for(npy_intp e=0;e<ne;e++){
+        double z=1+s1[ea[e]]+s2[eb[e]]+cross[e],dz=ds1[ea[e]]+ds2[eb[e]]+dcross[e];
+        double scale=1+fabs(s1[ea[e]])+fabs(s2[eb[e]])+fabs(cross[e]);
+        if(!isfinite(z)||z<=0||scale>1e10*fmax(fabs(z),1e-300)){bad[e]=1;continue;}
+        me[e]=ep[e]/z;dme[e]=-me[e]*dz/z;row[ea[e]]+=me[e];col[eb[e]]+=me[e];drow[ea[e]]+=dme[e];dcol[eb[e]]+=dme[e];sm+=me[e];dsm+=dme[e];
+    }
+    for(npy_intp i=0;i<n1;i++){int y=ay[i],a=aa[i];dm1[i]=(db[y]*(1+q1[i])+b[y]*dq1[i])*row[a]+b[y]*(1+q1[i])*drow[a];dy[y]+=(db[y]*q1[i]+b[y]*dq1[i])*row[a]+b[y]*q1[i]*drow[a];}
+    for(npy_intp i=0;i<n2;i++){int y=by[i],a=bb[i];dm2[i]=(db[y]*(1+q2[i])+b[y]*dq2[i])*col[a]+b[y]*(1+q2[i])*dcol[a];dy[y]+=(db[y]*q2[i]+b[y]*dq2[i])*col[a]+b[y]*q2[i]*dcol[a];}
+    for(npy_intp y=0;y<v;y++)dy[y]+=db[y]*sm+b[y]*dsm;
+    if(workers==1){LayerHessianTask t={0,n1,n2,v,checkpoint+1,1,view,b,db,q1,dq1,q2,dq2,me,dme,ay,NULL,NULL,dm1,dm2,dy};layer_hessian_worker(&t);}
+    else{
+        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){n1*w/workers,n1*(w+1)/workers,n2,v,checkpoint+1,1,view,b,db,q1,dq1,q2,dq2,me,dme,ay,NULL,NULL,dm1,local_2+(size_t)w*n2,local_y+(size_t)w*v};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(int w=0;w<workers;w++){for(npy_intp j=0;j<n2;j++)dm2[j]+=local_2[(size_t)w*n2+j];for(npy_intp y=0;y<v;y++)dy[y]+=local_y[(size_t)w*v+y];}
+    }
+    Py_END_ALLOW_THREADS
+    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(local_cross);free(local_dcross);free(local_y);free(local_2);
+    return Py_BuildValue("NNNN",oy,o1,o2,unstable);
+fail_hessian:
+    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(local_cross);free(local_dcross);free(local_y);free(local_2);
+    Py_XDECREF(oy);Py_XDECREF(o1);Py_XDECREF(o2);Py_XDECREF(unstable);return NULL;
+}
+
+typedef struct {
     npy_intp lo,hi,v,n1,n2;long long offset;int checkpoint,phase;
     const double *b,*q1,*q2,*ep,*s1,*s2,*me;
     const int *ea,*eb,*ay,*aa,*by,*bb,*first,*second;
@@ -637,6 +783,7 @@ static PyMethodDef methods[]={
     {"fused_margins_ab_major",fused_margins_ab_major,METH_VARARGS,"Fused AB-major block margins."},
     {"fused_margins",fused_margins,METH_VARARGS,"Fused sparse margins."},
     {"fused_margins_layered",fused_margins_layered,METH_VARARGS,"Fused birth-layered CSR margins."},
+    {"fused_hessian_layered",fused_hessian_layered,METH_VARARGS,"Fused birth-layered Hessian product."},
     {"intersection_plan",intersection_plan,METH_VARARGS,"Direct compact intersection plan."},
     {"layered_intersection_graph",layered_intersection_graph,METH_VARARGS,"Direct birth-layered CSR graph."},
     {NULL,NULL,0,NULL}
