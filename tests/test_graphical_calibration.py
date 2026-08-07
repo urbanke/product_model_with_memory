@@ -1360,10 +1360,14 @@ def test_stochastic_sparse_approach_improves_exact_dual():
     c1 = np.zeros(len(problem.target_ya))
     c2 = np.zeros(len(problem.target_yb))
     initial = sparse_factorized_dual_evaluation(problem, lb, c1, c2)
+    records = []
     result = stochastic_sparse_dual_approach(
         problem, lb, c1, c2,
         steps=250, batch_size=250, learning_rate=0.02,
         exact_interval=25, seed=9, trust_radius=4.0,
+        exact_record_callback=lambda step, certificate, *_: records.append(
+            (step, certificate)
+        ),
     )
     final = sparse_factorized_dual_evaluation(
         problem, result.log_base_y,
@@ -1372,6 +1376,8 @@ def test_stochastic_sparse_approach_improves_exact_dual():
     assert final.objective < initial.objective - 1e-3
     assert result.exact_evaluations == 11
     assert result.sampled_edges == 62_500
+    assert len(records) == result.exact_evaluations
+    assert records[0][0] == 0 and records[-1][0] == 250
 
 
 def test_block_svrg_approach_improves_exact_dual():

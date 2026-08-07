@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import pairwise
@@ -2540,6 +2540,9 @@ def stochastic_sparse_dual_approach(
     exact_layered_checkpoint: int | None = None,
     lazy_block_cache: int = 16,
     sampled_ab_major_graph: ABMajorIntersectionGraph | None = None,
+    exact_record_callback: Callable[
+        [int, float, np.ndarray, np.ndarray, np.ndarray], None
+    ] | None = None,
 ) -> SparseStochasticResult:
     """Use minibatch Adam only to approach the exact dual optimum.
 
@@ -2863,6 +2866,12 @@ def stochastic_sparse_dual_approach(
             "scheduler_exhausted": scheduler_exhausted,
             "rejected_nonfinite": False,
         })
+        if exact_record_callback is not None:
+            exact_record_callback(
+                step, certificate,
+                parameters[:first], parameters[first:second],
+                parameters[second:],
+            )
         if (
             certificate_tolerance is not None
             and certificate <= certificate_tolerance

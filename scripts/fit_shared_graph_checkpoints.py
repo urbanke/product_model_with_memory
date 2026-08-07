@@ -108,9 +108,21 @@ def main() -> None:
         "--save-fallback-candidates", action="store_true",
         help="persist the post-stochastic state before each exact fallback",
     )
+    parser.add_argument(
+        "--snapshot-certificates",
+        help="comma-separated exact-certificate thresholds to persist",
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
     args = parser.parse_args()
+    snapshot_thresholds = (
+        [] if not args.snapshot_certificates else sorted(
+            {float(value) for value in args.snapshot_certificates.split(",")},
+            reverse=True,
+        )
+    )
+    if any(value <= 0.0 for value in snapshot_thresholds):
+        parser.error("snapshot certificate thresholds must be positive")
 
     store = Path(args.store)
     manifest = json.loads((store / "manifest.json").read_text())
@@ -160,6 +172,48 @@ def main() -> None:
             "initialization": initialization,
             "initialization_candidates": initialization_rows,
         }), flush=True)
+        saved_thresholds = set()
+
+        def save_candidate(path, factors, certificate_value):
+            np.savez(
+                path,
+                vocabulary_size=problem.vocabulary_size,
+                edge_a=problem.edge_a,
+                edge_b=problem.edge_b,
+                edge_probability=problem.edge_probability,
+                target_y=problem.target_y,
+                active_ya_y=problem.active_ya_y,
+                active_ya_a=problem.active_ya_a,
+                target_ya=problem.target_ya,
+                active_yb_y=problem.active_yb_y,
+                active_yb_b=problem.active_yb_b,
+                target_yb=problem.target_yb,
+                log_base_y=factors[0],
+                correction_ya=factors[1],
+                correction_yb=factors[2],
+                stochastic_certificate=certificate_value,
+            )
+
+        def snapshot_callback(step, certificate_value, sb, s1, s2):
+            for threshold in snapshot_thresholds:
+                if threshold in saved_thresholds or certificate_value > threshold:
+                    continue
+                snapshot_dir = (
+                    out / "stochastic_snapshots"
+                    / f"checkpoint_{checkpoint:03d}"
+                )
+                snapshot_dir.mkdir(parents=True, exist_ok=True)
+                save_candidate(
+                    snapshot_dir / f"threshold_{threshold:.6g}.npz",
+                    (sb, s1, s2), certificate_value,
+                )
+                saved_thresholds.add(threshold)
+                print(json.dumps({
+                    "checkpoint": checkpoint,
+                    "snapshot_threshold": threshold,
+                    "snapshot_step": step,
+                    "snapshot_certificate": certificate_value,
+                }), flush=True)
         started = time.perf_counter()
         stochastic = stochastic_sparse_dual_approach(
             problem, lb, c1, c2,
@@ -174,6 +228,9 @@ def main() -> None:
             exact_layered_checkpoint=checkpoint,
             sampled_ab_major_graph=sampled_graph,
             lazy_block_cache=args.cache,
+            exact_record_callback=(
+                snapshot_callback if snapshot_thresholds else None
+            ),
         )
         stochastic_seconds = time.perf_counter() - started
         fallback = stochastic.best_exact_certificate > args.tolerance
@@ -182,23 +239,13 @@ def main() -> None:
             if args.save_fallback_candidates:
                 candidate_dir = out / "fallback_candidates"
                 candidate_dir.mkdir(parents=True, exist_ok=True)
-                np.savez(
+                save_candidate(
                     candidate_dir / f"checkpoint_{checkpoint:03d}.npz",
-                    vocabulary_size=problem.vocabulary_size,
-                    edge_a=problem.edge_a,
-                    edge_b=problem.edge_b,
-                    edge_probability=problem.edge_probability,
-                    target_y=problem.target_y,
-                    active_ya_y=problem.active_ya_y,
-                    active_ya_a=problem.active_ya_a,
-                    target_ya=problem.target_ya,
-                    active_yb_y=problem.active_yb_y,
-                    active_yb_b=problem.active_yb_b,
-                    target_yb=problem.target_yb,
-                    log_base_y=stochastic.log_base_y,
-                    correction_ya=stochastic.correction_ya,
-                    correction_yb=stochastic.correction_yb,
-                    stochastic_certificate=stochastic.best_exact_certificate,
+                    (
+                        stochastic.log_base_y, stochastic.correction_ya,
+                        stochastic.correction_yb,
+                    ),
+                    stochastic.best_exact_certificate,
                 )
             fallback_started = time.perf_counter()
             result = sparse_grouped_ipf(
