@@ -67,6 +67,21 @@ def test_fixed_schedule_rejects_dependency_in_same_wave(tmp_path):
         load_fixed_schedule(path)
 
 
+def test_analytic_load_may_ignore_unused_fixed_wave_capacity(tmp_path):
+    payload = {
+        "maximum_workers": 1,
+        "maximum_private_memory_bytes": 200,
+        "jobs": [_job(tmp_path, "C0"), _job(tmp_path, "F0")],
+        "waves": [["C0", "F0"]],
+    }
+    path = tmp_path / "oversized.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="exceeds worker capacity"):
+        load_fixed_schedule(path)
+    schedule = load_fixed_schedule(path, enforce_wave_capacity=False)
+    assert len(schedule.jobs) == 2
+
+
 def test_command_with_workers_changes_parallel_phase_option(tmp_path):
     common = dict(
         checkpoint=0, dependencies=(), outputs=(),

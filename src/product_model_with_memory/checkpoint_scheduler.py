@@ -34,7 +34,9 @@ class FixedSchedule:
     maximum_private_memory_bytes: int
 
 
-def load_fixed_schedule(path: str | Path) -> FixedSchedule:
+def load_fixed_schedule(
+    path: str | Path, *, enforce_wave_capacity: bool = True,
+) -> FixedSchedule:
     """Load and validate the declarative fixed-schedule format."""
 
     source = Path(path)
@@ -58,11 +60,15 @@ def load_fixed_schedule(path: str | Path) -> FixedSchedule:
             payload.get("maximum_private_memory_bytes", 0)
         ),
     )
-    validate_fixed_schedule(schedule)
+    validate_fixed_schedule(
+        schedule, enforce_wave_capacity=enforce_wave_capacity,
+    )
     return schedule
 
 
-def validate_fixed_schedule(schedule: FixedSchedule) -> None:
+def validate_fixed_schedule(
+    schedule: FixedSchedule, *, enforce_wave_capacity: bool = True,
+) -> None:
     """Reject missing jobs, dependency inversions, and resource overflow."""
 
     if schedule.maximum_workers < 1:
@@ -89,11 +95,15 @@ def validate_fixed_schedule(schedule: FixedSchedule) -> None:
                 )
             if job.workers < 1:
                 raise ValueError(f"job {job.job_id} has no workers")
-        if sum(job.workers for job in jobs) > schedule.maximum_workers:
+        if (
+            enforce_wave_capacity
+            and sum(job.workers for job in jobs) > schedule.maximum_workers
+        ):
             raise ValueError(f"wave {wave_number} exceeds worker capacity")
         memory = sum(job.private_memory_bytes for job in jobs)
         if (
-            schedule.maximum_private_memory_bytes > 0
+            enforce_wave_capacity
+            and schedule.maximum_private_memory_bytes > 0
             and memory > schedule.maximum_private_memory_bytes
         ):
             raise ValueError(f"wave {wave_number} exceeds memory capacity")

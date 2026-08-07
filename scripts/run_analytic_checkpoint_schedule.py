@@ -28,7 +28,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    schedule = load_fixed_schedule(args.jobs)
+    # The analytic executor uses only the dependency DAG and enforces live
+    # capacity itself.  Fixed waves are retained as a portable fallback but
+    # their aggregate capacity is irrelevant here.
+    schedule = load_fixed_schedule(args.jobs, enforce_wave_capacity=False)
     payload = json.loads(Path(args.plan).read_text())
     planned = {row["task_id"]: row for row in payload["plan"]}
     tasks = {row["task_id"]: row for row in payload["tasks"]}
