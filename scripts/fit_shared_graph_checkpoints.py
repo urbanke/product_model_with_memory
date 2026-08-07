@@ -93,6 +93,10 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument(
+        "--seed", type=int, default=71,
+        help="base stochastic seed; checkpoint index is added",
+    )
+    parser.add_argument(
         "--max-stochastic-steps", "--steps", dest="steps", type=int,
         default=20_000,
         help=(
@@ -228,6 +232,7 @@ def main() -> None:
             exact_margin_workers=args.workers,
             certificate_tolerance=args.tolerance,
             optimizer="adam_plateau",
+            seed=args.seed + checkpoint,
             exact_layered_graph=exact_graph,
             exact_layered_checkpoint=checkpoint,
             sampled_ab_major_graph=sampled_graph,
@@ -298,6 +303,7 @@ def main() -> None:
             "initialization": initialization,
             "initialization_candidates": initialization_rows,
             "stochastic_seconds": stochastic_seconds,
+            "stochastic_seed": args.seed + checkpoint,
             "fallback": fallback,
             "fallback_skipped": bool(fallback and args.skip_fallback),
             "fallback_seconds": fallback_seconds,

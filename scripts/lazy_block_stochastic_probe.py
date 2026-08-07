@@ -23,6 +23,7 @@ from product_model_with_memory.graphical_calibration import (
     build_ab_major_intersection_graph,
     load_layered_intersection_graph,
     load_ab_major_intersection_graph,
+    pair_product_warm_start,
     save_ab_major_intersection_graph,
     stochastic_sparse_dual_approach,
 )
@@ -32,12 +33,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", required=True)
     parser.add_argument("--problems", required=True)
-    parser.add_argument("--factors", required=True)
+    parser.add_argument("--factors")
+    parser.add_argument(
+        "--warm", choices=("factors", "pair_product"), default="factors"
+    )
     parser.add_argument("--checkpoint", type=int, required=True)
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--blocks", type=int, default=128)
     parser.add_argument("--cache", type=int, default=8)
     parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--exact-interval", type=int, default=50)
+    parser.add_argument("--tolerance", type=float)
     args = parser.parse_args()
 
     store = Path(args.store)
@@ -66,18 +73,23 @@ def main() -> None:
     problem = checkpoint_in_birth_major_support(
         original, support, args.checkpoint
     )
-    with np.load(Path(args.factors) / "states" / state_name) as state:
-        log_base = state["log_base_y"]
-        c1 = reorder_values(
-            original.active_ya_y, original.active_ya_a,
-            state["correction_ya"], problem.active_ya_y,
-            problem.active_ya_a, problem.vocabulary_size,
-        )
-        c2 = reorder_values(
-            original.active_yb_y, original.active_yb_b,
-            state["correction_yb"], problem.active_yb_y,
-            problem.active_yb_b, problem.vocabulary_size,
-        )
+    if args.warm == "pair_product":
+        log_base, c1, c2 = pair_product_warm_start(problem)
+    else:
+        if not args.factors:
+            parser.error("--factors is required for a factors warm start")
+        with np.load(Path(args.factors) / "states" / state_name) as state:
+            log_base = state["log_base_y"]
+            c1 = reorder_values(
+                original.active_ya_y, original.active_ya_a,
+                state["correction_ya"], problem.active_ya_y,
+                problem.active_ya_a, problem.vocabulary_size,
+            )
+            c2 = reorder_values(
+                original.active_yb_y, original.active_yb_b,
+                state["correction_yb"], problem.active_yb_y,
+                problem.active_yb_b, problem.vocabulary_size,
+            )
     graph = load_layered_intersection_graph(store / "graph")
     ab_path = store / "ab_graph"
     if (ab_path / "manifest.json").exists():
@@ -101,8 +113,11 @@ def main() -> None:
             steps=args.steps, batch_size=1,
             sampling="blocks", edge_blocks=args.blocks,
             replicas=args.workers, stochastic_workers=args.workers,
-            variance_reduction=True, exact_interval=max(1, args.steps),
+            variance_reduction=True, exact_interval=args.exact_interval,
             exact_margin_workers=args.workers,
+            certificate_tolerance=args.tolerance,
+            optimizer="adam_plateau",
+            seed=args.seed,
             exact_layered_graph=graph if layered else None,
             exact_layered_checkpoint=args.checkpoint if layered else None,
             sampled_ab_major_graph=ab_graph if direct_ab else None,
