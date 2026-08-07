@@ -112,6 +112,10 @@ def main() -> None:
         "--snapshot-certificates",
         help="comma-separated exact-certificate thresholds to persist",
     )
+    parser.add_argument(
+        "--skip-fallback", action="store_true",
+        help="probe only: retain the best stochastic state without exact finish",
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
     args = parser.parse_args()
@@ -235,7 +239,7 @@ def main() -> None:
         stochastic_seconds = time.perf_counter() - started
         fallback = stochastic.best_exact_certificate > args.tolerance
         fallback_seconds = 0.0
-        if fallback:
+        if fallback and not args.skip_fallback:
             if args.save_fallback_candidates:
                 candidate_dir = out / "fallback_candidates"
                 candidate_dir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +270,7 @@ def main() -> None:
                 stochastic.correction_yb, stochastic.steps,
                 float(record["residual_ya_l1"]),
                 float(record["residual_yb_l1"]),
-                float(record["residual_y_l1"]), True,
+                float(record["residual_y_l1"]), not fallback,
                 stochastic.exact_evaluations,
             )
         original_c1 = reorder_values(
@@ -295,6 +299,7 @@ def main() -> None:
             "initialization_candidates": initialization_rows,
             "stochastic_seconds": stochastic_seconds,
             "fallback": fallback,
+            "fallback_skipped": bool(fallback and args.skip_fallback),
             "fallback_seconds": fallback_seconds,
             "certificate": max(
                 result.residual_y_l1, result.grouped_residual_ya_l1,
