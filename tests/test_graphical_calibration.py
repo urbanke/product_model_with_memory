@@ -40,6 +40,7 @@ from product_model_with_memory.graphical_calibration import (
     sparse_edge_block_from_bounds,
     sparse_factorized_dual_evaluation,
     sparse_factorized_dual_hessian_product,
+    sparse_factorized_dual_hessian_product_layered_reference,
     sparse_factorized_margins,
     sparse_factorized_margins_ab_major,
     sparse_factorized_margins_layered,
@@ -829,6 +830,21 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
     parallel_layered = sparse_factorized_margins_layered(
         problem, graph, layers - 1, log_base, full_c1, full_c2,
         workers=4,
+    )
+    direction = rng.normal(size=v + len(full_c1) + len(full_c2))
+    explicit_hessian_product = sparse_factorized_dual_hessian_product(
+        problem, log_base, full_c1, full_c2, direction,
+        intersection_plan=plan,
+    )
+    layered_hessian_product = (
+        sparse_factorized_dual_hessian_product_layered_reference(
+            problem, graph, layers - 1, log_base, full_c1, full_c2,
+            direction,
+        )
+    )
+    np.testing.assert_allclose(
+        layered_hessian_product, explicit_hessian_product,
+        rtol=0.0, atol=3e-14,
     )
     ab_major = sparse_factorized_margins_ab_major(
         problem, ab_graph, layers - 1, 0,

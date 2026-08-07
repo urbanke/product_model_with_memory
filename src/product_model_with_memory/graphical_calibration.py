@@ -1121,11 +1121,13 @@ def sparse_factorized_margins_layered_reference(
     cross = np.zeros(len(problem.edge_probability))
     active_layers: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     for depth in range(checkpoint + 1):
+        ptr = graph.row_ptr[depth]
         first = np.repeat(
-            np.arange(n1, dtype=np.int32), np.diff(graph.row_ptr[depth])
+            np.arange(n1, dtype=np.int32), np.diff(ptr[:n1 + 1])
         )
-        second = graph.correction_yb[depth]
-        edge = graph.edge_ab[depth]
+        active_edges = int(ptr[n1])
+        second = graph.correction_yb[depth][:active_edges]
+        edge = graph.edge_ab[depth][:active_edges]
         active_layers.append((first, second, edge))
         cross += np.bincount(
             edge,
@@ -2344,6 +2346,162 @@ def sparse_factorized_dual_hessian_product(
     return np.concatenate([dtarget, dmargin1, dmargin2])
 
 
+def sparse_factorized_dual_hessian_product_layered_reference(
+    problem: SparseGroupedProblem,
+    graph: LayeredIntersectionGraph,
+    checkpoint: int,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    direction: np.ndarray,
+) -> np.ndarray:
+    """Apply the layered dual Hessian in one verified reference traversal.
+
+    This mirrors :func:`sparse_factorized_margins_layered_reference` and
+    differentiates its algebra analytically.  Edges whose expanded
+    normalizer is cancellation-prone are differentiated directly in the
+    positive log domain.  It is the correctness oracle for the native
+    parallel kernel, not the eventual production implementation.
+    """
+
+    v = problem.vocabulary_size
+    n1, n2 = len(problem.target_ya), len(problem.target_yb)
+    vector = np.asarray(direction, dtype=np.float64)
+    if vector.shape != (v + n1 + n2,):
+        raise ValueError("Hessian direction has the wrong shape")
+    if not 0 <= checkpoint < graph.layers:
+        raise ValueError("invalid layered checkpoint")
+    d0, d1, d2 = vector[:v], vector[v:v + n1], vector[v + n1:]
+    log_base = np.asarray(log_base_y, dtype=np.float64)
+    log_base = log_base - logsumexp(log_base)
+    base = np.exp(log_base)
+    centered_d0 = d0 - float(base @ d0)
+    dbase = base * centered_d0
+    r1 = np.expm1(np.asarray(correction_ya, dtype=np.float64))
+    r2 = np.expm1(np.asarray(correction_yb, dtype=np.float64))
+    dr1, dr2 = (1.0 + r1) * d1, (1.0 + r2) * d2
+    y1, a1 = problem.active_ya_y, problem.active_ya_a
+    y2, b2 = problem.active_yb_y, problem.active_yb_b
+
+    s1 = np.bincount(a1, weights=base[y1] * r1, minlength=v)
+    s2 = np.bincount(b2, weights=base[y2] * r2, minlength=v)
+    ds1 = np.bincount(
+        a1, weights=dbase[y1] * r1 + base[y1] * dr1, minlength=v,
+    )
+    ds2 = np.bincount(
+        b2, weights=dbase[y2] * r2 + base[y2] * dr2, minlength=v,
+    )
+    edge_count = len(problem.edge_probability)
+    cross = np.zeros(edge_count)
+    dcross = np.zeros(edge_count)
+    active_layers = []
+    for depth in range(checkpoint + 1):
+        ptr = graph.row_ptr[depth]
+        first = np.repeat(
+            np.arange(n1, dtype=np.int32), np.diff(ptr[:n1 + 1])
+        )
+        active_edges = int(ptr[n1])
+        second = graph.correction_yb[depth][:active_edges]
+        edge = graph.edge_ab[depth][:active_edges]
+        active_layers.append((first, second, edge))
+        y = y1[first]
+        cross += np.bincount(
+            edge, weights=base[y] * r1[first] * r2[second],
+            minlength=edge_count,
+        )
+        dcross += np.bincount(
+            edge,
+            weights=(
+                dbase[y] * r1[first] * r2[second]
+                + base[y] * dr1[first] * r2[second]
+                + base[y] * r1[first] * dr2[second]
+            ),
+            minlength=edge_count,
+        )
+
+    z = 1.0 + s1[problem.edge_a] + s2[problem.edge_b] + cross
+    dz = ds1[problem.edge_a] + ds2[problem.edge_b] + dcross
+    scale = (
+        1.0 + np.abs(s1[problem.edge_a]) + np.abs(s2[problem.edge_b])
+        + np.abs(cross)
+    )
+    unstable = ~np.isfinite(z) | (z <= 0.0) | (
+        scale > 1e10 * np.maximum(np.abs(z), np.finfo(float).tiny)
+    )
+    edge_mass = np.zeros(edge_count)
+    dedge_mass = np.zeros(edge_count)
+    stable = ~unstable
+    edge_mass[stable] = problem.edge_probability[stable] / z[stable]
+    dedge_mass[stable] = -edge_mass[stable] * dz[stable] / z[stable]
+    row = np.bincount(problem.edge_a, weights=edge_mass, minlength=v)
+    col = np.bincount(problem.edge_b, weights=edge_mass, minlength=v)
+    drow = np.bincount(problem.edge_a, weights=dedge_mass, minlength=v)
+    dcol = np.bincount(problem.edge_b, weights=dedge_mass, minlength=v)
+
+    e1, e2 = 1.0 + r1, 1.0 + r2
+    dm1 = (
+        (dbase[y1] * e1 + base[y1] * dr1) * row[a1]
+        + base[y1] * e1 * drow[a1]
+    )
+    dm2 = (
+        (dbase[y2] * e2 + base[y2] * dr2) * col[b2]
+        + base[y2] * e2 * dcol[b2]
+    )
+    dy = dbase * float(edge_mass.sum()) + base * float(dedge_mass.sum())
+    dy += np.bincount(
+        y1, weights=(dbase[y1] * r1 + base[y1] * dr1) * row[a1]
+        + base[y1] * r1 * drow[a1], minlength=v,
+    )
+    dy += np.bincount(
+        y2, weights=(dbase[y2] * r2 + base[y2] * dr2) * col[b2]
+        + base[y2] * r2 * dcol[b2], minlength=v,
+    )
+    for first, second, edge in active_layers:
+        y = y1[first]
+        common = base[y] * edge_mass[edge]
+        dcommon = dbase[y] * edge_mass[edge] + base[y] * dedge_mass[edge]
+        dm1 += np.bincount(
+            first, weights=dcommon * e1[first] * r2[second]
+            + common * dr1[first] * r2[second]
+            + common * e1[first] * dr2[second], minlength=n1,
+        )
+        dm2 += np.bincount(
+            second, weights=dcommon * e2[second] * r1[first]
+            + common * dr2[second] * r1[first]
+            + common * e2[second] * dr1[first], minlength=n2,
+        )
+        dy += np.bincount(
+            y, weights=dcommon * r1[first] * r2[second]
+            + common * dr1[first] * r2[second]
+            + common * r1[first] * dr2[second], minlength=v,
+        )
+
+    # Replace each omitted unstable edge by the derivative of its direct
+    # positive conditional distribution.
+    order1 = np.argsort(a1, kind="stable")
+    order2 = np.argsort(b2, kind="stable")
+    ptr1 = np.r_[0, np.cumsum(np.bincount(a1, minlength=v), dtype=np.int64)]
+    ptr2 = np.r_[0, np.cumsum(np.bincount(b2, minlength=v), dtype=np.int64)]
+    for edge in np.flatnonzero(unstable):
+        selected1 = order1[ptr1[problem.edge_a[edge]]:ptr1[problem.edge_a[edge] + 1]]
+        selected2 = order2[ptr2[problem.edge_b[edge]]:ptr2[problem.edge_b[edge] + 1]]
+        score = log_base.copy()
+        directional_score = centered_d0.copy()
+        score[y1[selected1]] += np.asarray(correction_ya)[selected1]
+        score[y2[selected2]] += np.asarray(correction_yb)[selected2]
+        directional_score[y1[selected1]] += d1[selected1]
+        directional_score[y2[selected2]] += d2[selected2]
+        probability = np.exp(score - logsumexp(score))
+        joint = problem.edge_probability[edge] * probability
+        djoint = joint * (
+            directional_score - float(probability @ directional_score)
+        )
+        dy += djoint
+        dm1[selected1] += djoint[y1[selected1]]
+        dm2[selected2] += djoint[y2[selected2]]
+    return np.concatenate([dy, dm1, dm2])
+
+
 def diagnose_sparse_factorized_normalizers(
     problem: SparseGroupedProblem,
     plan: SparseIntersectionPlan,
@@ -2641,48 +2799,11 @@ def sparse_grouped_newton_cg(
             )
             product += regularizer_diagonal * full_direction
         else:
-            # The expanded analytic product can suffer catastrophic
-            # cancellation at large fitted factors.  Differentiate the same
-            # stable layered gradient used by the objective until a native
-            # layered Hessian kernel is available.
-            direction_norm = float(np.linalg.norm(full_direction))
-            if direction_norm == 0.0:
-                return np.zeros(np.count_nonzero(free), dtype=np.float64)
-            epsilon = np.cbrt(np.finfo(float).eps) * (
-                1.0 + float(np.linalg.norm(full))
-            ) / direction_norm
-
-            def gradient_at(candidate: np.ndarray) -> np.ndarray:
-                value = sparse_factorized_dual_evaluation(
-                    problem,
-                    candidate[:v], candidate[v:v + n1], candidate[v + n1:],
-                    compute_certificate=False,
-                    layered_graph=layered_graph,
-                    layered_checkpoint=layered_checkpoint,
-                    margin_workers=margin_workers,
-                ).gradient()
-                return value + regularizer_diagonal * candidate
-
-            # Near the edge of the representable factor range, the usual
-            # cube-root-epsilon perturbation can itself be too large.  Halve
-            # it until the symmetric derivative is evaluable.  This is a
-            # numerical differentiation safeguard, not a model parameter.
-            while True:
-                try:
-                    plus = gradient_at(full + epsilon * full_direction)
-                    minus = gradient_at(full - epsilon * full_direction)
-                    if np.isfinite(plus).all() and np.isfinite(minus).all():
-                        product = (plus - minus) / (2.0 * epsilon)
-                        break
-                except (FloatingPointError, OverflowError, ValueError):
-                    pass
-                epsilon *= 0.5
-                if epsilon * direction_norm <= np.finfo(float).eps * (
-                    1.0 + float(np.linalg.norm(full))
-                ):
-                    raise FloatingPointError(
-                        "unable to evaluate a finite layered Hessian product"
-                    )
+            product = sparse_factorized_dual_hessian_product_layered_reference(
+                problem, layered_graph, layered_checkpoint,
+                full[:v], full[v:v + n1], full[v + n1:], full_direction,
+            )
+            product += regularizer_diagonal * full_direction
         return scale[free] * product[free]
 
     accepted_iterations = 0
