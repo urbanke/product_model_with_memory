@@ -22,6 +22,7 @@ from product_model_with_memory.graphical_calibration import (
     checkpoint_in_birth_major_support,
     empirical_pair_slack_variances,
     load_layered_intersection_graph,
+    sparse_factorized_dual_evaluation,
     sparse_grouped_newton_cg,
 )
 
@@ -49,8 +50,9 @@ def main() -> None:
     parser.add_argument("--tolerance", type=float, default=1e-4)
     parser.add_argument("--slack-precision", type=float, default=1.0)
     parser.add_argument("--iterations", type=int, default=200)
-    parser.add_argument("--hessian-products", type=int, default=200)
-    parser.add_argument("--max-precondition-scale", type=float, default=1e6)
+    parser.add_argument("--hessian-products", type=int, default=40)
+    parser.add_argument("--max-precondition-scale", type=float, default=10.0)
+    parser.add_argument("--accepted-state")
     args = parser.parse_args()
 
     original, source = load_problem(Path(args.problem))
@@ -92,6 +94,27 @@ def main() -> None:
         candidate["correction_yb"], problem.active_yb_y,
         problem.active_yb_b, problem.vocabulary_size,
     )
+
+    def relaxed_diagnostic(lb, first, second):
+        value = sparse_factorized_dual_evaluation(
+            problem, lb, first, second, compute_certificate=True,
+            layered_graph=graph,
+            layered_checkpoint=args.checkpoint if graph is not None else None,
+            margin_workers=args.workers,
+        )
+        scale = 1.0 / args.slack_precision
+        objective = float(value.objective + 0.5 * scale * (
+            np.dot(variance_ya, first * first)
+            + np.dot(variance_yb, second * second)
+        ))
+        gradient = value.gradient().copy()
+        gradient[len(lb):len(lb) + len(first)] += scale * variance_ya * first
+        gradient[len(lb) + len(first):] += scale * variance_yb * second
+        return objective, float(np.max(np.abs(gradient)))
+
+    initial_objective, initial_stationarity = relaxed_diagnostic(
+        candidate["log_base_y"], c1, c2,
+    )
     started = time.perf_counter()
     result = sparse_grouped_newton_cg(
         problem,
@@ -109,12 +132,32 @@ def main() -> None:
         layered_checkpoint=args.checkpoint if graph is not None else None,
         margin_workers=args.workers,
     )
+    final_objective, final_stationarity = relaxed_diagnostic(
+        result.log_base_y, result.correction_ya, result.correction_yb,
+    )
+    accepted = bool(
+        np.isfinite(final_objective)
+        and final_objective < initial_objective
+        and np.isfinite(final_stationarity)
+    )
+    if accepted and args.accepted_state:
+        np.savez(
+            args.accepted_state,
+            log_base_y=result.log_base_y,
+            correction_ya=result.correction_ya,
+            correction_yb=result.correction_yb,
+            prefix=prefix,
+        )
     print(json.dumps({
         "prefix": prefix,
         "seconds": time.perf_counter() - started,
         "converged": result.converged,
-        "stationarity": result.stationarity,
-        "objective": result.objective,
+        "initial_stationarity": initial_stationarity,
+        "stationarity": final_stationarity,
+        "initial_objective": initial_objective,
+        "objective": final_objective,
+        "objective_improvement": initial_objective - final_objective,
+        "accepted": accepted,
         "final_stationarity": result.final_stationarity,
         "final_objective": result.final_objective,
         "raw_margin_certificate": max(

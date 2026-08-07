@@ -4829,3 +4829,41 @@ unlikely to help.  A more radical candidate is a two-dimensional tiled AB
 layout (or another locality-preserving ordering) coupled to compact block
 margins; it must be benchmarked against the current contiguous AB-major walk,
 since the indexed-edge prototype was slower.
+
+### 2026-08-07 --- Newton history recovered; mandatory bounded protocol
+
+Do not restart the Newton investigation from scratch.  Commits `68d0c1d`
+and `f84da09`, and the earlier entry above, already established the relevant
+algorithm and failure modes.  The validated implementation uses SciPy
+trust-region Newton--CG, exact analytic Hessian--vector products, removal of
+the parameter gauges, and target-Fisher/Jacobi coordinate scaling.  It must
+have a hard Hessian-product budget.  Unpreconditioned inner CG was unusable;
+checkpoint 0 was particularly poor; and Newton was competitive only from
+some near-solution stochastic states.  Historical useful budgets were
+40--140 products, never thousands.  A Newton state is accepted only after an
+independent full objective/certificate evaluation proves that it is finite
+and improves the incoming state.
+
+The finite-data pair margins have now been proved infeasible at real
+V4096 checkpoint 0, so the current model uses uncertainty-weighted quadratic
+YA/YB slack.  This changes Newton only by adding the diagonal curvature
+`variance / slack_precision` to the pair-factor Hessian.  It does not justify
+a new optimizer.  The current policy is therefore: stochastic fitting first;
+if measured progress stalls near the solution, try the preconditioned
+Newton--CG fallback for 40 products; continue to 80 only when the independently
+evaluated relaxed objective improved materially; otherwise retain the
+stochastic state.  The old deterministic fallback remains the final safety
+net until this bounded relaxed-Newton policy is validated.
+
+Several 7 August experiments violated this history by trying checkpoint 0,
+allowing 5,000 products, introducing a custom trust-region loop, and using an
+effectively serial layered Hessian path.  Those runs are not production
+evidence.  The custom loop has been removed.  A direct one-pass layered
+Hessian reference is retained only as a correctness oracle: it agrees with
+the explicit small-problem Hessian at about `3e-14` absolute error and with a
+real V1024 finite-difference check at about `1.2e-5` relative error.  Before
+another V4096 Newton fit, benchmark one Hessian product at 1, 4, and 12
+workers and require the wall/CPU accounting to show real parallel execution.
+The production implementation must move that verified traversal, including
+log-domain unstable-edge derivatives and worker-local reductions, into the
+native kernel.
