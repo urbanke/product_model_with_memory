@@ -104,6 +104,10 @@ def main() -> None:
     parser.add_argument("--exact-interval", type=int, default=50)
     parser.add_argument("--blocks", type=int, default=128)
     parser.add_argument("--cache", type=int, default=16)
+    parser.add_argument(
+        "--save-fallback-candidates", action="store_true",
+        help="persist the post-stochastic state before each exact fallback",
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
     args = parser.parse_args()
@@ -175,6 +179,27 @@ def main() -> None:
         fallback = stochastic.best_exact_certificate > args.tolerance
         fallback_seconds = 0.0
         if fallback:
+            if args.save_fallback_candidates:
+                candidate_dir = out / "fallback_candidates"
+                candidate_dir.mkdir(parents=True, exist_ok=True)
+                np.savez(
+                    candidate_dir / f"checkpoint_{checkpoint:03d}.npz",
+                    vocabulary_size=problem.vocabulary_size,
+                    edge_a=problem.edge_a,
+                    edge_b=problem.edge_b,
+                    edge_probability=problem.edge_probability,
+                    target_y=problem.target_y,
+                    active_ya_y=problem.active_ya_y,
+                    active_ya_a=problem.active_ya_a,
+                    target_ya=problem.target_ya,
+                    active_yb_y=problem.active_yb_y,
+                    active_yb_b=problem.active_yb_b,
+                    target_yb=problem.target_yb,
+                    log_base_y=stochastic.log_base_y,
+                    correction_ya=stochastic.correction_ya,
+                    correction_yb=stochastic.correction_yb,
+                    stochastic_certificate=stochastic.best_exact_certificate,
+                )
             fallback_started = time.perf_counter()
             result = sparse_grouped_ipf(
                 problem, solver="lbfgs", evaluator="layered",
