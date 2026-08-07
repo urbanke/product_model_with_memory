@@ -41,6 +41,7 @@ def main() -> None:
         "--lbfgs-caps", default="10,25,50,100,250",
         help="comma-separated L-BFGS approach budgets, each followed by IPF",
     )
+    parser.add_argument("--lbfgs-precondition", action="store_true")
     args = parser.parse_args()
 
     with np.load(args.candidate, allow_pickle=False) as saved:
@@ -71,6 +72,7 @@ def main() -> None:
             tolerance=args.tolerance, max_iterations=cap,
             log_base_y=warm[0], correction_ya=warm[1],
             correction_yb=warm[2], margin_workers=args.workers,
+            lbfgs_precondition=args.lbfgs_precondition,
             trace=trace, trace_interval=max(1, cap // 10),
             phase_timing=phase_timing,
             _layered_graph=graph, _layered_checkpoint=args.checkpoint,
@@ -82,6 +84,7 @@ def main() -> None:
         rows.append({
             "solver": "layered_lbfgs_then_ipf",
             "lbfgs_cap": cap,
+            "preconditioned": args.lbfgs_precondition,
             "seconds": time.perf_counter() - started,
             "certificate": certificate(lbfgs),
             "converged": lbfgs.converged,

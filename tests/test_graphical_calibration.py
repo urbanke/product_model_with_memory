@@ -515,17 +515,29 @@ def test_lbfgs_sparse_solver_matches_plain_ipf():
     quasi_newton = sparse_grouped_ipf(
         problem, tolerance=1e-9, solver="lbfgs", max_iterations=2_000
     )
+    preconditioned = sparse_grouped_ipf(
+        problem, tolerance=1e-9, solver="lbfgs", max_iterations=2_000,
+        lbfgs_precondition=True,
+    )
     unreduced = sparse_grouped_ipf(
         problem, tolerance=1e-9, solver="lbfgs", max_iterations=2_000,
         reduce_gauge=False,
     )
 
-    assert plain.converged and quasi_newton.converged and unreduced.converged
+    assert (
+        plain.converged and quasi_newton.converged
+        and preconditioned.converged and unreduced.converged
+    )
     assert quasi_newton.iterations < plain.iterations
     assert quasi_newton.margin_evaluations > 0
     assert quasi_newton.grouped_residual_ya_l1 < 1e-9
     assert quasi_newton.grouped_residual_yb_l1 < 1e-9
     assert quasi_newton.residual_y_l1 < 1e-9
+    assert max(
+        preconditioned.grouped_residual_ya_l1,
+        preconditioned.grouped_residual_yb_l1,
+        preconditioned.residual_y_l1,
+    ) < 1e-9
     assert max(
         unreduced.grouped_residual_ya_l1,
         unreduced.grouped_residual_yb_l1,

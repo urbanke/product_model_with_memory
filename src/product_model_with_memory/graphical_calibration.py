@@ -3683,6 +3683,8 @@ def fit_sparse_grouped_checkpoints(
     margin_workers: int = 1,
     evaluator: str = "union",
     lbfgs_trust_radius: float = 16.0,
+    lbfgs_precondition: bool = False,
+    lbfgs_precondition_max_scale: float = 10.0,
     initialization: str = "unigram",
     checkpoint_transfer: str = "copy",
     stochastic_replicas: int = 12,
@@ -3855,6 +3857,10 @@ def fit_sparse_grouped_checkpoints(
                     margin_workers=margin_workers,
                     evaluator=evaluator,
                     lbfgs_trust_radius=lbfgs_trust_radius,
+                    lbfgs_precondition=lbfgs_precondition,
+                    lbfgs_precondition_max_scale=(
+                        lbfgs_precondition_max_scale
+                    ),
                     _layered_graph=layered_graph,
                     _layered_checkpoint=(
                         None if layered_indices is None
@@ -4058,6 +4064,8 @@ def sparse_grouped_ipf(
     phase_timing: dict[str, float] | None = None,
     evaluator: str = "union",
     lbfgs_trust_radius: float = 16.0,
+    lbfgs_precondition: bool = False,
+    lbfgs_precondition_max_scale: float = 10.0,
     _intersection_plan: SparseIntersectionPlan | None = None,
     _layered_graph: LayeredIntersectionGraph | None = None,
     _layered_checkpoint: int | None = None,
@@ -4103,6 +4111,8 @@ def sparse_grouped_ipf(
         raise ValueError("layered evaluator requires a graph and checkpoint")
     if not np.isfinite(lbfgs_trust_radius) or lbfgs_trust_radius <= 0.0:
         raise ValueError("lbfgs_trust_radius must be finite and positive")
+    if lbfgs_precondition_max_scale < 1.0:
+        raise ValueError("L-BFGS precondition scale must be at least one")
     if trace_interval < 1:
         raise ValueError("trace_interval must be positive")
 
@@ -4627,7 +4637,32 @@ def sparse_grouped_ipf(
                 for state in np.flatnonzero(counts == v):
                     free[offset + np.flatnonzero(states == state)[0]] = False
         fixed_parameters = full_initial.copy()
-        initial = full_initial[free]
+        parameter_scale = np.ones_like(full_initial)
+        if lbfgs_precondition:
+            conditional_ya = np.divide(
+                problem.target_ya,
+                pa[problem.active_ya_a],
+                out=np.zeros_like(problem.target_ya),
+                where=pa[problem.active_ya_a] > 0.0,
+            )
+            conditional_yb = np.divide(
+                problem.target_yb,
+                pb[problem.active_yb_b],
+                out=np.zeros_like(problem.target_yb),
+                where=pb[problem.active_yb_b] > 0.0,
+            )
+            diagonal = np.concatenate([
+                problem.target_y * (1.0 - problem.target_y),
+                problem.target_ya * np.maximum(0.0, 1.0 - conditional_ya),
+                problem.target_yb * np.maximum(0.0, 1.0 - conditional_yb),
+            ])
+            parameter_scale = np.minimum(
+                lbfgs_precondition_max_scale,
+                1.0 / np.sqrt(np.maximum(diagonal, 1e-8)),
+            )
+            initial = np.zeros(np.count_nonzero(free), dtype=np.float64)
+        else:
+            initial = full_initial[free]
         best_parameters = full_initial.copy()
         best_certificate = float("inf")
         best_objective = float("inf")
@@ -4639,12 +4674,21 @@ def sparse_grouped_ipf(
         class _CertificateReached(Exception):
             pass
 
+        def expand(reduced_parameters):
+            parameters = fixed_parameters.copy()
+            if lbfgs_precondition:
+                parameters[free] += (
+                    parameter_scale[free] * reduced_parameters
+                )
+            else:
+                parameters[free] = reduced_parameters
+            return parameters
+
         def objective_gradient(reduced_parameters):
             nonlocal best_parameters, best_certificate, best_objective
             nonlocal function_evaluations
             nonlocal last_reduced, last_certificate
-            parameters = fixed_parameters.copy()
-            parameters[free] = reduced_parameters
+            parameters = expand(reduced_parameters)
             lb[:] = parameters[:n_base]
             c1[:] = parameters[n_base:n_first]
             c2[:] = parameters[n_first:]
@@ -4701,7 +4745,10 @@ def sparse_grouped_ipf(
                 best_certificate = certificate
                 best_objective = objective
                 best_parameters = parameters.copy()
-            return objective, gradient[free]
+            reduced_gradient = gradient[free]
+            if lbfgs_precondition:
+                reduced_gradient = parameter_scale[free] * reduced_gradient
+            return objective, reduced_gradient
 
         def stop_at_certificate(accepted_parameters):
             nonlocal accepted_iterations
@@ -4727,11 +4774,19 @@ def sparse_grouped_ipf(
                 # line-search trial from changing log factors by hundreds and
                 # overflowing the intersection expansion.  It does not bound
                 # the final estimator: IPF polishing remains unconstrained.
-                bounds=[
-                    (value - lbfgs_trust_radius,
-                     value + lbfgs_trust_radius)
-                    for value in initial
-                ],
+                bounds=(
+                    [
+                        (-lbfgs_trust_radius / value,
+                         lbfgs_trust_radius / value)
+                        for value in parameter_scale[free]
+                    ]
+                    if lbfgs_precondition else
+                    [
+                        (value - lbfgs_trust_radius,
+                         value + lbfgs_trust_radius)
+                        for value in initial
+                    ]
+                ),
                 options={
                     "maxiter": lbfgs_iterations,
                     # scipy stops on the largest gradient component whereas
@@ -4779,6 +4834,8 @@ def sparse_grouped_ipf(
                 phase_timing=phase_timing,
                 evaluator=evaluator,
                 lbfgs_trust_radius=lbfgs_trust_radius,
+                lbfgs_precondition=lbfgs_precondition,
+                lbfgs_precondition_max_scale=lbfgs_precondition_max_scale,
                 _intersection_plan=intersection_plan,
                 _layered_graph=_layered_graph,
                 _layered_checkpoint=_layered_checkpoint,
