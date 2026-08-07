@@ -186,6 +186,24 @@ def test_grouped_feasibility_lp_detects_incompatible_pair_margins():
     assert np.isfinite(relaxed.correction_ya).all()
     assert np.isfinite(relaxed.correction_yb).all()
 
+    relaxed_newton = sparse_grouped_newton_cg(
+        impossible_problem,
+        log_base_y=np.log(impossible_problem.target_y),
+        correction_ya=np.zeros(len(impossible_problem.target_ya)),
+        correction_yb=np.zeros(len(impossible_problem.target_yb)),
+        pair_slack_precision=100.0,
+        max_iterations=200,
+        tolerance=1e-5,
+    )
+    assert relaxed_newton.converged
+    assert relaxed_newton.stationarity <= 1e-5
+    assert max(
+        relaxed_newton.grouped_residual_ya_l1,
+        relaxed_newton.grouped_residual_yb_l1,
+        relaxed_newton.residual_y_l1,
+    ) > 1e-4
+    assert np.isfinite(relaxed_newton.objective)
+
     variance_ya, variance_yb = empirical_pair_slack_variances(
         impossible_problem, 100,
     )

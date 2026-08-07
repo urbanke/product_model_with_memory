@@ -469,6 +469,10 @@ class SparseGroupedResult:
     converged: bool
     margin_evaluations: int = 0
     hessian_products: int = 0
+    stationarity: float = float("nan")
+    objective: float = float("nan")
+    final_stationarity: float = float("nan")
+    final_objective: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -2439,8 +2443,14 @@ def sparse_grouped_newton_cg(
     precondition_floor: float = 1e-8,
     precondition_max_scale: float = 10.0,
     max_hessian_products: int | None = None,
+    pair_slack_precision: float = float("inf"),
+    pair_slack_variance_ya: np.ndarray | None = None,
+    pair_slack_variance_yb: np.ndarray | None = None,
+    layered_graph: LayeredIntersectionGraph | None = None,
+    layered_checkpoint: int | None = None,
+    margin_workers: int = 1,
 ) -> SparseGroupedResult:
-    """Fit the exact dual with the standard trust-region Newton--CG method.
+    """Fit the exact or statistically relaxed dual with Newton--CG.
 
     The Hessian is never materialized.  ``scipy``'s truncated conjugate
     gradient iteration receives exact products from
@@ -2453,6 +2463,10 @@ def sparse_grouped_newton_cg(
         raise ValueError("invalid Newton-CG preconditioner settings")
     if max_hessian_products is not None and max_hessian_products < 1:
         raise ValueError("max_hessian_products must be positive")
+    if pair_slack_precision <= 0.0 or np.isnan(pair_slack_precision):
+        raise ValueError("pair slack precision must be positive")
+    if (layered_graph is None) != (layered_checkpoint is None):
+        raise ValueError("layered graph and checkpoint must be supplied together")
     v = problem.vocabulary_size
     n1 = len(problem.target_ya)
     n2 = len(problem.target_yb)
@@ -2463,20 +2477,38 @@ def sparse_grouped_newton_cg(
     ])
     if full_initial.shape != (v + n1 + n2,):
         raise ValueError("initial Newton-CG factors have the wrong shape")
-    plan = build_sparse_intersection_plan(problem)
+    plan = None if layered_graph is not None else build_sparse_intersection_plan(problem)
+    relaxed = np.isfinite(pair_slack_precision)
+    variance_ya = np.ones(n1, dtype=np.float64)
+    variance_yb = np.ones(n2, dtype=np.float64)
+    for supplied, destination, name in (
+        (pair_slack_variance_ya, variance_ya, "YA slack variance"),
+        (pair_slack_variance_yb, variance_yb, "YB slack variance"),
+    ):
+        if supplied is not None:
+            values = np.asarray(supplied, dtype=np.float64)
+            if values.shape != destination.shape or not np.isfinite(values).all():
+                raise ValueError(f"invalid {name}")
+            destination[:] = values
+    if np.any(variance_ya <= 0.0) or np.any(variance_yb <= 0.0):
+        raise ValueError("pair slack variances must be positive")
+    regularizer_diagonal = np.concatenate([
+        np.zeros(v), variance_ya, variance_yb,
+    ]) / pair_slack_precision if relaxed else np.zeros_like(full_initial)
 
     # Remove the same exact gauges used by the L-BFGS solver.  Besides the
     # global baseline constant, a correction row containing all targets has
     # one constant gauge because it appears in every conditional outcome.
     free = np.ones(len(full_initial), dtype=bool)
     free[0] = False
-    for states, offset in (
-        (problem.active_ya_a, v),
-        (problem.active_yb_b, v + n1),
-    ):
-        counts = np.bincount(states, minlength=v)
-        for state in np.flatnonzero(counts == v):
-            free[offset + np.flatnonzero(states == state)[0]] = False
+    if not relaxed:
+        for states, offset in (
+            (problem.active_ya_a, v),
+            (problem.active_yb_b, v + n1),
+        ):
+            counts = np.bincount(states, minlength=v)
+            for state in np.flatnonzero(counts == v):
+                free[offset + np.flatnonzero(states == state)[0]] = False
     fixed = full_initial.copy()
 
     # Optimize in diagonally whitened coordinates.  The entries below are
@@ -2515,17 +2547,22 @@ def sparse_grouped_newton_cg(
             problem.target_ya * np.maximum(0.0, 1.0 - conditional_ya),
             problem.target_yb * np.maximum(0.0, 1.0 - conditional_yb),
         ])
+        diagonal += regularizer_diagonal
         scale = np.minimum(
             precondition_max_scale,
             1.0 / np.sqrt(np.maximum(diagonal, precondition_floor)),
         )
     best_parameters = full_initial.copy()
     best_certificate = float("inf")
+    best_stationarity = float("inf")
+    best_objective = float("inf")
+    last_stationarity = float("inf")
+    last_objective = float("inf")
     best_residuals = (float("inf"),) * 3
     evaluations = 0
     hessian_products = 0
 
-    class _CertificateReached(Exception):
+    class _ConvergenceReached(Exception):
         pass
 
     class _HessianBudgetReached(Exception):
@@ -2537,18 +2574,45 @@ def sparse_grouped_newton_cg(
         return full
 
     def objective_gradient(reduced: np.ndarray):
-        nonlocal best_parameters, best_certificate, best_residuals, evaluations
+        nonlocal best_parameters, best_certificate, best_stationarity
+        nonlocal best_objective, best_residuals, evaluations
+        nonlocal last_stationarity, last_objective
         full = expand(reduced)
         evaluation = sparse_factorized_dual_evaluation(
             problem,
             full[:v], full[v:v + n1], full[v + n1:],
             intersection_plan=plan,
             compute_certificate=True,
+            layered_graph=layered_graph,
+            layered_checkpoint=layered_checkpoint,
+            margin_workers=margin_workers,
         )
         evaluations += 1
+        if relaxed:
+            evaluation = SparseDualEvaluation(
+                objective=float(evaluation.objective + 0.5 * np.dot(
+                    regularizer_diagonal, full * full,
+                )),
+                gradient_y=evaluation.gradient_y,
+                gradient_ya=(evaluation.gradient_ya
+                             + regularizer_diagonal[v:v + n1] * full[v:v + n1]),
+                gradient_yb=(evaluation.gradient_yb
+                             + regularizer_diagonal[v + n1:] * full[v + n1:]),
+                certificate=evaluation.certificate,
+                residual_y_l1=evaluation.residual_y_l1,
+                residual_ya_l1=evaluation.residual_ya_l1,
+                residual_yb_l1=evaluation.residual_yb_l1,
+            )
         certificate = float(evaluation.certificate)
-        if certificate < best_certificate:
+        current_stationarity = float(np.max(np.abs(evaluation.gradient())))
+        last_stationarity = current_stationarity
+        last_objective = float(evaluation.objective)
+        selection = current_stationarity if relaxed else certificate
+        best_selection = best_stationarity if relaxed else best_certificate
+        if selection < best_selection:
             best_certificate = certificate
+            best_stationarity = current_stationarity
+            best_objective = float(evaluation.objective)
             best_parameters = full.copy()
             best_residuals = (
                 float(evaluation.residual_y_l1),
@@ -2568,21 +2632,51 @@ def sparse_grouped_newton_cg(
         full = expand(reduced)
         full_direction = np.zeros_like(full)
         full_direction[free] = scale[free] * direction
-        product = sparse_factorized_dual_hessian_product(
-            problem,
-            full[:v], full[v:v + n1], full[v + n1:],
-            full_direction,
-            intersection_plan=plan,
-        )
+        if layered_graph is None:
+            product = sparse_factorized_dual_hessian_product(
+                problem,
+                full[:v], full[v:v + n1], full[v + n1:],
+                full_direction,
+                intersection_plan=plan,
+            )
+            product += regularizer_diagonal * full_direction
+        else:
+            # The expanded analytic product can suffer catastrophic
+            # cancellation at large fitted factors.  Differentiate the same
+            # stable layered gradient used by the objective until a native
+            # layered Hessian kernel is available.
+            direction_norm = float(np.linalg.norm(full_direction))
+            if direction_norm == 0.0:
+                return np.zeros(np.count_nonzero(free), dtype=np.float64)
+            epsilon = np.cbrt(np.finfo(float).eps) * (
+                1.0 + float(np.linalg.norm(full))
+            ) / direction_norm
+
+            def gradient_at(candidate: np.ndarray) -> np.ndarray:
+                value = sparse_factorized_dual_evaluation(
+                    problem,
+                    candidate[:v], candidate[v:v + n1], candidate[v + n1:],
+                    compute_certificate=False,
+                    layered_graph=layered_graph,
+                    layered_checkpoint=layered_checkpoint,
+                    margin_workers=margin_workers,
+                ).gradient()
+                return value + regularizer_diagonal * candidate
+
+            product = (
+                gradient_at(full + epsilon * full_direction)
+                - gradient_at(full - epsilon * full_direction)
+            ) / (2.0 * epsilon)
         return scale[free] * product[free]
 
     accepted_iterations = 0
 
-    def stop_at_certificate(_reduced):
+    def stop_at_convergence(_reduced):
         nonlocal accepted_iterations
         accepted_iterations += 1
-        if best_certificate <= tolerance:
-            raise _CertificateReached
+        value = best_stationarity if relaxed else best_certificate
+        if value <= tolerance:
+            raise _ConvergenceReached
 
     try:
         optimized = minimize(
@@ -2591,11 +2685,11 @@ def sparse_grouped_newton_cg(
             method="trust-ncg",
             jac=True,
             hessp=hessian_product,
-            callback=stop_at_certificate,
+            callback=stop_at_convergence,
             options={"maxiter": max_iterations, "gtol": tolerance / 10.0},
         )
         iterations = int(optimized.nit)
-    except _CertificateReached:
+    except _ConvergenceReached:
         iterations = accepted_iterations
     except _HessianBudgetReached:
         iterations = accepted_iterations
@@ -2607,9 +2701,13 @@ def sparse_grouped_newton_cg(
         best_residuals[1],
         best_residuals[2],
         best_residuals[0],
-        best_certificate <= tolerance,
+        (best_stationarity if relaxed else best_certificate) <= tolerance,
         evaluations,
         hessian_products,
+        best_stationarity,
+        best_objective,
+        last_stationarity,
+        last_objective,
     )
 
 
