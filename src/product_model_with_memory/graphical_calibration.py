@@ -569,6 +569,11 @@ class SparseLineSearchResult:
     certificate: float
     converged: bool
     trace: tuple[dict[str, float | int | bool], ...]
+    final_log_base_y: np.ndarray
+    final_correction_ya: np.ndarray
+    final_correction_yb: np.ndarray
+    final_objective: float
+    final_certificate: float
 
 
 @dataclass(frozen=True)
@@ -2647,7 +2652,10 @@ def exact_sparse_dual_armijo(
             "certificate": float(current.certificate),
             "gradient_l2": float(np.linalg.norm(gradient)),
             "evaluations": evaluations,
+            "factor_abs_max": float(np.max(np.abs(parameters))),
         }
+        if iteration > 0:
+            record["previous_accepted_step"] = float(previous_step)
         trace.append(record)
         if progress_callback is not None:
             progress_callback(record)
@@ -2742,6 +2750,11 @@ def exact_sparse_dual_armijo(
         float(best.certificate),
         bool(best.certificate <= tolerance),
         tuple(trace),
+        parameters[:first].copy(),
+        parameters[first:second].copy(),
+        parameters[second:].copy(),
+        float(current.objective),
+        float(current.certificate),
     )
 
 

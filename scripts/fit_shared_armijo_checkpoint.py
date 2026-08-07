@@ -119,15 +119,26 @@ def main() -> None:
         correction_yb=result.correction_yb,
         certificate=result.certificate,
     )
+    final_state_path = out / f"checkpoint_{args.checkpoint:03d}_final.npz"
+    np.savez(
+        final_state_path,
+        log_base_y=result.final_log_base_y,
+        correction_ya=result.final_correction_ya,
+        correction_yb=result.final_correction_yb,
+        certificate=result.final_certificate,
+    )
     print(json.dumps({
         "checkpoint": args.checkpoint,
         "iterations": result.iterations,
         "evaluations": result.evaluations,
         "objective": result.objective,
         "certificate": result.certificate,
+        "final_objective": result.final_objective,
+        "final_certificate": result.final_certificate,
         "converged": result.converged,
         "elapsed_seconds": time.perf_counter() - started,
         "state": str(state_path),
+        "final_state": str(final_state_path),
     }), flush=True)
 
 
