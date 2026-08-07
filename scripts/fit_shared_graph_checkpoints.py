@@ -135,6 +135,14 @@ def main() -> None:
     )
     parser.add_argument("--blocks", type=int, default=128)
     parser.add_argument("--cache", type=int, default=16)
+    parser.add_argument("--learning-rate", type=float, default=3e-2)
+    parser.add_argument(
+        "--minimum-learning-rate", type=float, default=3e-3,
+    )
+    parser.add_argument(
+        "--record-trace", action="store_true",
+        help="include the exact-check scheduler trajectory in each result row",
+    )
     parser.add_argument(
         "--save-fallback-candidates", action="store_true",
         help="persist the post-stochastic state before each exact fallback",
@@ -333,6 +341,8 @@ def main() -> None:
             exact_margin_workers=args.workers,
             certificate_tolerance=args.tolerance,
             optimizer="adam_plateau",
+            learning_rate=args.learning_rate,
+            minimum_learning_rate=args.minimum_learning_rate,
             seed=args.seed + checkpoint,
             exact_layered_graph=exact_graph,
             exact_layered_checkpoint=checkpoint,
@@ -422,6 +432,9 @@ def main() -> None:
             "optimizer_seconds": stochastic.optimizer_seconds,
             "exact_seconds": stochastic.exact_seconds,
             "sampled_phase_timing": stochastic.sampled_phase_timing,
+            "stochastic_trace": (
+                stochastic.trace if args.record_trace else None
+            ),
         }
         rows.append(row)
         print(json.dumps(row), flush=True)
