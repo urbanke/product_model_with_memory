@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--maximum-workers", type=int, default=8)
     parser.add_argument("--construction-workers", type=int, default=2)
     parser.add_argument("--fitting-workers", type=int, default=4)
+    parser.add_argument("--fitting-replicas", type=int, default=12)
     parser.add_argument("--evaluation-workers", type=int, default=1)
     parser.add_argument("--fitting-steps", type=int, default=500)
     parser.add_argument("--out", required=True)
@@ -96,7 +97,8 @@ def main() -> None:
                 args.python, "-u", "scripts/fit_shared_graph_checkpoints.py",
                 "--delta-store", str(deltas), "--problems", str(problems),
                 "--out", str(fitted),
-                "--workers", str(args.fitting_workers), "--replicas", "4",
+                "--workers", str(args.fitting_workers),
+                "--replicas", str(args.fitting_replicas),
                 "--max-stochastic-steps", str(args.fitting_steps),
                 "--relaxed", "--slack-precision", "1",
                 "--stationarity-tolerance", "1e-4",

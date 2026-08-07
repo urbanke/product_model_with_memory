@@ -147,3 +147,29 @@ def test_planned_executor_expands_job_to_available_cap(tmp_path):
     )
     launch = next(row for row in events if row["event"] == "launched")
     assert launch["workers"] == 4
+
+
+def test_planned_executor_never_launches_a_zero_worker_job(tmp_path):
+    events = []
+
+    def job(job_id, delay):
+        output = tmp_path / f"{job_id}.txt"
+        return CheckpointJob(
+            job_id, "G", 0,
+            (
+                sys.executable, "-c",
+                "import time; from pathlib import Path; "
+                f"time.sleep({delay}); Path({str(output)!r}).write_text('ok')",
+            ),
+            (), (str(output),), str(tmp_path / f"{job_id}.json"), 1,
+        )
+
+    run_planned_schedule(
+        (job("A", 0.05), job("B", 0.0)), {"A": 1, "B": 1},
+        {"A": 0.0, "B": 1.0}, maximum_workers=1,
+        worker_caps={"A": 1, "B": 1}, working_directory=tmp_path,
+        poll_seconds=0.01, event_callback=events.append,
+    )
+    launches = [row for row in events if row["event"] == "launched"]
+    assert [row["job_id"] for row in launches] == ["A", "B"]
+    assert all(row["workers"] == 1 for row in launches)

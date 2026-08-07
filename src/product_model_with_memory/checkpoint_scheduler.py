@@ -256,7 +256,7 @@ def run_planned_schedule(
                 min(worker_caps[job.job_id], available)
                 if worker_caps is not None else planned_workers[job.job_id]
             )
-            if workers > available:
+            if workers < 1 or workers > available:
                 continue
             command = command_with_workers(job, workers)
             started = time.time()
