@@ -4886,21 +4886,21 @@ describe it as successful scaling.
 
 The remaining structural problem is that the YA-major algorithm traverses
 all triangles in two globally separated phases and maintains worker-private
-AB/YB accumulators.  The next implementation target is an AB-major Hessian
-kernel: give workers triangle-balanced complete AB contexts, compute each
-context's normalizer/directional normalizer, and immediately consume its
-triangles for derivative margins.  This preserves cache locality and removes
-the large cross/directional-cross reduction.  Checkpoint 0 is too small to
-measure scaling; use a later support for all worker-scaling conclusions.
+AB/YB accumulators.  Checkpoint 0 is too small to measure scaling; use a later
+support for all worker-scaling conclusions.
 
 The proposed AB-major Hessian was implemented and measured before being
 discarded.  It matched the verified Hessian to `2.1e-14` relative error, but
 on the same final checkpoint one product took 1.036 s with one worker and
 0.277 s with twelve, versus 0.416 and 0.102 s for YA-major.  Random writes to
 both factor families outweighed the context locality.  Do not repeat a plain
-AB-major conversion.  A viable successor must preserve YA-contiguous access
-while reducing triangle reads, for example by tiling within YA-major rows or
-by compressing repeated factor-index patterns.
+AB-major conversion.  A subsequent historical audit showed that proposed
+A-context/two-dimensional tiling is also too close to the many earlier
+layout, fusion, indexing and reduction trials to justify another experiment.
+`docs/calibration_optimization_registry.md` is now mandatory reading before
+optimizer/evaluator work.  The one genuinely distinct next candidate is
+standard subsampled Newton--CG, because it reduces triangles per curvature
+product rather than rearranging a full traversal.
 
 The restored bounded relaxed-Newton protocol was also smoke-tested locally.
 At V1024 checkpoint 0, 40 products improved the independently evaluated
