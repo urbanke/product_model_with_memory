@@ -421,6 +421,10 @@ def main() -> None:
         )
         fallback = stopping_value > target_tolerance
         fallback_seconds = 0.0
+        final_stationarity = (
+            stochastic.best_exact_stationarity if args.relaxed else None
+        )
+        fallback_converged = None
         if fallback and not args.skip_fallback:
             if args.save_fallback_candidates:
                 candidate_dir = out / "fallback_candidates"
@@ -462,6 +466,8 @@ def main() -> None:
                     float(diagnostic.residual_y_l1),
                     finished.converged, finished.evaluations,
                 )
+                final_stationarity = finished.stationarity
+                fallback_converged = finished.converged
             else:
                 result = sparse_grouped_ipf(
                     problem, solver="lbfgs", evaluator="layered",
@@ -525,8 +531,9 @@ def main() -> None:
                 result.grouped_residual_yb_l1,
             ),
             "regularized_stationarity": (
-                stochastic.best_exact_stationarity if args.relaxed else None
+                final_stationarity
             ),
+            "fallback_converged": fallback_converged,
             "relaxed": args.relaxed,
             "slack_precision": args.slack_precision,
             "steps": stochastic.steps,
