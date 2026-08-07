@@ -1124,6 +1124,9 @@ def sparse_factorized_margins_layered(
     *,
     workers: int = 1,
     max_parallel_scratch_bytes: int = 1 << 30,
+    context_rows: tuple[
+        tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]
+    ] | None = None,
 ) -> SparseFactorizedMargins:
     """Evaluate a birth-layered graph with the native sequential kernel."""
 
@@ -1176,11 +1179,22 @@ def sparse_factorized_margins_layered(
     # The expanded 1+S1+S2+cross formula is fast but can lose precision when
     # large signed corrections cancel.  The native kernel omits and flags
     # such AB edges; add them back from their positive log-sum-exp form.
+    if context_rows is None:
+        order1 = np.argsort(problem.active_ya_a, kind="stable")
+        order2 = np.argsort(problem.active_yb_b, kind="stable")
+        ptr1 = np.r_[0, np.cumsum(np.bincount(
+            problem.active_ya_a, minlength=problem.vocabulary_size
+        ), dtype=np.int64)]
+        ptr2 = np.r_[0, np.cumsum(np.bincount(
+            problem.active_yb_b, minlength=problem.vocabulary_size
+        ), dtype=np.int64)]
+    else:
+        (ptr1, order1), (ptr2, order2) = context_rows
     for edge in np.flatnonzero(unstable):
         a = problem.edge_a[edge]
         b = problem.edge_b[edge]
-        selected1 = np.flatnonzero(problem.active_ya_a == a)
-        selected2 = np.flatnonzero(problem.active_yb_b == b)
+        selected1 = order1[ptr1[a]:ptr1[a + 1]]
+        selected2 = order2[ptr2[b]:ptr2[b + 1]]
         score = normalized_log_base.copy()
         score[problem.active_ya_y[selected1]] += np.asarray(
             correction_ya
@@ -4099,6 +4113,16 @@ def sparse_grouped_ipf(
         _intersection_plan or build_sparse_intersection_plan(problem)
         if evaluator == "factorized" else None
     )
+    layered_context_rows = None
+    if evaluator == "layered":
+        layered_context_rows = []
+        for states in (problem.active_ya_a, problem.active_yb_b):
+            order = np.argsort(states, kind="stable")
+            ptr = np.r_[0, np.cumsum(
+                np.bincount(states, minlength=v), dtype=np.int64
+            )]
+            layered_context_rows.append((ptr, order))
+        layered_context_rows = tuple(layered_context_rows)
     rows1: list[dict[int, int]] = [{} for _ in range(v)]
     rows2: list[dict[int, int]] = [{} for _ in range(v)]
     if evaluator == "union":
@@ -4233,6 +4257,7 @@ def sparse_grouped_ipf(
             factorized = sparse_factorized_margins_layered(
                 problem, _layered_graph, _layered_checkpoint,
                 lb, c1, c2, workers=margin_workers,
+                context_rows=layered_context_rows,
             )
             mark("layered_seconds", margin_started)
             mark("margin_total_seconds", margin_started)
