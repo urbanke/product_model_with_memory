@@ -689,6 +689,193 @@ class ABMajorIntersectionGraph:
         ))
 
 
+@dataclass(frozen=True)
+class SparseIntersectionDelta:
+    """One immutable triangle-birth chunk in two sparse CSR orderings.
+
+    ``ya_row`` contains only nonempty global YA rows.  ``ya_ptr`` indexes the
+    parallel YB- and AB-index payloads.  The AB-major arrays use the same
+    convention for global retained-context rows.  Consequently an old delta
+    never needs extending when later checkpoints append support edges.
+    """
+
+    checkpoint: int
+    ya_row: np.ndarray
+    ya_ptr: np.ndarray
+    ya_correction_yb: np.ndarray
+    ya_edge_ab: np.ndarray
+    ab_row: np.ndarray
+    ab_ptr: np.ndarray
+    ab_correction_ya: np.ndarray
+    ab_correction_yb: np.ndarray
+
+    @property
+    def triangles(self) -> int:
+        return len(self.ya_edge_ab)
+
+    @property
+    def nbytes(self) -> int:
+        return sum(array.nbytes for array in (
+            self.ya_row, self.ya_ptr, self.ya_correction_yb,
+            self.ya_edge_ab, self.ab_row, self.ab_ptr,
+            self.ab_correction_ya, self.ab_correction_yb,
+        ))
+
+
+def _sparse_csr_order(major: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return stable order, represented major rows, and their CSR pointer."""
+
+    major = np.asarray(major, dtype=np.int32)
+    order = np.argsort(major, kind="stable")
+    sorted_major = major[order]
+    rows, counts = np.unique(sorted_major, return_counts=True)
+    ptr = np.r_[0, np.cumsum(counts, dtype=np.int64)]
+    return order, np.asarray(rows, dtype=np.int32), ptr
+
+
+def build_sparse_intersection_delta(
+    problem: SparseGroupedProblem,
+    birth_ya: np.ndarray,
+    birth_yb: np.ndarray,
+    birth_ab: np.ndarray,
+    checkpoint: int,
+) -> SparseIntersectionDelta:
+    """Build triangles born at one checkpoint using stable global edge IDs.
+
+    ``problem`` must be ordered by append-only global support ID, and the
+    three birth arrays must use those same IDs.  The initial reference builder
+    deliberately uses the explicit intersection plan; a direct native delta
+    builder can replace it without changing the persisted contract.
+    """
+
+    if checkpoint < 0:
+        raise ValueError("checkpoint must be nonnegative")
+    first_birth = np.asarray(birth_ya, dtype=np.int64)
+    second_birth = np.asarray(birth_yb, dtype=np.int64)
+    context_birth = np.asarray(birth_ab, dtype=np.int64)
+    if (
+        first_birth.shape != problem.target_ya.shape
+        or second_birth.shape != problem.target_yb.shape
+        or context_birth.shape != problem.edge_probability.shape
+    ):
+        raise ValueError("pair-edge births and sparse problem disagree")
+    plan = build_sparse_intersection_plan(problem)
+    triangle_birth = np.maximum.reduce((
+        first_birth[plan.correction_ya],
+        second_birth[plan.correction_yb],
+        context_birth[plan.edge],
+    ))
+    selected = np.flatnonzero(triangle_birth == checkpoint)
+    first = np.asarray(plan.correction_ya[selected], dtype=np.int32)
+    second = np.asarray(plan.correction_yb[selected], dtype=np.int32)
+    edge = np.asarray(plan.edge[selected], dtype=np.int32)
+
+    ya_order, ya_row, ya_ptr = _sparse_csr_order(first)
+    ab_order, ab_row, ab_ptr = _sparse_csr_order(edge)
+    return SparseIntersectionDelta(
+        checkpoint=checkpoint,
+        ya_row=ya_row,
+        ya_ptr=ya_ptr,
+        ya_correction_yb=second[ya_order],
+        ya_edge_ab=edge[ya_order],
+        ab_row=ab_row,
+        ab_ptr=ab_ptr,
+        ab_correction_ya=first[ab_order],
+        ab_correction_yb=second[ab_order],
+    )
+
+
+def sparse_deltas_as_layered_graph(
+    deltas: Sequence[SparseIntersectionDelta],
+    ya_edges: int,
+) -> LayeredIntersectionGraph:
+    """Expand sparse delta row directories for compatibility testing."""
+
+    row_ptr = []
+    correction_yb = []
+    edge_ab = []
+    for delta in deltas:
+        if np.any(delta.ya_row < 0) or np.any(delta.ya_row >= ya_edges):
+            raise ValueError("delta YA row lies outside current support")
+        counts = np.zeros(ya_edges, dtype=np.int64)
+        counts[delta.ya_row] = np.diff(delta.ya_ptr)
+        row_ptr.append(np.r_[0, np.cumsum(counts, dtype=np.int64)])
+        correction_yb.append(delta.ya_correction_yb)
+        edge_ab.append(delta.ya_edge_ab)
+    return LayeredIntersectionGraph(
+        tuple(row_ptr), tuple(correction_yb), tuple(edge_ab)
+    )
+
+
+def save_sparse_intersection_delta(
+    delta: SparseIntersectionDelta,
+    directory: str | Path,
+) -> None:
+    """Publish one immutable delta; the manifest is the completion marker."""
+
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest = destination / "manifest.json"
+    if manifest.exists():
+        raise FileExistsError(f"delta is already published at {destination}")
+    arrays = {
+        "ya_row": delta.ya_row,
+        "ya_ptr": delta.ya_ptr,
+        "ya_correction_yb": delta.ya_correction_yb,
+        "ya_edge_ab": delta.ya_edge_ab,
+        "ab_row": delta.ab_row,
+        "ab_ptr": delta.ab_ptr,
+        "ab_correction_ya": delta.ab_correction_ya,
+        "ab_correction_yb": delta.ab_correction_yb,
+    }
+    for name, array in arrays.items():
+        temporary = destination / f".{name}.npy.tmp"
+        with temporary.open("wb") as output:
+            np.save(output, array)
+        temporary.replace(destination / f"{name}.npy")
+    temporary_manifest = destination / ".manifest.json.tmp"
+    temporary_manifest.write_text(json.dumps({
+        "version": 1,
+        "checkpoint": delta.checkpoint,
+        "triangles": delta.triangles,
+        "bytes": delta.nbytes,
+    }, indent=2))
+    temporary_manifest.replace(manifest)
+
+
+def load_sparse_intersection_delta(
+    directory: str | Path,
+    *,
+    mmap_mode: str | None = "r",
+) -> SparseIntersectionDelta:
+    """Open one completed immutable delta, memory-mapped by default."""
+
+    source = Path(directory)
+    manifest = json.loads((source / "manifest.json").read_text())
+    if manifest.get("version") != 1:
+        raise ValueError("unsupported sparse intersection delta manifest")
+    names = (
+        "ya_row", "ya_ptr", "ya_correction_yb", "ya_edge_ab",
+        "ab_row", "ab_ptr", "ab_correction_ya", "ab_correction_yb",
+    )
+    arrays = tuple(
+        np.load(source / f"{name}.npy", mmap_mode=mmap_mode,
+                allow_pickle=False)
+        for name in names
+    )
+    delta = SparseIntersectionDelta(int(manifest["checkpoint"]), *arrays)
+    if (
+        delta.triangles != int(manifest.get("triangles", -1))
+        or delta.nbytes != int(manifest.get("bytes", -1))
+        or len(delta.ya_ptr) != len(delta.ya_row) + 1
+        or len(delta.ab_ptr) != len(delta.ab_row) + 1
+        or len(delta.ya_correction_yb) != delta.triangles
+        or len(delta.ab_correction_ya) != delta.triangles
+    ):
+        raise ValueError("sparse intersection delta differs from manifest")
+    return delta
+
+
 def save_ab_major_intersection_graph(
     graph: ABMajorIntersectionGraph,
     directory: str | Path,
@@ -740,6 +927,107 @@ class BirthMajorSparseSupport:
     birth_ya: np.ndarray
     birth_yb: np.ndarray
     birth_ab: np.ndarray
+
+
+@dataclass(frozen=True)
+class AppendOnlySparseSupportState:
+    """Stable global pair-edge IDs known through one checkpoint."""
+
+    vocabulary_size: int
+    keys_ya: np.ndarray
+    keys_yb: np.ndarray
+    keys_ab: np.ndarray
+    birth_ya: np.ndarray
+    birth_yb: np.ndarray
+    birth_ab: np.ndarray
+
+
+def append_checkpoint_support(
+    previous: AppendOnlySparseSupportState | None,
+    checkpoint_problem: SparseGroupedProblem,
+    checkpoint: int,
+) -> tuple[AppendOnlySparseSupportState, BirthMajorSparseSupport]:
+    """Append newly observed pair edges and align one checkpoint numerically."""
+
+    if checkpoint < 0:
+        raise ValueError("checkpoint must be nonnegative")
+    v = checkpoint_problem.vocabulary_size
+    current_keys = (
+        checkpoint_problem.active_ya_y.astype(np.int64) * v
+        + checkpoint_problem.active_ya_a,
+        checkpoint_problem.active_yb_y.astype(np.int64) * v
+        + checkpoint_problem.active_yb_b,
+        checkpoint_problem.edge_a.astype(np.int64) * v
+        + checkpoint_problem.edge_b,
+    )
+    current_values = (
+        checkpoint_problem.target_ya,
+        checkpoint_problem.target_yb,
+        checkpoint_problem.edge_probability,
+    )
+    if previous is None:
+        old_keys = tuple(np.empty(0, dtype=np.int64) for _ in range(3))
+        old_births = tuple(np.empty(0, dtype=np.uint8) for _ in range(3))
+    else:
+        if previous.vocabulary_size != v:
+            raise ValueError("vocabulary size changes between checkpoints")
+        old_keys = (previous.keys_ya, previous.keys_yb, previous.keys_ab)
+        old_births = (
+            previous.birth_ya, previous.birth_yb, previous.birth_ab,
+        )
+
+    ordered_keys = []
+    ordered_births = []
+    ordered_values = []
+    for old, births, keys, values in zip(
+        old_keys, old_births, current_keys, current_values
+    ):
+        order = np.argsort(keys, kind="stable")
+        sorted_current = np.asarray(keys[order], dtype=np.int64)
+        sorted_values = np.asarray(values)[order]
+        if len(np.unique(sorted_current)) != len(sorted_current):
+            raise ValueError("checkpoint support contains duplicate pair edges")
+        old_positions = np.searchsorted(sorted_current, old)
+        if (
+            np.any(old_positions == len(sorted_current))
+            or not np.array_equal(sorted_current[old_positions], old)
+        ):
+            raise ValueError("checkpoint support is not append-only")
+        is_old = np.zeros(len(sorted_current), dtype=bool)
+        is_old[old_positions] = True
+        new = sorted_current[~is_old]
+        combined = np.r_[old, new]
+        combined_births = np.r_[
+            births,
+            np.full(len(new), checkpoint, dtype=np.uint8),
+        ]
+        value_positions = np.searchsorted(sorted_current, combined)
+        ordered_keys.append(combined)
+        ordered_births.append(combined_births)
+        ordered_values.append(sorted_values[value_positions])
+
+    state = AppendOnlySparseSupportState(
+        v, *ordered_keys, *ordered_births
+    )
+    ya_y, ya_a = divmod(state.keys_ya, v)
+    yb_y, yb_b = divmod(state.keys_yb, v)
+    edge_a, edge_b = divmod(state.keys_ab, v)
+    ordered_problem = SparseGroupedProblem(
+        vocabulary_size=v,
+        edge_a=np.asarray(edge_a, dtype=np.int32),
+        edge_b=np.asarray(edge_b, dtype=np.int32),
+        edge_probability=ordered_values[2],
+        target_y=checkpoint_problem.target_y,
+        active_ya_y=np.asarray(ya_y, dtype=np.int32),
+        active_ya_a=np.asarray(ya_a, dtype=np.int32),
+        target_ya=ordered_values[0],
+        active_yb_y=np.asarray(yb_y, dtype=np.int32),
+        active_yb_b=np.asarray(yb_b, dtype=np.int32),
+        target_yb=ordered_values[1],
+    )
+    return state, BirthMajorSparseSupport(
+        ordered_problem, *ordered_births
+    )
 
 
 def save_layered_intersection_graph(

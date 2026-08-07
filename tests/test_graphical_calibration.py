@@ -5,12 +5,14 @@ import pytest
 
 from product_model_with_memory.graphical_calibration import (
     GroupedCheckpoint,
+    append_checkpoint_support,
     SparseGroupedProblem,
     SparseGroupedResult,
     SparseIntersectionPlan,
     SparseRestrictedMargins,
     build_sparse_edge_blocks,
     build_ab_major_intersection_graph,
+    build_sparse_intersection_delta,
     build_sparse_intersection_plan,
     build_layered_intersection_graph,
     birth_major_sparse_support,
@@ -26,6 +28,7 @@ from product_model_with_memory.graphical_calibration import (
     layered_intersection_graph_from_plan,
     load_ab_major_intersection_graph,
     load_layered_intersection_graph,
+    load_sparse_intersection_delta,
     pair_midpoint_warm_start,
     pair_product_warm_start,
     project_sparse_layered_pair,
@@ -35,6 +38,7 @@ from product_model_with_memory.graphical_calibration import (
     sample_sparse_grouped_edges,
     save_layered_intersection_graph,
     save_ab_major_intersection_graph,
+    save_sparse_intersection_delta,
     second_pair_warm_start,
     sparse_edge_minibatch,
     sparse_edge_block_from_bounds,
@@ -47,6 +51,7 @@ from product_model_with_memory.graphical_calibration import (
     sparse_factorized_margins_layered,
     sparse_factorized_margins_layered_reference,
     sparse_factorized_margins_reference,
+    sparse_deltas_as_layered_graph,
     sparse_gated_log_probabilities,
     sparse_grouped_newton_cg,
     sparse_grouped_ipf,
@@ -758,9 +763,85 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
     direct_graph = build_layered_intersection_graph(
         problem, birth_ya, birth_yb, birth_ab, layers=layers
     )
+    deltas = tuple(
+        build_sparse_intersection_delta(
+            problem, birth_ya, birth_yb, birth_ab, checkpoint
+        )
+        for checkpoint in range(layers)
+    )
+    delta_graph = sparse_deltas_as_layered_graph(
+        deltas, len(problem.target_ya)
+    )
+    save_sparse_intersection_delta(deltas[2], tmp_path / "delta_002")
+    mapped_delta = load_sparse_intersection_delta(tmp_path / "delta_002")
+    assert mapped_delta.checkpoint == 2
+    assert mapped_delta.triangles == deltas[2].triangles
+    assert all(isinstance(array, np.memmap) for array in (
+        mapped_delta.ya_row, mapped_delta.ya_ptr,
+        mapped_delta.ya_correction_yb, mapped_delta.ya_edge_ab,
+        mapped_delta.ab_row, mapped_delta.ab_ptr,
+        mapped_delta.ab_correction_ya, mapped_delta.ab_correction_yb,
+    ))
     ab_graph = build_ab_major_intersection_graph(
         problem, birth_ya, birth_yb, birth_ab
     )
+    incremental_state = None
+    incremental_deltas = []
+    incremental_support = None
+    for checkpoint in range(layers):
+        mask_ya = birth_ya <= checkpoint
+        mask_yb = birth_yb <= checkpoint
+        mask_ab = birth_ab <= checkpoint
+        checkpoint_problem = SparseGroupedProblem(
+            vocabulary_size=v,
+            edge_a=problem.edge_a[mask_ab],
+            edge_b=problem.edge_b[mask_ab],
+            edge_probability=problem.edge_probability[mask_ab],
+            target_y=problem.target_y,
+            active_ya_y=problem.active_ya_y[mask_ya],
+            active_ya_a=problem.active_ya_a[mask_ya],
+            target_ya=problem.target_ya[mask_ya],
+            active_yb_y=problem.active_yb_y[mask_yb],
+            active_yb_b=problem.active_yb_b[mask_yb],
+            target_yb=problem.target_yb[mask_yb],
+        )
+        incremental_state, incremental_support = append_checkpoint_support(
+            incremental_state, checkpoint_problem, checkpoint
+        )
+        incremental_deltas.append(build_sparse_intersection_delta(
+            incremental_support.problem,
+            incremental_support.birth_ya,
+            incremental_support.birth_yb,
+            incremental_support.birth_ab,
+            checkpoint,
+        ))
+    final_support = birth_major_sparse_support(
+        problem, birth_ya, birth_yb, birth_ab
+    )
+    final_birth_graph = build_layered_intersection_graph(
+        final_support.problem, final_support.birth_ya,
+        final_support.birth_yb, final_support.birth_ab, layers=layers,
+    )
+    incremental_graph = sparse_deltas_as_layered_graph(
+        incremental_deltas, len(final_support.problem.target_ya)
+    )
+    np.testing.assert_array_equal(
+        incremental_state.keys_ya,
+        final_support.problem.active_ya_y.astype(np.int64) * v
+        + final_support.problem.active_ya_a,
+    )
+    for actual, expected in zip(
+        incremental_graph.row_ptr, final_birth_graph.row_ptr
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    for actual, expected in zip(
+        incremental_graph.correction_yb, final_birth_graph.correction_yb
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    for actual, expected in zip(
+        incremental_graph.edge_ab, final_birth_graph.edge_ab
+    ):
+        np.testing.assert_array_equal(actual, expected)
     save_ab_major_intersection_graph(ab_graph, tmp_path / "ab_graph")
     mapped_ab = load_ab_major_intersection_graph(tmp_path / "ab_graph")
     assert mapped_ab.edges == ab_graph.edges
@@ -785,6 +866,15 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
     ):
         np.testing.assert_array_equal(actual, expected)
     for expected, actual in zip(graph.edge_ab, direct_graph.edge_ab):
+        np.testing.assert_array_equal(actual, expected)
+    assert sum(delta.triangles for delta in deltas) == graph.edges
+    for expected, actual in zip(graph.row_ptr, delta_graph.row_ptr):
+        np.testing.assert_array_equal(actual, expected)
+    for expected, actual in zip(
+        graph.correction_yb, delta_graph.correction_yb
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    for expected, actual in zip(graph.edge_ab, delta_graph.edge_ab):
         np.testing.assert_array_equal(actual, expected)
     assert graph.layers == layers
     assert graph.edges == len(plan.edge)

@@ -4965,3 +4965,26 @@ barrier: independent jobs never wait for one another, but shards of one exact
 minibatch must.  Confirm once without the concurrent V2048 construction; do
 not productionize the fork prototype unless that clean result is materially
 better.
+
+## Checkpoint scheduler refactor (2026-08-07)
+
+Development moved to `codex/checkpoint-scheduler-refactor`.  The design and
+artifact contracts are in `docs/checkpoint_scheduler_design.md`.  A V1024/C32
+audit proved that YA, YB, and AB supports are append-only at every checkpoint.
+The existing exact shared store is already physically split into 32 triangle
+birth layers, but all layers are built together from the final support; the
+AB-major stochastic store is monolithic with birth labels.
+
+The new reference primitives assign stable pair-edge IDs online (retain all
+old IDs and append newly observed sorted keys), represent each triangle-birth
+layer as sparse CSR row directories in both YA-major and AB-major order, and
+publish each immutable delta with its manifest written last.  A test constructs
+the layers sequentially without final-checkpoint knowledge and reproduces the
+final birth-major topology exactly.  All 42 calibration tests pass.
+
+Do not yet use the reference delta builder for a large production run: it
+materializes the cumulative explicit intersection plan at each checkpoint.
+The next implementation step is a native incremental builder that enumerates
+only triangles newly enabled by new YA, YB, or AB edges.  After that, add a
+native multi-delta traversal and compare its exact/stochastic margins with the
+current monolithic store before modifying the production workflow.
