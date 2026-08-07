@@ -103,6 +103,13 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument(
+        "--process-shards", type=int, default=1,
+        help=(
+            "experimental persistent process shards for one stochastic "
+            "gradient; each shard locally threads and reduces its replicas"
+        ),
+    )
+    parser.add_argument(
         "--replicas", type=int, default=12,
         help="fixed total stochastic batch, independent of --workers",
     )
@@ -417,6 +424,7 @@ def main() -> None:
             sampled_ab_major_graph=sampled_graph,
             block_replica_schedule=args.block_replica_schedule,
             persistent_reference_positions=args.persistent_reference_positions,
+            process_shards=args.process_shards,
             lazy_block_cache=args.cache,
             pair_slack_precision=(
                 args.slack_precision if args.relaxed else float("inf")

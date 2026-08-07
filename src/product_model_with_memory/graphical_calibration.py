@@ -21,6 +21,8 @@ dense probability tables.
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -3235,6 +3237,7 @@ def stochastic_sparse_dual_approach(
     fused_ab_batch: bool = False,
     block_replica_schedule: str = "independent",
     persistent_reference_positions: bool = False,
+    process_shards: int = 1,
     pair_slack_precision: float = float("inf"),
     pair_slack_variance_ya: np.ndarray | None = None,
     pair_slack_variance_yb: np.ndarray | None = None,
@@ -3255,6 +3258,18 @@ def stochastic_sparse_dual_approach(
         stochastic_workers = replicas
     if stochastic_workers < 1:
         raise ValueError("stochastic_workers must be positive")
+    if process_shards < 1:
+        raise ValueError("process_shards must be positive")
+    if process_shards > 1 and process_shards > replicas:
+        raise ValueError("process_shards cannot exceed replicas")
+    if process_shards > 1 and sampled_ab_major_graph is None:
+        raise ValueError(
+            "process shards require sampled_ab_major_graph"
+        )
+    if process_shards > 1 and fused_ab_batch:
+        raise ValueError(
+            "process shards do not support fused_ab_batch"
+        )
     if learning_rate <= 0.0 or trust_radius <= 0.0:
         raise ValueError("learning rate and trust radius must be positive")
     if not 0.0 <= beta1 < 1.0 or not 0.0 <= beta2 < 1.0:
@@ -3302,6 +3317,21 @@ def stochastic_sparse_dual_approach(
     c2 = np.array(correction_yb, dtype=np.float64, copy=True)
     origin = np.concatenate([lb, c1, c2])
     parameters = origin.copy()
+    process_context = None
+    shared_parameters_owner = None
+    if process_shards > 1:
+        # Prototype execution engine: forked workers inherit the read-only
+        # memory-mapped graph, while the frequently changing parameters stay
+        # in one shared buffer rather than crossing a Python queue.
+        process_context = mp.get_context("fork")
+        shared_parameters_owner = process_context.RawArray(
+            "d", len(parameters)
+        )
+        shared_parameters = np.frombuffer(
+            shared_parameters_owner, dtype=np.float64
+        )
+        shared_parameters[:] = parameters
+        parameters = shared_parameters
     first = len(lb)
     second = first + len(c1)
     relaxed = np.isfinite(pair_slack_precision)
@@ -3507,6 +3537,25 @@ def stochastic_sparse_dual_approach(
     best_stationarity = float("inf")
     snapshot_parameters = parameters.copy()
     snapshot_gradient = np.zeros_like(parameters)
+    shared_snapshot_parameters_owner = None
+    shared_snapshot_gradient_owner = None
+    if process_shards > 1:
+        shared_snapshot_parameters_owner = process_context.RawArray(
+            "d", len(parameters)
+        )
+        shared_snapshot_gradient_owner = process_context.RawArray(
+            "d", len(parameters)
+        )
+        shared_snapshot_parameters = np.frombuffer(
+            shared_snapshot_parameters_owner, dtype=np.float64
+        )
+        shared_snapshot_gradient = np.frombuffer(
+            shared_snapshot_gradient_owner, dtype=np.float64
+        )
+        shared_snapshot_parameters[:] = snapshot_parameters
+        shared_snapshot_gradient[:] = snapshot_gradient
+        snapshot_parameters = shared_snapshot_parameters
+        snapshot_gradient = shared_snapshot_gradient
     current_ab_factors = None
     snapshot_ab_factors = (
         prepare_ab_factors(snapshot_parameters) if direct_ab_blocks else None
@@ -3647,8 +3696,12 @@ def stochastic_sparse_dual_approach(
                     proposal, bb_min_step, bb_max_step
                 ))
         if variance_reduction:
-            snapshot_parameters = parameters.copy()
-            snapshot_gradient = gradient.copy()
+            if process_shards > 1:
+                snapshot_parameters[:] = parameters
+                snapshot_gradient[:] = gradient
+            else:
+                snapshot_parameters = parameters.copy()
+                snapshot_gradient = gradient.copy()
             if direct_ab_blocks:
                 snapshot_ab_factors = prepare_ab_factors(snapshot_parameters)
         trace.append({
@@ -3688,7 +3741,7 @@ def stochastic_sparse_dual_approach(
     reached_certificate = exact_record(0)
     replica_executor = (
         ThreadPoolExecutor(max_workers=stochastic_workers)
-        if stochastic_workers > 1 else None
+        if process_shards == 1 and stochastic_workers > 1 else None
     )
     replica_groups = [
         group for group in np.array_split(
@@ -3699,6 +3752,7 @@ def stochastic_sparse_dual_approach(
     ab_phase_timing["configured_workers"] = float(stochastic_workers)
     ab_phase_timing["configured_replicas"] = float(replicas)
     ab_phase_timing["configured_worker_groups"] = float(len(replica_groups))
+    ab_phase_timing["configured_process_shards"] = float(process_shards)
     if replica_groups:
         ab_phase_timing["largest_replica_group"] = float(
             max(len(group) for group in replica_groups)
@@ -4047,6 +4101,103 @@ def stochastic_sparse_dual_approach(
             )
         return gradient, 2 * len(selected_edges)
 
+    process_workers = []
+    process_connections = []
+    shared_process_gradient_owners = []
+    shared_process_gradients = []
+
+    def process_replica_worker(connection, replica_group, gradient_owner):
+        """Persist one process-local threaded replica group."""
+
+        nonlocal current_ab_factors, snapshot_ab_factors
+        output = np.frombuffer(gradient_owner, dtype=np.float64)
+        local_executor = ThreadPoolExecutor(max_workers=len(replica_group))
+        try:
+            while True:
+                command = connection.recv()
+                if command == "stop":
+                    return
+                if command == "refresh":
+                    with lazy_reference_lock:
+                        lazy_reference_cache.clear()
+                    snapshot_ab_factors = prepare_ab_factors(
+                        snapshot_parameters
+                    )
+                    connection.send(("refreshed",))
+                    continue
+                if command != "evaluate":
+                    raise ValueError(f"unknown process command {command!r}")
+                started = perf_counter()
+                current_ab_factors = prepare_ab_factors(parameters)
+                results = list(local_executor.map(
+                    sampled_gradient, replica_group
+                ))
+                output.fill(0.0)
+                local_edges = 0
+                local_phases = np.zeros(4, dtype=np.float64)
+                for contribution, edges_used, phases in results:
+                    output += contribution
+                    local_edges += edges_used
+                    local_phases += phases
+                connection.send((
+                    "evaluated", local_edges,
+                    perf_counter() - started, local_phases,
+                ))
+        except BaseException as error:
+            try:
+                connection.send((
+                    "error", type(error).__name__, str(error),
+                    traceback.format_exc(),
+                ))
+            finally:
+                raise
+        finally:
+            local_executor.shutdown()
+            connection.close()
+
+    if process_shards > 1:
+        process_replica_groups = [
+            np.asarray(group, dtype=np.int64)
+            for group in np.array_split(
+                np.arange(replicas, dtype=np.int64), process_shards
+            ) if len(group)
+        ]
+        for replica_group in process_replica_groups:
+            gradient_owner = process_context.RawArray("d", len(parameters))
+            parent_connection, child_connection = process_context.Pipe()
+            worker = process_context.Process(
+                target=process_replica_worker,
+                args=(child_connection, replica_group, gradient_owner),
+            )
+            worker.start()
+            child_connection.close()
+            process_workers.append(worker)
+            process_connections.append(parent_connection)
+            shared_process_gradient_owners.append(gradient_owner)
+            shared_process_gradients.append(np.frombuffer(
+                gradient_owner, dtype=np.float64
+            ))
+
+    def refresh_process_references() -> None:
+        if process_shards == 1:
+            return
+        for connection in process_connections:
+            connection.send("refresh")
+        for connection in process_connections:
+            message = connection.recv()
+            if message != ("refreshed",):
+                raise RuntimeError("process reference refresh failed")
+
+    def receive_process_result(connection):
+        message = connection.recv()
+        if message and message[0] == "error":
+            _, kind, detail, worker_traceback = message
+            raise RuntimeError(
+                f"replica worker failed with {kind}: {detail}\n"
+                f"{worker_traceback}"
+            )
+        return message
+
     sampled_edge_evaluations = 0
     completed_steps = 0
     for step in (range(1, steps + 1) if not reached_certificate else ()):
@@ -4066,7 +4217,7 @@ def stochastic_sparse_dual_approach(
                 learning_rate - minimum_learning_rate
             ) * (1.0 + np.cos(np.pi * progress))
         sampled_started = perf_counter()
-        if direct_ab_blocks:
+        if direct_ab_blocks and process_shards == 1:
             preparation_started = perf_counter()
             current_ab_factors = prepare_ab_factors(parameters)
             ab_phase_timing["factor_prepare_seconds"] = (
@@ -4076,6 +4227,66 @@ def stochastic_sparse_dual_approach(
         if direct_ab_blocks and variance_reduction and fused_ab_batch:
             gradient, edges_used = sampled_gradient_fused_ab()
             sampled_edge_evaluations += edges_used
+        elif process_shards > 1:
+            evaluation_started = perf_counter()
+            for connection in process_connections:
+                connection.send("evaluate")
+            process_results = [
+                receive_process_result(connection)
+                for connection in process_connections
+            ]
+            gradients = []
+            for shared_gradient, result in zip(
+                shared_process_gradients, process_results
+            ):
+                status, edges_used, timing, phases = result
+                if status != "evaluated":
+                    raise RuntimeError("process replica evaluation failed")
+                gradients.append((shared_gradient, edges_used, timing, phases))
+            ab_phase_timing["replica_evaluation_seconds"] = (
+                ab_phase_timing.get("replica_evaluation_seconds", 0.0)
+                + perf_counter() - evaluation_started
+            )
+            group_seconds = [timing for _, _, timing, _ in gradients]
+            ab_phase_timing["worker_task_seconds"] = (
+                ab_phase_timing.get("worker_task_seconds", 0.0)
+                + sum(group_seconds)
+            )
+            ab_phase_timing["worker_critical_path_seconds"] = (
+                ab_phase_timing.get("worker_critical_path_seconds", 0.0)
+                + max(group_seconds)
+            )
+            ab_phase_timing["worker_fastest_seconds"] = (
+                ab_phase_timing.get("worker_fastest_seconds", 0.0)
+                + min(group_seconds)
+            )
+            ab_phase_timing["worker_tasks"] = (
+                ab_phase_timing.get("worker_tasks", 0.0) + len(gradients)
+            )
+            ab_phase_timing["worker_timed_updates"] = (
+                ab_phase_timing.get("worker_timed_updates", 0.0) + 1.0
+            )
+            phase_totals = np.sum(
+                [phases for _, _, _, phases in gradients], axis=0
+            )
+            for name, value in zip(
+                ("block_lookup", "current_native", "reference", "assembly"),
+                phase_totals,
+            ):
+                key = f"worker_{name}_seconds"
+                ab_phase_timing[key] = (
+                    ab_phase_timing.get(key, 0.0) + float(value)
+                )
+            reduction_started = perf_counter()
+            gradient = np.zeros_like(parameters)
+            for contribution, edges_used, _, _ in gradients:
+                gradient += contribution
+                sampled_edge_evaluations += edges_used
+            gradient /= replicas
+            ab_phase_timing["replica_reduction_seconds"] = (
+                ab_phase_timing.get("replica_reduction_seconds", 0.0)
+                + perf_counter() - reduction_started
+            )
         else:
             evaluation_started = perf_counter()
             gradients = list(
@@ -4192,9 +4403,20 @@ def stochastic_sparse_dual_approach(
                 reached_certificate = True
                 break
             refresh_reference_blocks()
+            refresh_process_references()
 
     if replica_executor is not None:
         replica_executor.shutdown()
+    for connection in process_connections:
+        connection.send("stop")
+    for worker in process_workers:
+        worker.join()
+        if worker.exitcode != 0:
+            raise RuntimeError(
+                f"replica worker exited with status {worker.exitcode}"
+            )
+    for connection in process_connections:
+        connection.close()
     if exact_executor is not None:
         exact_executor.shutdown()
 

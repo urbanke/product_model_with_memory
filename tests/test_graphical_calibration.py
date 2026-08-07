@@ -1035,9 +1035,28 @@ def test_layered_intersection_graph_reconstructs_active_plans_and_margins(
         sampled_ab_major_graph=ab_graph,
         lazy_block_cache=4, fused_ab_batch=False,
     )
+    stochastic_ab_process = stochastic_sparse_dual_approach(
+        problem, log_base, full_c1, full_c2,
+        steps=2, batch_size=1, sampling="blocks", edge_blocks=4,
+        replicas=2, stochastic_workers=2, variance_reduction=True,
+        exact_interval=1, exact_margin_workers=2,
+        exact_layered_graph=graph,
+        exact_layered_checkpoint=layers - 1,
+        sampled_ab_major_graph=ab_graph,
+        lazy_block_cache=4, fused_ab_batch=False, process_shards=2,
+    )
     for actual, expected in zip(
         (stochastic_ab.log_base_y, stochastic_ab.correction_ya,
          stochastic_ab.correction_yb),
+        (stochastic_ab_legacy.log_base_y,
+         stochastic_ab_legacy.correction_ya,
+         stochastic_ab_legacy.correction_yb),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-13)
+    for actual, expected in zip(
+        (stochastic_ab_process.log_base_y,
+         stochastic_ab_process.correction_ya,
+         stochastic_ab_process.correction_yb),
         (stochastic_ab_legacy.log_base_y,
          stochastic_ab_legacy.correction_ya,
          stochastic_ab_legacy.correction_yb),

@@ -4947,3 +4947,21 @@ when the numerical SVRG reference refreshes.  An opt-in persistent position
 cache reduced the same run from 11.59 to 10.50 s and sampled-gradient time
 from 7.58 to 6.50 s, while using 38.2 MB at this checkpoint.  Measure its
 large-V footprint before making it the production default.
+
+An opt-in process-sharded stochastic prototype now exists behind
+`--process-shards`.  It keeps parameters, the SVRG snapshot, and one reduced
+gradient per shard in shared buffers; pipes carry synchronization records
+only.  Each persistent shard locally threads and reduces its replica group.
+On the small layered/AB-major identity test, two process shards reproduce the
+threaded optimizer trajectory to `2e-13`; all 42 calibration tests pass.
+This is not production-enabled: it currently uses the Unix `fork` start
+method, for which Python 3.14 emits a macOS warning after numerical libraries
+have initialized threads.  A live-load checkpoint-20 sweep gave 14.96 s for
+the ordinary six-thread path and 13.28, 13.43, and 13.05 s for two, three, and
+four process shards, respectively.  Thus process isolation recovered only
+about 15% under those conditions, not the 1.71x aggregate throughput of two
+independent jobs.  The remaining difference is the per-update synchronization
+barrier: independent jobs never wait for one another, but shards of one exact
+minibatch must.  Confirm once without the concurrent V2048 construction; do
+not productionize the fork prototype unless that clean result is materially
+better.
