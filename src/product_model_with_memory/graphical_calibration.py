@@ -2553,13 +2553,19 @@ def sparse_factorized_dual_hessian_product_layered(
         tuple(np.ascontiguousarray(x, dtype=np.int32) for x in graph.edge_ab),
         checkpoint, workers,
     )
-    y1, a1 = problem.active_ya_y, problem.active_ya_a
-    y2, b2 = problem.active_yb_y, problem.active_yb_b
-    order1 = np.argsort(a1, kind="stable")
-    order2 = np.argsort(b2, kind="stable")
-    ptr1 = np.r_[0, np.cumsum(np.bincount(a1, minlength=v), dtype=np.int64)]
-    ptr2 = np.r_[0, np.cumsum(np.bincount(b2, minlength=v), dtype=np.int64)]
-    for edge in np.flatnonzero(unstable):
+    unstable_edges = np.flatnonzero(unstable)
+    if len(unstable_edges):
+        y1, a1 = problem.active_ya_y, problem.active_ya_a
+        y2, b2 = problem.active_yb_y, problem.active_yb_b
+        order1 = np.argsort(a1, kind="stable")
+        order2 = np.argsort(b2, kind="stable")
+        ptr1 = np.r_[
+            0, np.cumsum(np.bincount(a1, minlength=v), dtype=np.int64)
+        ]
+        ptr2 = np.r_[
+            0, np.cumsum(np.bincount(b2, minlength=v), dtype=np.int64)
+        ]
+    for edge in unstable_edges:
         a, b = problem.edge_a[edge], problem.edge_b[edge]
         selected1 = order1[ptr1[a]:ptr1[a + 1]]
         selected2 = order2[ptr2[b]:ptr2[b + 1]]

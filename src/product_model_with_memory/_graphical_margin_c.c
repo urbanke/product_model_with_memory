@@ -538,6 +538,27 @@ typedef struct {
     double *cross,*dcross,*out1,*out2,*outy;
 } LayerHessianTask;
 
+typedef struct {
+    npy_intp lo,hi,inner;
+    int workers;
+    const double *local1,*local2;
+    double *out1,*out2;
+} LayerHessianReduceTask;
+
+static void *layer_hessian_reduce_worker(void *raw){
+    LayerHessianReduceTask *t=(LayerHessianReduceTask*)raw;
+    for(npy_intp i=t->lo;i<t->hi;i++){
+        double first=0,second=0;
+        for(int w=0;w<t->workers;w++){
+            first+=t->local1[(size_t)w*t->inner+i];
+            if(t->local2)second+=t->local2[(size_t)w*t->inner+i];
+        }
+        t->out1[i]+=first;
+        if(t->out2)t->out2[i]+=second;
+    }
+    return NULL;
+}
+
 static void *layer_hessian_worker(void *raw){
     LayerHessianTask *t=(LayerHessianTask*)raw;
     if(t->phase==0){
@@ -613,6 +634,7 @@ static PyObject *fused_hessian_layered(PyObject *self, PyObject *args){
     double *row=calloc((size_t)v,sizeof(double)),*col=calloc((size_t)v,sizeof(double));
     double *drow=calloc((size_t)v,sizeof(double)),*dcol=calloc((size_t)v,sizeof(double));
     LayerView *view=NULL;pthread_t *threads=NULL;LayerHessianTask *tasks=NULL;
+    LayerHessianReduceTask *reduce_tasks=NULL;npy_intp *row_bounds=NULL;
     double *local_cross=NULL,*local_dcross=NULL,*local_y=NULL,*local_2=NULL;
     if(!oy||!o1||!o2||!unstable||!s1||!s2||!ds1||!ds2||!cross||!dcross||
        !me||!dme||!row||!col||!drow||!dcol){PyErr_NoMemory();goto fail_hessian;}
@@ -640,16 +662,31 @@ static PyObject *fused_hessian_layered(PyObject *self, PyObject *args){
         local_dcross=calloc((size_t)workers*(size_t)ne,sizeof(double));
         local_y=calloc((size_t)workers*(size_t)v,sizeof(double));
         local_2=calloc((size_t)workers*(size_t)n2,sizeof(double));
-        if(!threads||!tasks||!local_cross||!local_dcross||!local_y||!local_2){PyErr_NoMemory();goto fail_hessian;}
+        reduce_tasks=calloc((size_t)workers,sizeof(*reduce_tasks));
+        row_bounds=malloc((size_t)(workers+1)*sizeof(*row_bounds));
+        if(!threads||!tasks||!reduce_tasks||!row_bounds||!local_cross||!local_dcross||!local_y||!local_2){PyErr_NoMemory();goto fail_hessian;}
+        npy_int64 total=0;
+        for(npy_intp i=0;i<n1;i++)for(int d=0;d<=checkpoint;d++)
+            total+=view[d].ptr[i+1]-view[d].ptr[i];
+        row_bounds[0]=0;row_bounds[workers]=n1;
+        npy_int64 cumulative=0;int next=1;
+        for(npy_intp i=0;i<n1&&next<workers;i++){
+            for(int d=0;d<=checkpoint;d++)
+                cumulative+=view[d].ptr[i+1]-view[d].ptr[i];
+            while(next<workers&&cumulative*workers>=total*next)
+                row_bounds[next++]=i+1;
+        }
+        while(next<workers)row_bounds[next++]=n1;
     }
     Py_BEGIN_ALLOW_THREADS
     for(npy_intp i=0;i<n1;i++){int a=aa[i],y=ay[i];s1[a]+=b[y]*q1[i];ds1[a]+=db[y]*q1[i]+b[y]*dq1[i];}
     for(npy_intp i=0;i<n2;i++){int a=bb[i],y=by[i];s2[a]+=b[y]*q2[i];ds2[a]+=db[y]*q2[i]+b[y]*dq2[i];}
     if(workers==1){LayerHessianTask t={0,n1,n2,v,checkpoint+1,0,view,b,db,q1,dq1,q2,dq2,NULL,NULL,ay,cross,dcross,NULL,NULL,NULL};layer_hessian_worker(&t);}
     else{
-        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){n1*w/workers,n1*(w+1)/workers,n2,v,checkpoint+1,0,view,b,db,q1,dq1,q2,dq2,NULL,NULL,ay,local_cross+(size_t)w*ne,local_dcross+(size_t)w*ne,NULL,NULL,NULL};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){row_bounds[w],row_bounds[w+1],n2,v,checkpoint+1,0,view,b,db,q1,dq1,q2,dq2,NULL,NULL,ay,local_cross+(size_t)w*ne,local_dcross+(size_t)w*ne,NULL,NULL,NULL};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
         for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
-        for(npy_intp e=0;e<ne;e++)for(int w=0;w<workers;w++){cross[e]+=local_cross[(size_t)w*ne+e];dcross[e]+=local_dcross[(size_t)w*ne+e];}
+        for(int w=0;w<workers;w++){reduce_tasks[w]=(LayerHessianReduceTask){ne*w/workers,ne*(w+1)/workers,ne,workers,local_cross,local_dcross,cross,dcross};pthread_create(&threads[w],NULL,layer_hessian_reduce_worker,&reduce_tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
     }
     double sm=0,dsm=0;
     for(npy_intp e=0;e<ne;e++){
@@ -663,15 +700,18 @@ static PyObject *fused_hessian_layered(PyObject *self, PyObject *args){
     for(npy_intp y=0;y<v;y++)dy[y]+=db[y]*sm+b[y]*dsm;
     if(workers==1){LayerHessianTask t={0,n1,n2,v,checkpoint+1,1,view,b,db,q1,dq1,q2,dq2,me,dme,ay,NULL,NULL,dm1,dm2,dy};layer_hessian_worker(&t);}
     else{
-        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){n1*w/workers,n1*(w+1)/workers,n2,v,checkpoint+1,1,view,b,db,q1,dq1,q2,dq2,me,dme,ay,NULL,NULL,dm1,local_2+(size_t)w*n2,local_y+(size_t)w*v};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
+        for(int w=0;w<workers;w++){tasks[w]=(LayerHessianTask){row_bounds[w],row_bounds[w+1],n2,v,checkpoint+1,1,view,b,db,q1,dq1,q2,dq2,me,dme,ay,NULL,NULL,dm1,local_2+(size_t)w*n2,local_y+(size_t)w*v};pthread_create(&threads[w],NULL,layer_hessian_worker,&tasks[w]);}
         for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
-        for(int w=0;w<workers;w++){for(npy_intp j=0;j<n2;j++)dm2[j]+=local_2[(size_t)w*n2+j];for(npy_intp y=0;y<v;y++)dy[y]+=local_y[(size_t)w*v+y];}
+        for(int w=0;w<workers;w++){reduce_tasks[w]=(LayerHessianReduceTask){n2*w/workers,n2*(w+1)/workers,n2,workers,local_2,NULL,dm2,NULL};pthread_create(&threads[w],NULL,layer_hessian_reduce_worker,&reduce_tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
+        for(int w=0;w<workers;w++){reduce_tasks[w]=(LayerHessianReduceTask){v*w/workers,v*(w+1)/workers,v,workers,local_y,NULL,dy,NULL};pthread_create(&threads[w],NULL,layer_hessian_reduce_worker,&reduce_tasks[w]);}
+        for(int w=0;w<workers;w++)pthread_join(threads[w],NULL);
     }
     Py_END_ALLOW_THREADS
-    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(local_cross);free(local_dcross);free(local_y);free(local_2);
+    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(reduce_tasks);free(row_bounds);free(local_cross);free(local_dcross);free(local_y);free(local_2);
     return Py_BuildValue("NNNN",oy,o1,o2,unstable);
 fail_hessian:
-    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(local_cross);free(local_dcross);free(local_y);free(local_2);
+    free(s1);free(s2);free(ds1);free(ds2);free(cross);free(dcross);free(me);free(dme);free(row);free(col);free(drow);free(dcol);free(view);free(threads);free(tasks);free(reduce_tasks);free(row_bounds);free(local_cross);free(local_dcross);free(local_y);free(local_2);
     Py_XDECREF(oy);Py_XDECREF(o1);Py_XDECREF(o2);Py_XDECREF(unstable);return NULL;
 }
 

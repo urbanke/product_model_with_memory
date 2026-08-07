@@ -4867,3 +4867,38 @@ workers and require the wall/CPU accounting to show real parallel execution.
 The production implementation must move that verified traversal, including
 log-domain unstable-edge derivatives and worker-local reductions, into the
 native kernel.
+
+That native kernel is now implemented and validated.  It performs the
+normalizer and directional-normalizer traversal, derivative margins, and
+worker-local reductions in C; only numerically unstable edges are repaired
+in Python with the direct log-domain derivative.  It agrees with the Python
+oracle and explicit small-problem Hessian to about `3e-14`.  On the fitted
+V1024 final checkpoint (876,840 parameters and 83,702,774 triangles), 30
+identical Hessian products took 14.31 s with one worker, 6.37 s with four,
+5.00 s with eight, and 4.39 s with twelve: only a 3.26x wall-time speedup at
+twelve workers.  This was correctly rejected as inadequate for a future
+64--100-core server.  An audit then found equal-row rather than equal-triangle
+worker partitioning, serial reductions of the AB/YB worker arrays, and two
+unconditional Python support sorts per product.  Fixing all three changed a
+repeat measurement to 12.49, 4.67, 3.44, and 3.05 s respectively, or 4.09x
+at twelve workers.  That is an improvement but remains inadequate; do not
+describe it as successful scaling.
+
+The remaining structural problem is that the YA-major algorithm traverses
+all triangles in two globally separated phases and maintains worker-private
+AB/YB accumulators.  The next implementation target is an AB-major Hessian
+kernel: give workers triangle-balanced complete AB contexts, compute each
+context's normalizer/directional normalizer, and immediately consume its
+triangles for derivative margins.  This preserves cache locality and removes
+the large cross/directional-cross reduction.  Checkpoint 0 is too small to
+measure scaling; use a later support for all worker-scaling conclusions.
+
+The restored bounded relaxed-Newton protocol was also smoke-tested locally.
+At V1024 checkpoint 0, 40 products improved the independently evaluated
+relaxed objective from 2.74569 to 2.72961 in 0.048 s; 80 products improved it
+to 2.71078 in 0.092 s.  At the already-converged final checkpoint, an explicit
+incoming-stationarity guard now exits in one margin evaluation with zero
+Hessian products.  `scripts/benchmark_layered_hessian.py` isolates this
+primitive for server measurements; run it before coupling Newton back into
+the production checkpoint driver.  Production policy remains stochastic
+first and bounded Newton only as a measured fallback.
