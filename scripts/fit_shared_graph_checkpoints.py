@@ -19,10 +19,71 @@ from intersection_topology_audit import load_problem
 from validate_layered_checkpoint_store import reorder_values
 from product_model_with_memory.graphical_calibration import (
     BirthMajorSparseSupport, SparseGroupedProblem, SparseGroupedResult,
+    first_pair_warm_start,
     checkpoint_in_birth_major_support, load_ab_major_intersection_graph,
-    load_layered_intersection_graph, sparse_grouped_ipf,
+    load_layered_intersection_graph, pair_midpoint_warm_start,
+    pair_product_warm_start, second_pair_warm_start,
+    sparse_factorized_dual_evaluation, sparse_grouped_ipf,
     stochastic_sparse_dual_approach, transfer_sparse_warm_start,
 )
+
+
+def select_warm_start(
+    problem: SparseGroupedProblem,
+    exact_graph,
+    checkpoint: int,
+    workers: int,
+    transferred: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], list[dict], str]:
+    """Choose a generic initializer by its exact convex dual objective."""
+
+    unigram = (
+        np.log(np.maximum(problem.target_y, np.finfo(float).tiny)),
+        np.zeros(len(problem.target_ya)),
+        np.zeros(len(problem.target_yb)),
+    )
+    candidates = {
+        "unigram": unigram,
+        "first_pair": first_pair_warm_start(problem),
+        "second_pair": second_pair_warm_start(problem),
+        "pair_midpoint": pair_midpoint_warm_start(problem),
+        "pair_product": pair_product_warm_start(problem),
+    }
+    if transferred is not None:
+        candidates["transferred"] = transferred
+
+    rows = []
+    valid = []
+    for name, factors in candidates.items():
+        started = time.perf_counter()
+        try:
+            evaluation = sparse_factorized_dual_evaluation(
+                problem, *factors, compute_certificate=True,
+                layered_graph=exact_graph,
+                layered_checkpoint=checkpoint, margin_workers=workers,
+            )
+            objective = float(evaluation.objective)
+            certificate = float(evaluation.certificate)
+        except FloatingPointError:
+            objective = certificate = float("inf")
+        factor_abs_max = max(
+            float(np.max(np.abs(component), initial=0.0))
+            for component in factors
+        )
+        row = {
+            "name": name,
+            "objective": objective,
+            "certificate": certificate,
+            "factor_abs_max": factor_abs_max,
+            "evaluation_seconds": time.perf_counter() - started,
+        }
+        rows.append(row)
+        if np.isfinite(objective) and np.isfinite(certificate):
+            valid.append((objective, certificate, factor_abs_max, name))
+    if not valid:
+        raise FloatingPointError("all initialization candidates are nonfinite")
+    selected = min(valid)[-1]
+    return candidates[selected], rows, selected
 
 
 def main() -> None:
@@ -80,14 +141,21 @@ def main() -> None:
         problem = checkpoint_in_birth_major_support(
             original, support, checkpoint
         )
-        if previous_result is None:
-            lb = np.log(np.maximum(problem.target_y, np.finfo(float).tiny))
-            c1 = np.zeros(len(problem.target_ya))
-            c2 = np.zeros(len(problem.target_yb))
-        else:
-            lb, c1, c2 = transfer_sparse_warm_start(
+        transferred = None
+        if previous_result is not None:
+            transferred = transfer_sparse_warm_start(
                 previous_problem, previous_result, problem
             )
+        (lb, c1, c2), initialization_rows, initialization = (
+            select_warm_start(
+                problem, exact_graph, checkpoint, args.workers, transferred
+            )
+        )
+        print(json.dumps({
+            "checkpoint": checkpoint,
+            "initialization": initialization,
+            "initialization_candidates": initialization_rows,
+        }), flush=True)
         started = time.perf_counter()
         stochastic = stochastic_sparse_dual_approach(
             problem, lb, c1, c2,
@@ -151,6 +219,8 @@ def main() -> None:
         )
         row = {
             "checkpoint": checkpoint,
+            "initialization": initialization,
+            "initialization_candidates": initialization_rows,
             "stochastic_seconds": stochastic_seconds,
             "fallback": fallback,
             "fallback_seconds": fallback_seconds,
