@@ -18,6 +18,7 @@ from product_model_with_memory.graphical_calibration import (
     conditional_ipf,
     checkpoint_in_birth_major_support,
     exact_sparse_dual_wolfe,
+    empirical_pair_slack_variances,
     first_pair_warm_start,
     fit_grouped_checkpoints,
     grouped_conditional_ipf,
@@ -167,6 +168,29 @@ def test_grouped_feasibility_lp_detects_incompatible_pair_margins():
     )
     impossible = check_grouped_feasibility_lp(impossible_problem)
     assert not impossible.feasible
+
+    # Exact matching has no finite solution, but the quadratic slack model
+    # has a finite, certified stationary point while retaining both pairs.
+    relaxed = exact_sparse_dual_wolfe(
+        impossible_problem,
+        np.log(impossible_problem.target_y),
+        np.zeros(len(impossible_problem.target_ya)),
+        np.zeros(len(impossible_problem.target_yb)),
+        pair_slack_precision=100.0,
+        max_iterations=2_000,
+        tolerance=1e-5,
+    )
+    assert relaxed.converged
+    assert relaxed.stationarity <= 1e-5
+    assert relaxed.certificate > 1e-4
+    assert np.isfinite(relaxed.correction_ya).all()
+    assert np.isfinite(relaxed.correction_yb).all()
+
+    variance_ya, variance_yb = empirical_pair_slack_variances(
+        impossible_problem, 100,
+    )
+    assert np.all(variance_ya >= 1e-4)
+    assert np.all(variance_yb >= 1e-4)
 
 
 def test_pair_product_warm_start_uses_both_pair_factors():

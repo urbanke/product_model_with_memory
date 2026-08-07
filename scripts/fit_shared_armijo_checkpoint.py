@@ -21,6 +21,7 @@ from product_model_with_memory.graphical_calibration import (
     SparseGroupedProblem,
     checkpoint_in_birth_major_support,
     exact_sparse_dual_wolfe,
+    empirical_pair_slack_variances,
     load_layered_intersection_graph,
 )
 
@@ -36,6 +37,17 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=1_000)
     parser.add_argument("--tolerance", type=float, default=1e-2)
     parser.add_argument("--progress-interval", type=int, default=1)
+    parser.add_argument(
+        "--relaxed", action="store_true",
+        help="allow statistically weighted YA/YB margin slack",
+    )
+    parser.add_argument(
+        "--slack-precision", type=float, default=1.0,
+        help=(
+            "dimensionless confidence multiplier for empirical pair-margin "
+            "precision; one uses the plug-in sampling variance"
+        ),
+    )
     args = parser.parse_args()
 
     store = Path(args.store)
@@ -86,6 +98,14 @@ def main() -> None:
             ),
         )
 
+    pair_variances = (None, None)
+    if args.relaxed:
+        with np.load(problem_path, allow_pickle=False) as saved_problem:
+            sample_size = int(saved_problem["prefix"])
+        pair_variances = empirical_pair_slack_variances(
+            problem, sample_size,
+        )
+
     started = time.perf_counter()
 
     def progress(row):
@@ -102,6 +122,11 @@ def main() -> None:
         margin_workers=args.workers,
         layered_graph=load_layered_intersection_graph(store / "graph"),
         layered_checkpoint=args.checkpoint,
+        pair_slack_precision=(
+            args.slack_precision if args.relaxed else float("inf")
+        ),
+        pair_slack_variance_ya=pair_variances[0],
+        pair_slack_variance_yb=pair_variances[1],
         progress_callback=progress,
     )
     out = Path(args.out)
@@ -124,6 +149,9 @@ def main() -> None:
         correction_ya=result.correction_ya,
         correction_yb=result.correction_yb,
         certificate=result.certificate,
+        stationarity=result.stationarity,
+        relaxed=np.asarray(args.relaxed),
+        slack_precision=np.asarray(args.slack_precision),
     )
     final_state_path = out / f"checkpoint_{args.checkpoint:03d}_final.npz"
     np.savez(
@@ -143,8 +171,12 @@ def main() -> None:
         "evaluations": result.evaluations,
         "objective": result.objective,
         "certificate": result.certificate,
+        "stationarity": result.stationarity,
         "final_objective": result.final_objective,
         "final_certificate": result.final_certificate,
+        "final_stationarity": result.final_stationarity,
+        "relaxed": args.relaxed,
+        "slack_precision": args.slack_precision,
         "converged": result.converged,
         "elapsed_seconds": time.perf_counter() - started,
         "state": str(state_path),

@@ -533,6 +533,40 @@ class SparseDualEvaluation:
         ])
 
 
+def empirical_pair_slack_variances(
+    problem: SparseGroupedProblem,
+    sample_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return universal plug-in sampling variances for active pair masses.
+
+    Each active target is a joint-event probability estimated from the
+    available prefix.  The binomial plug-in variance is ``p(1-p)/N``.  A
+    one-count floor, ``1/N**2``, prevents an observed rare event from being
+    treated as known exactly.  This is deliberately corpus-independent and
+    automatically tightens with the amount of past data.
+
+    The layered estimator is smoother than an empirical count, so these are
+    a first conservative uncertainty model rather than a claim that its
+    coordinates are independent.  A later covariance-aware version can be
+    substituted without changing the relaxed solver.
+    """
+
+    if sample_size < 1:
+        raise ValueError("sample size must be positive")
+    inverse_n = 1.0 / float(sample_size)
+
+    def variance(probability: np.ndarray) -> np.ndarray:
+        values = np.asarray(probability, dtype=np.float64)
+        if np.any(values < 0.0) or np.any(values > 1.0):
+            raise ValueError("pair probabilities must lie in [0, 1]")
+        return np.maximum(
+            values * (1.0 - values) * inverse_n,
+            inverse_n * inverse_n,
+        )
+
+    return variance(problem.target_ya), variance(problem.target_yb)
+
+
 @dataclass(frozen=True)
 class SparseStochasticResult:
     """Factors produced by a stochastic approach phase."""
@@ -574,6 +608,8 @@ class SparseLineSearchResult:
     final_correction_yb: np.ndarray
     final_objective: float
     final_certificate: float
+    stationarity: float = float("nan")
+    final_stationarity: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -2592,10 +2628,23 @@ def exact_sparse_dual_wolfe(
     margin_workers: int = 1,
     layered_graph: LayeredIntersectionGraph | None = None,
     layered_checkpoint: int | None = None,
+    pair_slack_precision: float = float("inf"),
+    pair_slack_variance_ya: np.ndarray | None = None,
+    pair_slack_variance_yb: np.ndarray | None = None,
     progress_callback: Callable[[dict[str, float | int | bool]], None]
     | None = None,
 ) -> SparseLineSearchResult:
-    """Minimize the exact convex dual by spectral GD and strong Wolfe search.
+    """Minimize the exact or soft-margin dual with a strong Wolfe search.
+
+    A finite ``pair_slack_precision`` solves the statistically relaxed primal
+
+    ``KL(q || q0) + precision/2 * sum_i slack_i**2 / variance_i``.
+
+    Its dual is the ordinary maximum-entropy dual plus
+    ``sum_i variance_i * theta_i**2 / (2 * precision)``.  Thus incompatible
+    finite-data YA and YB margins no longer send factors to infinity.  The Y
+    margin remains hard: together with the fixed AB law it is always feasible.
+    Infinite precision recovers exact margin matching.
 
     The first iteration starts from ``initial_step``.  Later iterations
     propose the Barzilai--Borwein spectral step.
@@ -2614,6 +2663,8 @@ def exact_sparse_dual_wolfe(
         raise ValueError("invalid line-search step bounds")
     if (layered_graph is None) != (layered_checkpoint is None):
         raise ValueError("layered graph and checkpoint must be supplied together")
+    if pair_slack_precision <= 0.0 or np.isnan(pair_slack_precision):
+        raise ValueError("pair slack precision must be positive")
 
     first = len(log_base_y)
     second = first + len(correction_ya)
@@ -2625,16 +2676,54 @@ def exact_sparse_dual_wolfe(
     parameters[:first] -= logsumexp(parameters[:first])
     evaluations = 0
 
+    relaxed = np.isfinite(pair_slack_precision)
+    variance_ya = np.ones(len(correction_ya), dtype=np.float64)
+    variance_yb = np.ones(len(correction_yb), dtype=np.float64)
+    for supplied, destination, name in (
+        (pair_slack_variance_ya, variance_ya, "YA slack variance"),
+        (pair_slack_variance_yb, variance_yb, "YB slack variance"),
+    ):
+        if supplied is not None:
+            values = np.asarray(supplied, dtype=np.float64)
+            if values.shape != destination.shape or not np.isfinite(values).all():
+                raise ValueError(f"invalid {name}")
+            destination[:] = values
+    if np.any(variance_ya <= 0.0) or np.any(variance_yb <= 0.0):
+        raise ValueError("pair slack variances must be positive")
+
+    def regularize(
+        value: SparseDualEvaluation, vector: np.ndarray,
+    ) -> SparseDualEvaluation:
+        if not relaxed:
+            return value
+        d1 = vector[first:second]
+        d2 = vector[second:]
+        scale = 1.0 / pair_slack_precision
+        return SparseDualEvaluation(
+            objective=float(value.objective + 0.5 * scale * (
+                np.dot(variance_ya, d1 * d1)
+                + np.dot(variance_yb, d2 * d2)
+            )),
+            gradient_y=value.gradient_y,
+            gradient_ya=value.gradient_ya + scale * variance_ya * d1,
+            gradient_yb=value.gradient_yb + scale * variance_yb * d2,
+            certificate=value.certificate,
+            residual_y_l1=value.residual_y_l1,
+            residual_ya_l1=value.residual_ya_l1,
+            residual_yb_l1=value.residual_yb_l1,
+        )
+
     def evaluate(vector: np.ndarray) -> SparseDualEvaluation:
         nonlocal evaluations
         evaluations += 1
-        return sparse_factorized_dual_evaluation(
+        value = sparse_factorized_dual_evaluation(
             problem, vector[:first], vector[first:second], vector[second:],
             compute_certificate=True,
             layered_graph=layered_graph,
             layered_checkpoint=layered_checkpoint,
             margin_workers=margin_workers,
         )
+        return regularize(value, vector)
 
     current = evaluate(parameters)
     gradient = current.gradient()
@@ -2645,12 +2734,18 @@ def exact_sparse_dual_wolfe(
     previous_gradient = None
     previous_step = initial_step
 
+    def stationarity(value: SparseDualEvaluation) -> float:
+        return float(np.max(np.abs(value.gradient())))
+
+    best_stationarity = stationarity(current)
+
     for iteration in range(max_iterations + 1):
         record: dict[str, float | int | bool] = {
             "iteration": iteration,
             "objective": float(current.objective),
             "certificate": float(current.certificate),
             "gradient_l2": float(np.linalg.norm(gradient)),
+            "stationarity": stationarity(current),
             "evaluations": evaluations,
             "factor_abs_max": float(np.max(np.abs(parameters))),
         }
@@ -2659,7 +2754,10 @@ def exact_sparse_dual_wolfe(
         trace.append(record)
         if progress_callback is not None:
             progress_callback(record)
-        if current.certificate <= tolerance or iteration == max_iterations:
+        stopping_value = (
+            stationarity(current) if relaxed else float(current.certificate)
+        )
+        if stopping_value <= tolerance or iteration == max_iterations:
             break
 
         if previous_parameters is None:
@@ -2738,9 +2836,14 @@ def exact_sparse_dual_wolfe(
         parameters = candidate
         current = candidate_value
         gradient = current.gradient()
-        if current.certificate < best.certificate:
+        current_stationarity = stationarity(current)
+        if (
+            (relaxed and current_stationarity < best_stationarity)
+            or (not relaxed and current.certificate < best.certificate)
+        ):
             best_parameters = parameters.copy()
             best = current
+            best_stationarity = current_stationarity
 
     return SparseLineSearchResult(
         best_parameters[:first].copy(),
@@ -2750,13 +2853,15 @@ def exact_sparse_dual_wolfe(
         evaluations,
         float(best.objective),
         float(best.certificate),
-        bool(best.certificate <= tolerance),
+        bool((best_stationarity if relaxed else best.certificate) <= tolerance),
         tuple(trace),
         parameters[:first].copy(),
         parameters[first:second].copy(),
         parameters[second:].copy(),
         float(current.objective),
         float(current.certificate),
+        float(best_stationarity),
+        float(stationarity(current)),
     )
 
 
