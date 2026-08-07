@@ -557,6 +557,21 @@ class SparseStochasticResult:
 
 
 @dataclass(frozen=True)
+class SparseLineSearchResult:
+    """Factors produced by exact spectral gradient descent with line search."""
+
+    log_base_y: np.ndarray
+    correction_ya: np.ndarray
+    correction_yb: np.ndarray
+    iterations: int
+    evaluations: int
+    objective: float
+    certificate: float
+    converged: bool
+    trace: tuple[dict[str, float | int | bool], ...]
+
+
+@dataclass(frozen=True)
 class SparseIntersectionPlan:
     """Compact correction intersections indexed by retained AB edge."""
 
@@ -2553,6 +2568,180 @@ def sparse_grouped_newton_cg(
         best_certificate <= tolerance,
         evaluations,
         hessian_products,
+    )
+
+
+def exact_sparse_dual_armijo(
+    problem: SparseGroupedProblem,
+    log_base_y: np.ndarray,
+    correction_ya: np.ndarray,
+    correction_yb: np.ndarray,
+    *,
+    max_iterations: int = 1_000,
+    tolerance: float = 1e-2,
+    initial_step: float = 1.0,
+    armijo: float = 1e-4,
+    contraction: float = 0.5,
+    expansion: float = 2.0,
+    minimum_step: float = 1e-12,
+    maximum_step: float = 1e12,
+    margin_workers: int = 1,
+    layered_graph: LayeredIntersectionGraph | None = None,
+    layered_checkpoint: int | None = None,
+    progress_callback: Callable[[dict[str, float | int | bool]], None]
+    | None = None,
+) -> SparseLineSearchResult:
+    """Minimize the exact convex dual by spectral GD and Armijo search.
+
+    The first iteration expands from ``initial_step`` to locate the local
+    scale.  Later iterations propose the Barzilai--Borwein spectral step and
+    backtrack until the standard Armijo sufficient-decrease condition holds.
+    Nonfinite factorized trials are rejected like ordinary failed trials.
+    """
+
+    if max_iterations < 0 or tolerance <= 0.0:
+        raise ValueError("invalid line-search iteration limit or tolerance")
+    if not 0.0 < armijo < 1.0:
+        raise ValueError("Armijo constant must lie in (0, 1)")
+    if not 0.0 < contraction < 1.0 or expansion <= 1.0:
+        raise ValueError("invalid line-search contraction or expansion")
+    if not 0.0 < minimum_step <= initial_step <= maximum_step:
+        raise ValueError("invalid line-search step bounds")
+    if (layered_graph is None) != (layered_checkpoint is None):
+        raise ValueError("layered graph and checkpoint must be supplied together")
+
+    first = len(log_base_y)
+    second = first + len(correction_ya)
+    parameters = np.concatenate([
+        np.asarray(log_base_y, dtype=np.float64),
+        np.asarray(correction_ya, dtype=np.float64),
+        np.asarray(correction_yb, dtype=np.float64),
+    ])
+    parameters[:first] -= logsumexp(parameters[:first])
+    evaluations = 0
+
+    def evaluate(vector: np.ndarray) -> SparseDualEvaluation:
+        nonlocal evaluations
+        evaluations += 1
+        return sparse_factorized_dual_evaluation(
+            problem, vector[:first], vector[first:second], vector[second:],
+            compute_certificate=True,
+            layered_graph=layered_graph,
+            layered_checkpoint=layered_checkpoint,
+            margin_workers=margin_workers,
+        )
+
+    current = evaluate(parameters)
+    gradient = current.gradient()
+    best_parameters = parameters.copy()
+    best = current
+    trace: list[dict[str, float | int | bool]] = []
+    previous_parameters = None
+    previous_gradient = None
+    previous_step = initial_step
+
+    for iteration in range(max_iterations + 1):
+        record: dict[str, float | int | bool] = {
+            "iteration": iteration,
+            "objective": float(current.objective),
+            "certificate": float(current.certificate),
+            "gradient_l2": float(np.linalg.norm(gradient)),
+            "evaluations": evaluations,
+        }
+        trace.append(record)
+        if progress_callback is not None:
+            progress_callback(record)
+        if current.certificate <= tolerance or iteration == max_iterations:
+            break
+
+        if previous_parameters is None:
+            proposal = initial_step
+            allow_expansion = True
+        else:
+            displacement = parameters - previous_parameters
+            gradient_change = gradient - previous_gradient
+            curvature = float(displacement @ gradient_change)
+            proposal = (
+                float(displacement @ displacement) / curvature
+                if curvature > 0.0 and np.isfinite(curvature)
+                else previous_step
+            )
+            proposal = float(np.clip(proposal, minimum_step, maximum_step))
+            allow_expansion = False
+
+        direction = -gradient
+        slope = -float(gradient @ gradient)
+
+        def trial(step: float):
+            candidate = parameters + step * direction
+            candidate[:first] -= logsumexp(candidate[:first])
+            try:
+                value = evaluate(candidate)
+            except (FloatingPointError, OverflowError):
+                return candidate, None
+            if not (
+                np.isfinite(value.objective)
+                and np.isfinite(value.certificate)
+                and np.all(np.isfinite(value.gradient()))
+            ):
+                return candidate, None
+            return candidate, value
+
+        step = proposal
+        candidate, candidate_value = trial(step)
+        accepted = (
+            candidate_value is not None
+            and candidate_value.objective
+            <= current.objective + armijo * step * slope
+        )
+        while not accepted and step > minimum_step:
+            step *= contraction
+            candidate, candidate_value = trial(step)
+            accepted = (
+                candidate_value is not None
+                and candidate_value.objective
+                <= current.objective + armijo * step * slope
+            )
+        if not accepted:
+            record["line_search_failed"] = True
+            break
+
+        if allow_expansion:
+            while step < maximum_step:
+                expanded = min(maximum_step, step * expansion)
+                expanded_candidate, expanded_value = trial(expanded)
+                if not (
+                    expanded_value is not None
+                    and expanded_value.objective
+                    <= current.objective + armijo * expanded * slope
+                ):
+                    break
+                step = expanded
+                candidate, candidate_value = expanded_candidate, expanded_value
+                if step == maximum_step:
+                    break
+
+        record["accepted_step"] = float(step)
+        previous_parameters = parameters
+        previous_gradient = gradient
+        previous_step = step
+        parameters = candidate
+        current = candidate_value
+        gradient = current.gradient()
+        if current.certificate < best.certificate:
+            best_parameters = parameters.copy()
+            best = current
+
+    return SparseLineSearchResult(
+        best_parameters[:first].copy(),
+        best_parameters[first:second].copy(),
+        best_parameters[second:].copy(),
+        len(trace) - 1,
+        evaluations,
+        float(best.objective),
+        float(best.certificate),
+        bool(best.certificate <= tolerance),
+        tuple(trace),
     )
 
 

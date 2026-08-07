@@ -17,6 +17,7 @@ from product_model_with_memory.graphical_calibration import (
     check_grouped_feasibility_lp,
     conditional_ipf,
     checkpoint_in_birth_major_support,
+    exact_sparse_dual_armijo,
     first_pair_warm_start,
     fit_grouped_checkpoints,
     grouped_conditional_ipf,
@@ -1418,6 +1419,35 @@ def test_stochastic_sparse_approach_improves_exact_dual():
     assert result.sampled_edges == 62_500
     assert len(records) == result.exact_evaluations
     assert records[0][0] == 0 and records[-1][0] == 250
+
+
+def test_exact_armijo_selects_scale_and_reduces_certificate():
+    rng = np.random.default_rng(17041)
+    raw = rng.gamma(shape=0.8, scale=1.0, size=(5, 5, 5))
+    raw /= raw.sum()
+    p_ya, p_yb, p_ab = _pair_margins(raw)
+    problem = sparse_problem_from_dense(
+        p_ya, p_yb, p_ab,
+        np.ones_like(p_ya, dtype=bool),
+        np.ones_like(p_yb, dtype=bool),
+    )
+    lb = np.log(problem.target_y)
+    c1 = np.zeros(len(problem.target_ya))
+    c2 = np.zeros(len(problem.target_yb))
+    initial = sparse_factorized_dual_evaluation(
+        problem, lb, c1, c2, compute_certificate=True
+    )
+    result = exact_sparse_dual_armijo(
+        problem, lb, c1, c2, max_iterations=100, tolerance=1e-3
+    )
+    assert result.objective < initial.objective
+    assert result.certificate < initial.certificate
+    assert result.evaluations > result.iterations
+    assert all(
+        later["objective"] <= earlier["objective"] + 1e-12
+        for earlier, later in zip(result.trace, result.trace[1:])
+    )
+    assert any("accepted_step" in row for row in result.trace)
 
 
 def test_block_svrg_approach_improves_exact_dual():
