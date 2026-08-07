@@ -71,7 +71,7 @@ echo "=== fit all checkpoints with direct sampled graph traversal ==="
 if [ ! -f "$FITTED/summary.json" ]; then
   srun -c 64 "$PY" -u scripts/fit_shared_graph_checkpoints.py \
     --store "$STORE" --problems "$PROBLEMS" --out "$FITTED" \
-    --workers 12 --steps 500 --tolerance 1e-2 \
+    --workers 12 --steps 4000 --tolerance 1e-2 \
     --exact-interval 50 --blocks 128 --cache 16 --stop 32
 else
   echo "reusing $FITTED/summary.json"
