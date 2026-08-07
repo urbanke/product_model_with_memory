@@ -42,9 +42,14 @@ def main() -> None:
     parser.add_argument("--blocks", type=int, default=128)
     parser.add_argument("--cache", type=int, default=8)
     parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--replicas", type=int, default=12)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exact-interval", type=int, default=50)
     parser.add_argument("--tolerance", type=float)
+    parser.add_argument(
+        "--modes", default="eager,lazy,ab_major",
+        help="comma-separated subset of eager,lazy,ab_major",
+    )
     args = parser.parse_args()
 
     store = Path(args.store)
@@ -101,18 +106,26 @@ def main() -> None:
         save_ab_major_intersection_graph(ab_graph, ab_path)
         ab_graph = load_ab_major_intersection_graph(ab_path)
 
-    rows = []
-    for name, layered, direct_ab in (
+    available_modes = {
+        name: (layered, direct_ab) for name, layered, direct_ab in (
         ("eager", False, False),
         ("lazy", True, False),
         ("ab_major", True, True),
-    ):
+        )
+    }
+    requested_modes = [name.strip() for name in args.modes.split(",")]
+    unknown_modes = set(requested_modes) - set(available_modes)
+    if unknown_modes:
+        parser.error(f"unknown --modes value(s): {sorted(unknown_modes)}")
+    rows = []
+    for name in requested_modes:
+        layered, direct_ab = available_modes[name]
         started = time.perf_counter()
         result = stochastic_sparse_dual_approach(
             problem, log_base, c1, c2,
             steps=args.steps, batch_size=1,
             sampling="blocks", edge_blocks=args.blocks,
-            replicas=args.workers, stochastic_workers=args.workers,
+            replicas=args.replicas, stochastic_workers=args.workers,
             variance_reduction=True, exact_interval=args.exact_interval,
             exact_margin_workers=args.workers,
             certificate_tolerance=args.tolerance,

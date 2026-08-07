@@ -34,6 +34,7 @@ def select_warm_start(
     checkpoint: int,
     workers: int,
     transferred: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    policy: str,
 ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], list[dict], str]:
     """Choose a generic initializer by its exact convex dual objective."""
 
@@ -82,7 +83,11 @@ def select_warm_start(
             valid.append((objective, certificate, factor_abs_max, name))
     if not valid:
         raise FloatingPointError("all initialization candidates are nonfinite")
-    selected = min(valid)[-1]
+    selected = (
+        "transferred" if policy == "legacy" and transferred is not None
+        else "pair_product" if policy == "legacy"
+        else min(valid)[-1]
+    )
     return candidates[selected], rows, selected
 
 
@@ -93,8 +98,20 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument(
+        "--replicas", type=int, default=12,
+        help="fixed total stochastic batch, independent of --workers",
+    )
+    parser.add_argument(
         "--seed", type=int, default=71,
         help="base stochastic seed; checkpoint index is added",
+    )
+    parser.add_argument(
+        "--initialization-policy", choices=("legacy", "portfolio"),
+        default="legacy",
+        help=(
+            "legacy uses pair-product once then certified transfers; "
+            "portfolio is an experimental objective-selected diagnostic"
+        ),
     )
     parser.add_argument(
         "--max-stochastic-steps", "--steps", dest="steps", type=int,
@@ -158,6 +175,45 @@ def main() -> None:
     (out / "states").mkdir(parents=True, exist_ok=True)
     previous_problem = None
     previous_result = None
+    if args.start:
+        previous_checkpoint = args.start - 1
+        previous_state_path = (
+            out / "states" / f"checkpoint_{previous_checkpoint:03d}.npz"
+        )
+        if not previous_state_path.exists():
+            raise FileNotFoundError(
+                f"cannot resume at checkpoint {args.start}: missing "
+                f"{previous_state_path}"
+            )
+        previous_original = load_problem(paths[previous_checkpoint])
+        previous_problem = checkpoint_in_birth_major_support(
+            previous_original, support, previous_checkpoint
+        )
+        with np.load(previous_state_path, allow_pickle=False) as state:
+            previous_result = SparseGroupedResult(
+                log_base_y=state["log_base_y"],
+                correction_ya=reorder_values(
+                    previous_original.active_ya_y,
+                    previous_original.active_ya_a,
+                    state["correction_ya"],
+                    previous_problem.active_ya_y,
+                    previous_problem.active_ya_a,
+                    previous_problem.vocabulary_size,
+                ),
+                correction_yb=reorder_values(
+                    previous_original.active_yb_y,
+                    previous_original.active_yb_b,
+                    state["correction_yb"],
+                    previous_problem.active_yb_y,
+                    previous_problem.active_yb_b,
+                    previous_problem.vocabulary_size,
+                ),
+                iterations=0,
+                grouped_residual_ya_l1=0.0,
+                grouped_residual_yb_l1=0.0,
+                residual_y_l1=0.0,
+                converged=True,
+            )
     rows = []
     run_started = time.perf_counter()
     for checkpoint in range(args.start, stop):
@@ -172,12 +228,14 @@ def main() -> None:
             )
         (lb, c1, c2), initialization_rows, initialization = (
             select_warm_start(
-                problem, exact_graph, checkpoint, args.workers, transferred
+                problem, exact_graph, checkpoint, args.workers, transferred,
+                args.initialization_policy,
             )
         )
         print(json.dumps({
             "checkpoint": checkpoint,
             "initialization": initialization,
+            "initialization_policy": args.initialization_policy,
             "initialization_candidates": initialization_rows,
         }), flush=True)
         saved_thresholds = set()
@@ -227,7 +285,7 @@ def main() -> None:
             problem, lb, c1, c2,
             steps=args.steps, batch_size=1,
             sampling="blocks", edge_blocks=args.blocks,
-            replicas=args.workers, stochastic_workers=args.workers,
+            replicas=args.replicas, stochastic_workers=args.workers,
             variance_reduction=True, exact_interval=args.exact_interval,
             exact_margin_workers=args.workers,
             certificate_tolerance=args.tolerance,
@@ -301,6 +359,7 @@ def main() -> None:
         row = {
             "checkpoint": checkpoint,
             "initialization": initialization,
+            "initialization_policy": args.initialization_policy,
             "initialization_candidates": initialization_rows,
             "stochastic_seconds": stochastic_seconds,
             "stochastic_seed": args.seed + checkpoint,

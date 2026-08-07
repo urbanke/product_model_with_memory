@@ -1249,6 +1249,9 @@ def sparse_factorized_margins_ab_major(
     *,
     workers: int = 1,
     max_parallel_scratch_bytes: int = 1 << 30,
+    prepared_factors: tuple[
+        np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    ] | None = None,
 ) -> SparseFactorizedMargins:
     """Evaluate one contiguous AB-edge range from the shared AB-major graph."""
 
@@ -1257,11 +1260,16 @@ def sparse_factorized_margins_ab_major(
     ne = len(problem.edge_probability)
     if edge_offset + ne + 1 > len(graph.edge_ptr):
         raise ValueError("AB-major edge range lies outside the graph")
-    log_base = np.asarray(log_base_y, dtype=np.float64)
-    normalized_log_base = log_base - logsumexp(log_base)
-    base = np.exp(normalized_log_base)
-    c1 = np.asarray(correction_ya, dtype=np.float64)
-    c2 = np.asarray(correction_yb, dtype=np.float64)
+    if prepared_factors is None:
+        log_base = np.asarray(log_base_y, dtype=np.float64)
+        normalized_log_base = log_base - logsumexp(log_base)
+        base = np.exp(normalized_log_base)
+        c1 = np.asarray(correction_ya, dtype=np.float64)
+        c2 = np.asarray(correction_yb, dtype=np.float64)
+        r1 = np.expm1(c1)
+        r2 = np.expm1(c2)
+    else:
+        normalized_log_base, base, c1, c2, r1, r2 = prepared_factors
     scratch_per_worker = 8 * (
         3 * problem.vocabulary_size + len(c1) + len(c2)
     )
@@ -1272,8 +1280,8 @@ def sparse_factorized_margins_ab_major(
     )
     target_y, active_ya, active_yb, log_z, unstable = (
         _graphical_margin_c.fused_margins_ab_major(
-            np.ascontiguousarray(base), np.ascontiguousarray(np.expm1(c1)),
-            np.ascontiguousarray(np.expm1(c2)),
+            np.ascontiguousarray(base), np.ascontiguousarray(r1),
+            np.ascontiguousarray(r2),
             np.ascontiguousarray(problem.edge_a, dtype=np.int32),
             np.ascontiguousarray(problem.edge_b, dtype=np.int32),
             np.ascontiguousarray(problem.edge_probability, dtype=np.float64),
@@ -2600,6 +2608,21 @@ def stochastic_sparse_dual_approach(
     parameters = origin.copy()
     first = len(lb)
     second = first + len(c1)
+
+    def prepare_ab_factors(vector: np.ndarray):
+        local_lb = vector[:first]
+        normalized = local_lb - logsumexp(local_lb)
+        local_c1 = vector[first:second]
+        local_c2 = vector[second:]
+        return (
+            np.ascontiguousarray(normalized),
+            np.ascontiguousarray(np.exp(normalized)),
+            local_c1,
+            local_c2,
+            np.ascontiguousarray(np.expm1(local_c1)),
+            np.ascontiguousarray(np.expm1(local_c2)),
+        )
+
     moment = np.zeros_like(parameters)
     square = np.zeros_like(parameters)
     rngs = [np.random.default_rng(seed + 1_000_003 * replica)
@@ -2730,6 +2753,10 @@ def stochastic_sparse_dual_approach(
     best_certificate = float("inf")
     snapshot_parameters = parameters.copy()
     snapshot_gradient = np.zeros_like(parameters)
+    current_ab_factors = None
+    snapshot_ab_factors = (
+        prepare_ab_factors(snapshot_parameters) if direct_ab_blocks else None
+    )
     exact_evaluations = 0
     exact_seconds = 0.0
     sampled_gradient_seconds = 0.0
@@ -2752,6 +2779,7 @@ def stochastic_sparse_dual_approach(
         nonlocal scheduler_exhausted
         nonlocal adam_step
         nonlocal stop_reason
+        nonlocal snapshot_ab_factors
         started = perf_counter()
         evaluation = sparse_factorized_dual_evaluation(
             problem, parameters[:first], parameters[first:second],
@@ -2852,6 +2880,8 @@ def stochastic_sparse_dual_approach(
         if variance_reduction:
             snapshot_parameters = parameters.copy()
             snapshot_gradient = gradient.copy()
+            if direct_ab_blocks:
+                snapshot_ab_factors = prepare_ab_factors(snapshot_parameters)
         trace.append({
             "step": step,
             "exact_objective": evaluation.objective,
@@ -2888,6 +2918,12 @@ def stochastic_sparse_dual_approach(
         ThreadPoolExecutor(max_workers=stochastic_workers)
         if stochastic_workers > 1 else None
     )
+    replica_groups = [
+        group for group in np.array_split(
+            np.arange(replicas, dtype=np.int64),
+            min(stochastic_workers, replicas),
+        ) if len(group)
+    ]
     reference_block_margins: list[SparseReferenceMargins] = []
     reference_positions = [] if lazy_blocks else [
         (
@@ -2933,6 +2969,7 @@ def stochastic_sparse_dual_approach(
                 snapshot_parameters[:first],
                 snapshot_parameters[first:second],
                 snapshot_parameters[second:],
+                prepared_factors=snapshot_ab_factors,
             ) if direct_ab_blocks else sparse_factorized_margins(
                 block.problem, block.intersection_plan,
                 snapshot_parameters[:first],
@@ -3019,6 +3056,7 @@ def stochastic_sparse_dual_approach(
                     exact_layered_checkpoint, block_bounds[chosen][0],
                     parameters[:first], parameters[first:second],
                     parameters[second:],
+                    prepared_factors=current_ab_factors,
                 ) if direct_ab_blocks else sparse_factorized_margins(
                     block.problem, block.intersection_plan,
                     parameters[:first], parameters[first:second],
@@ -3092,6 +3130,19 @@ def stochastic_sparse_dual_approach(
             gradient += snapshot_gradient - reference
         return gradient, batch_size * (2 if variance_reduction else 1)
 
+    def sampled_gradient_group(
+        replica_group: np.ndarray,
+    ) -> tuple[np.ndarray, int]:
+        """Evaluate and reduce several replicas inside one worker."""
+
+        local_gradient = np.zeros_like(parameters)
+        local_edges = 0
+        for replica in replica_group:
+            contribution, edges_used = sampled_gradient(int(replica))
+            local_gradient += contribution
+            local_edges += edges_used
+        return local_gradient, local_edges
+
     sampled_edge_evaluations = 0
     completed_steps = 0
     for step in (range(1, steps + 1) if not reached_certificate else ()):
@@ -3102,10 +3153,12 @@ def stochastic_sparse_dual_approach(
                 learning_rate - minimum_learning_rate
             ) * (1.0 + np.cos(np.pi * progress))
         sampled_started = perf_counter()
+        if direct_ab_blocks:
+            current_ab_factors = prepare_ab_factors(parameters)
         gradients = (
-            map(sampled_gradient, range(replicas))
+            map(sampled_gradient_group, replica_groups)
             if replica_executor is None
-            else replica_executor.map(sampled_gradient, range(replicas))
+            else replica_executor.map(sampled_gradient_group, replica_groups)
         )
         gradient = np.zeros_like(parameters)
         for contribution, edges_used in gradients:

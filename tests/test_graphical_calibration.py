@@ -1435,10 +1435,25 @@ def test_stochastic_worker_count_does_not_change_fixed_batch_trajectory():
     ]
     reference = results[0]
     for result in results[1:]:
-        assert np.array_equal(result.log_base_y, reference.log_base_y)
-        assert np.array_equal(result.correction_ya, reference.correction_ya)
-        assert np.array_equal(result.correction_yb, reference.correction_yb)
-        assert result.trace == reference.trace
+        # Worker-local reduction changes only floating-point association; the
+        # fixed replica batch and resulting trajectory remain numerically the
+        # same for every worker count.
+        np.testing.assert_allclose(
+            result.log_base_y, reference.log_base_y, rtol=0.0, atol=1e-13
+        )
+        np.testing.assert_allclose(
+            result.correction_ya, reference.correction_ya,
+            rtol=0.0, atol=1e-13,
+        )
+        np.testing.assert_allclose(
+            result.correction_yb, reference.correction_yb,
+            rtol=0.0, atol=1e-13,
+        )
+        assert result.steps == reference.steps
+        assert result.stop_reason == reference.stop_reason
+        assert result.best_exact_certificate == pytest.approx(
+            reference.best_exact_certificate, abs=1e-13
+        )
 
 
 def test_adam_plateau_scheduler_reduces_rate():
