@@ -1,4 +1,5 @@
 #!/bin/bash
+# Defaults to V=16,384; override PMM_TOP_K and PMM_ROOT for larger runs.
 #SBATCH --job-name=gmt8-bpe
 #SBATCH --mail-user=ruediger@gmail.com
 #SBATCH --mail-type=END,FAIL
