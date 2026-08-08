@@ -84,11 +84,8 @@ def checkpoint_tasks(
         tasks.append(MoldableTask(
             f"G{k}", max(row.graph, 1.0), tuple(graph_dependencies), 1,
         ))
-        fitting_dependencies = [f"G{k}"]
-        if k:
-            fitting_dependencies.append(f"F{k - 1}")
         tasks.append(MoldableTask(
-            f"F{k}", max(row.fitting, 1.0), tuple(fitting_dependencies),
+            f"F{k}", max(row.fitting, 1.0), (f"G{k}",),
             fitting_maximum_workers,
         ))
         if row.evaluation is not None:

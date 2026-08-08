@@ -23,7 +23,10 @@ def main() -> None:
     parser.add_argument("--fitting-workers", type=int, default=4)
     parser.add_argument("--fitting-replicas", type=int, default=12)
     parser.add_argument("--evaluation-workers", type=int, default=1)
-    parser.add_argument("--fitting-steps", type=int, default=500)
+    parser.add_argument(
+        "--fitting-steps", type=int, default=1_000,
+        help="stochastic safety ceiling; plateau/certificate normally stops first",
+    )
     parser.add_argument("--construction-only", action="store_true")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
@@ -42,7 +45,10 @@ def main() -> None:
     manifests = root / "job_manifests"
     jobs = []
 
-    def add(job_id, kind, checkpoint, command, dependencies, outputs, workers):
+    def add(
+        job_id, kind, checkpoint, command, dependencies, outputs, workers,
+        minimum_workers=1,
+    ):
         jobs.append({
             "id": job_id,
             "type": kind,
@@ -52,6 +58,7 @@ def main() -> None:
             "outputs": [str(path) for path in outputs],
             "completion_manifest": str(manifests / f"{job_id}.json"),
             "workers": workers,
+            "minimum_workers": minimum_workers,
             "private_memory_bytes": 0,
         })
 
@@ -141,36 +148,39 @@ def main() -> None:
             g_dependencies,
             [delta_manifest], 1,
         )
-        f_dependencies = [f"G{checkpoint}"]
-        if checkpoint:
-            f_dependencies.append(f"F{checkpoint - 1}")
+        # Every checkpoint uses the same data-independent initialization
+        # portfolio.  Fitting is therefore not a causal chain: once G_k is
+        # available, F_k may run concurrently with every other ready fit.
+        fit_dir = fitted / f"checkpoint_{checkpoint:03d}"
+        fit_state = fit_dir / "states" / f"checkpoint_{checkpoint:03d}.npz"
         add(
             f"F{checkpoint}", "F", checkpoint,
             [
                 args.python, "-u", "scripts/fit_shared_graph_checkpoints.py",
                 "--delta-store", str(deltas), "--problems", str(problems),
-                "--out", str(fitted),
+                "--out", str(fit_dir),
                 "--workers", str(args.fitting_workers),
                 "--replicas", str(args.fitting_replicas),
                 "--max-stochastic-steps", str(args.fitting_steps),
                 "--relaxed", "--slack-precision", "1",
                 "--stationarity-tolerance", "1e-4",
+                "--accept-stochastic-plateau",
                 "--tolerance", "1e-2", "--exact-interval", "5",
                 "--blocks", "16", "--cache", "16",
                 "--start", str(checkpoint), "--stop", str(checkpoint + 1),
+                "--cold-start",
             ],
-            f_dependencies,
-            [fitted / "states" / f"checkpoint_{checkpoint:03d}.npz"],
+            [f"G{checkpoint}"],
+            [fit_state],
             args.fitting_workers,
+            min(2, args.fitting_workers),
         )
         if checkpoint + 1 < args.checkpoints:
             add(
                 f"E{checkpoint}", "E", checkpoint,
                 [
                     args.python, "-u", "scripts/score_checkpoint_interval.py",
-                    "--state", str(
-                        fitted / "states" / f"checkpoint_{checkpoint:03d}.npz"
-                    ),
+                    "--state", str(fit_state),
                     "--ids", args.ids, "--top-k", str(args.top_k),
                     "--n", str(args.n),
                     "--next-problem", str(

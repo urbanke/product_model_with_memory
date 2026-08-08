@@ -22,6 +22,7 @@ from product_model_with_memory.graphical_calibration import (
     SparseGroupedResult,
     SparseProjectedPair,
     sparse_gated_log_probabilities,
+    sparse_pair_log_probabilities,
     sparse_star_log_probabilities,
 )
 from product_model_with_memory.streams import load_stream, reduce_ids
@@ -87,6 +88,7 @@ def score_interval(task):
         problem, result, target, lag1, lag2, p_ya, p_yb
     )
     star = sparse_star_log_probabilities(p_ya, p_yb, target, lag1, lag2)
+    pair1 = sparse_pair_log_probabilities(p_ya, target, lag1)
     support = np.sort(
         problem.edge_a * problem.vocabulary_size + problem.edge_b
     )
@@ -97,6 +99,7 @@ def score_interval(task):
     )
     candidate_sum = float(candidate.sum())
     star_sum = float(star.sum())
+    pair1_sum = float(pair1.sum())
     scale = -1.0 / (len(target) * np.log(2.0))
     return {
         "interval_index": interval_index,
@@ -105,11 +108,13 @@ def score_interval(task):
         "supported_fraction": float(covered.mean()),
         "candidate_bpc": candidate_sum * scale,
         "star_bpc": star_sum * scale,
+        "pair1_bpc": pair1_sum * scale,
         "calibrated_gain_over_star_bpc": (
             (star_sum - candidate_sum) * scale
         ),
         "candidate_bits": -candidate_sum / np.log(2.0),
         "star_bits": -star_sum / np.log(2.0),
+        "pair1_bits": -pair1_sum / np.log(2.0),
     }
 
 
@@ -178,12 +183,13 @@ def main() -> None:
                 scored = list(executor.map(score_interval, worker_tasks))
             scored.sort(key=lambda row: row["interval_index"])
     rows = []
-    total_candidate = total_star = 0.0
+    total_candidate = total_star = total_pair1 = 0.0
     total_records = 0
     for row in scored:
         row.pop("interval_index")
         total_candidate += row.pop("candidate_bits")
         total_star += row.pop("star_bits")
+        total_pair1 += row.pop("pair1_bits")
         total_records += row["scored_records"]
         rows.append(row)
     first_prefix = first_state[4]
@@ -245,6 +251,7 @@ def main() -> None:
         "scored_records": total_records,
         "candidate_bpc": total_candidate / total_records,
         "star_bpc": total_star / total_records,
+        "pair1_bpc": total_pair1 / total_records,
         "calibrated_gain_over_star_bpc": (
             (total_star - total_candidate) / total_records
         ),

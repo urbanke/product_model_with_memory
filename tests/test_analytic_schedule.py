@@ -78,7 +78,7 @@ def test_checkpoint_tasks_encode_the_actual_dependency_graph():
     assert tasks["B1"].dependencies == ("M1",)
     assert tasks["C1"].dependencies == ("A1", "B1")
     assert tasks["G1"].dependencies == ("C1", "G0")
-    assert tasks["F1"].dependencies == ("G1", "F0")
+    assert tasks["F1"].dependencies == ("G1",)
     assert tasks["E1"].dependencies == ("F1", "C2")
     assert "E2" not in tasks
     assert tasks["G1"].maximum_workers == 1

@@ -24,6 +24,7 @@ class CheckpointJob:
     completion_manifest: str
     workers: int
     private_memory_bytes: int = 0
+    minimum_workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ def load_fixed_schedule(
         completion_manifest=row["completion_manifest"],
         workers=int(row.get("workers", 1)),
         private_memory_bytes=int(row.get("private_memory_bytes", 0)),
+        minimum_workers=int(row.get("minimum_workers", 1)),
     ) for row in payload["jobs"])
     schedule = FixedSchedule(
         jobs=jobs,
@@ -95,6 +97,10 @@ def validate_fixed_schedule(
                 )
             if job.workers < 1:
                 raise ValueError(f"job {job.job_id} has no workers")
+            if not 1 <= job.minimum_workers <= job.workers:
+                raise ValueError(
+                    f"job {job.job_id} has invalid minimum workers"
+                )
         if (
             enforce_wave_capacity
             and sum(job.workers for job in jobs) > schedule.maximum_workers
@@ -160,6 +166,7 @@ def run_planned_schedule(
     *,
     maximum_workers: int,
     worker_caps: dict[str, int] | None = None,
+    worker_floors: dict[str, int] | None = None,
     working_directory: str | Path,
     environment: dict[str, str] | None = None,
     poll_seconds: float = 0.1,
@@ -177,6 +184,8 @@ def run_planned_schedule(
         raise ValueError("priority map must contain every job")
     if worker_caps is not None and set(worker_caps) != set(by_id):
         raise ValueError("worker cap map must contain every job")
+    if worker_floors is not None and set(worker_floors) != set(by_id):
+        raise ValueError("worker floor map must contain every job")
     for job in jobs:
         unknown = set(job.dependencies) - set(by_id)
         if unknown:
@@ -187,6 +196,14 @@ def run_planned_schedule(
             1 <= worker_caps[job.job_id] <= maximum_workers
         ):
             raise ValueError(f"invalid worker cap for {job.job_id}")
+        if worker_floors is not None and not (
+            1 <= worker_floors[job.job_id] <= maximum_workers
+            and (
+                worker_caps is None
+                or worker_floors[job.job_id] <= worker_caps[job.job_id]
+            )
+        ):
+            raise ValueError(f"invalid worker floor for {job.job_id}")
 
     completed = {job.job_id for job in jobs if _completed(job)}
     launched = set(completed)
@@ -268,23 +285,30 @@ def run_planned_schedule(
         launched_now = False
         assignments: dict[str, int] = {}
         if worker_caps is not None:
-            # Breadth before depth: give every ready independent task one
-            # worker, then distribute second workers, and only use third or
-            # fourth workers when capacity remains.  This matches the weak
-            # measured scaling within one memory-heavy task while retaining
-            # full utilization near the tail of the DAG.
-            selected = ready[:available]
-            assignments = {job.job_id: 1 for job in selected}
-            remaining = available - len(selected)
-            level = 2
+            # Breadth before depth, subject to phase resource contracts.
+            # In particular a fit must not be launched serially merely because
+            # the machine happened to be full at that instant: worker counts
+            # cannot be changed after launch, so that would strand a long fit
+            # at one core when the rest of the DAG drains.
+            selected = []
+            remaining = available
+            for job in ready:
+                floor = 1 if worker_floors is None else worker_floors[job.job_id]
+                if floor <= remaining:
+                    selected.append(job)
+                    assignments[job.job_id] = floor
+                    remaining -= floor
             while remaining and any(
-                worker_caps[job.job_id] >= level for job in selected
+                assignments[job.job_id] < worker_caps[job.job_id]
+                for job in selected
             ):
                 for job in selected:
-                    if remaining and worker_caps[job.job_id] >= level:
+                    if (
+                        remaining
+                        and assignments[job.job_id] < worker_caps[job.job_id]
+                    ):
                         assignments[job.job_id] += 1
                         remaining -= 1
-                level += 1
         for job in ready:
             workers = (
                 assignments.get(job.job_id, 0)

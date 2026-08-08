@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibration_score_states import load_state
 from product_model_with_memory.graphical_calibration import (
     sparse_gated_log_probabilities,
+    sparse_pair_log_probabilities,
     sparse_star_log_probabilities,
 )
 from product_model_with_memory.streams import load_stream, reduce_ids
@@ -58,6 +59,7 @@ def main() -> None:
         problem, result, target, lag1, lag2, p_ya, p_yb
     )
     star = sparse_star_log_probabilities(p_ya, p_yb, target, lag1, lag2)
+    pair1 = sparse_pair_log_probabilities(p_ya, target, lag1)
     support = np.sort(
         problem.edge_a * problem.vocabulary_size + problem.edge_b
     )
@@ -68,6 +70,7 @@ def main() -> None:
     )
     candidate_bits = -float(candidate.sum()) / np.log(2.0)
     star_bits = -float(star.sum()) / np.log(2.0)
+    pair1_bits = -float(pair1.sum()) / np.log(2.0)
     payload = {
         "version": 1,
         "checkpoint": args.checkpoint,
@@ -77,8 +80,10 @@ def main() -> None:
         "supported_fraction": float(covered.mean()),
         "candidate_bits": candidate_bits,
         "star_bits": star_bits,
+        "pair1_bits": pair1_bits,
         "candidate_bits_per_reduced_token": candidate_bits / len(target),
         "star_bits_per_reduced_token": star_bits / len(target),
+        "pair1_bits_per_reduced_token": pair1_bits / len(target),
         "elapsed_seconds": time.time() - started,
     }
     destination = Path(args.out)

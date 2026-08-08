@@ -164,6 +164,37 @@ def test_planned_executor_expands_job_to_available_cap(tmp_path):
     assert launch["workers"] == 4
 
 
+def test_planned_executor_honors_worker_floor_at_launch(tmp_path):
+    events = []
+
+    def job(job_id):
+        output = tmp_path / f"{job_id}.txt"
+        return CheckpointJob(
+            job_id, "F", 0,
+            (
+                sys.executable, "-c",
+                f"from pathlib import Path; Path({str(output)!r}).write_text('ok')",
+                "--workers", "4",
+            ),
+            (), (str(output),), str(tmp_path / f"{job_id}.json"), 4,
+            minimum_workers=2,
+        )
+
+    jobs = (job("F0"), job("F1"), job("F2"), job("F3"))
+    run_planned_schedule(
+        jobs, {row.job_id: 4 for row in jobs},
+        {row.job_id: float(index) for index, row in enumerate(jobs)},
+        maximum_workers=13,
+        worker_caps={row.job_id: 4 for row in jobs},
+        worker_floors={row.job_id: row.minimum_workers for row in jobs},
+        working_directory=tmp_path, poll_seconds=0.01,
+        event_callback=events.append,
+    )
+    launches = [row for row in events if row["event"] == "launched"]
+    assert all(row["workers"] >= 2 for row in launches)
+    assert max(row["assigned_workers"] for row in launches) >= 12
+
+
 def test_planned_executor_never_launches_a_zero_worker_job(tmp_path):
     events = []
 

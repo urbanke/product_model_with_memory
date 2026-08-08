@@ -1,0 +1,84 @@
+#!/bin/bash
+#SBATCH --job-name=gmt8-bpe
+#SBATCH --mail-user=ruediger@gmail.com
+#SBATCH --mail-type=END,FAIL
+#SBATCH --time=7-00:00:00
+#SBATCH --mem=220G
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=64
+#SBATCH --partition=slurm-cluster
+#SBATCH -w node14.clusterbc.epfl.ch
+#SBATCH --output=output/slurm-text8-bpe-%j.out
+
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+PY="${PMM_PYTHON:-$HOME/anaconda3/bin/python3}"
+TOP_K="${PMM_TOP_K:-16383}"
+VOCABULARY_SIZE=$((TOP_K + 1))
+ROOT="${PMM_ROOT:-output/scheduler_text8_bpe_v${VOCABULARY_SIZE}_full_c32_cold_1000}"
+MAXIMUM_WORKERS="${PMM_MAXIMUM_WORKERS:-64}"
+CONSTRUCTION_WORKERS="${PMM_CONSTRUCTION_WORKERS:-4}"
+FITTING_WORKERS="${PMM_FITTING_WORKERS:-4}"
+STEPS="${PMM_STEPS:-1000}"
+
+"$PY" -c 'import sys, numpy, scipy, setuptools; print(sys.version); print(numpy.__version__, scipy.__version__)'
+"$PY" setup.py build_ext --inplace
+"$PY" -c \
+  'from product_model_with_memory import _graphical_margin_c; print("native extension: OK")'
+
+[ -f output/streams/bpe_text8/ids.npy ] || {
+  echo "ERROR: output/streams/bpe_text8 is absent on the server"
+  exit 1
+}
+mkdir -p "$ROOT"
+
+if [ ! -f "$ROOT/jobs.json" ]; then
+  "$PY" scripts/make_fixed_checkpoint_schedule.py \
+    --root "$ROOT" \
+    --ids output/streams/bpe_text8 \
+    --top-k "$TOP_K" \
+    --n 19429294 \
+    --checkpoints 32 \
+    --first-checkpoint 65536 \
+    --policy pipeline \
+    --python "$PY" \
+    --maximum-workers "$MAXIMUM_WORKERS" \
+    --construction-workers "$CONSTRUCTION_WORKERS" \
+    --fitting-workers "$FITTING_WORKERS" \
+    --fitting-replicas 12 \
+    --evaluation-workers 1 \
+    --fitting-steps "$STEPS" \
+    --out "$ROOT/jobs.json"
+fi
+
+if [ ! -f "$ROOT/plan.json" ]; then
+  "$PY" scripts/plan_analytic_checkpoint_schedule.py \
+    --ids output/streams/bpe_text8 \
+    --top-k "$TOP_K" \
+    --n 19429294 \
+    --checkpoints 32 \
+    --first-checkpoint 65536 \
+    --maximum-workers "$MAXIMUM_WORKERS" \
+    --construction-maximum-workers "$CONSTRUCTION_WORKERS" \
+    --fitting-maximum-workers "$FITTING_WORKERS" \
+    --stochastic-steps "$STEPS" \
+    --replicas 12 \
+    --blocks 16 \
+    --exact-interval 5 \
+    --out "$ROOT/plan.json"
+fi
+
+srun -c 64 "$PY" -u scripts/run_analytic_checkpoint_schedule.py \
+  --jobs "$ROOT/jobs.json" \
+  --plan "$ROOT/plan.json" \
+  --working-directory . \
+  --maximum-workers "$MAXIMUM_WORKERS" \
+  --event-log "$ROOT/scheduler_events.jsonl"

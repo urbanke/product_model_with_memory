@@ -213,11 +213,24 @@ def main() -> None:
         help="comma-separated exact-certificate thresholds to persist",
     )
     parser.add_argument(
-        "--skip-fallback", action="store_true",
-        help="probe only: retain the best stochastic state without exact finish",
+        "--skip-fallback", "--accept-stochastic-plateau",
+        dest="skip_fallback", action="store_true",
+        help=(
+            "publish the best finite state selected by the adaptive "
+            "stochastic plateau rule and report its exact stationarity, "
+            "without requiring an exact polishing pass"
+        ),
     )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
+    parser.add_argument(
+        "--cold-start", action="store_true",
+        help=(
+            "when --start is nonzero, initialize that checkpoint from the "
+            "single-pair/unigram portfolio instead of requiring and "
+            "transferring the preceding checkpoint state"
+        ),
+    )
     parser.add_argument(
         "--restart-state",
         help=(
@@ -294,7 +307,7 @@ def main() -> None:
     (out / "states").mkdir(parents=True, exist_ok=True)
     previous_problem = None
     previous_result = None
-    if args.start:
+    if args.start and not args.cold_start:
         previous_checkpoint = args.start - 1
         previous_state_path = (
             out / "states" / f"checkpoint_{previous_checkpoint:03d}.npz"

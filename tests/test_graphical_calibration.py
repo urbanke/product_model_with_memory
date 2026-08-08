@@ -181,6 +181,9 @@ def test_relaxed_problem_preserves_unprojected_layered_pair_targets():
 
     assert retained == pytest.approx(1.0)
     assert problem.edge_probability.sum() == pytest.approx(1.0)
+    expected_ab = first.values(edge_a, edge_b)
+    expected_ab /= expected_ab.sum()
+    assert np.allclose(problem.edge_probability, expected_ab)
     assert np.array_equal(problem.target_ya, first.active_values())
     assert np.array_equal(problem.target_yb, second.active_values())
     assert np.array_equal(problem.target_y, marginal)

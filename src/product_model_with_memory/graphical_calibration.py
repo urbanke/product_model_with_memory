@@ -250,7 +250,10 @@ def sparse_relaxed_problem_from_layered_pairs(
         raise ValueError("observed context edge arrays must match and be nonempty")
     if target_y.shape != (v,) or not np.isclose(float(target_y.sum()), 1.0):
         raise ValueError("target_y must be a probability vector of length V")
-    ab = p_ya.values(edge_b, edge_a)
+    # By stationarity, (A, B) = (X_{t-1}, X_{t-2}) has the same
+    # orientation as (Y, A) = (X_t, X_{t-1}): P_AB(a, b) = P_YA(a, b).
+    # `values` takes (target, context), hence target=a and context=b.
+    ab = p_ya.values(edge_a, edge_b)
     retained = float(ab.sum())
     if not 0.0 < retained <= 1.0 + 1e-10:
         raise ValueError("observed context support has invalid probability mass")
@@ -5213,6 +5216,32 @@ def sparse_star_log_probabilities(
             - np.log(max(normalizer, tiny))
         )
     return answer
+
+
+def sparse_pair_log_probabilities(
+    pair: SparseProjectedPair,
+    targets: np.ndarray,
+    contexts: np.ndarray,
+) -> np.ndarray:
+    """Score the honest one-lag conditional represented by a sparse joint.
+
+    The stored orientation is ``(target, context)``, so this returns
+    ``log p(target | context)`` without constructing a dense pair table.
+    """
+
+    y = np.asarray(targets, dtype=np.int64)
+    a = np.asarray(contexts, dtype=np.int64)
+    if y.shape != a.shape:
+        raise ValueError("targets and contexts must have identical shapes")
+    if y.size == 0:
+        return np.empty(y.shape, dtype=np.float64)
+    joint = pair.values(y, a)
+    _, context_margin = _sparse_pair_margins(pair)
+    tiny = np.finfo(np.float64).tiny
+    return (
+        np.log(np.maximum(joint, tiny))
+        - np.log(np.maximum(context_margin[a], tiny))
+    )
 
 
 def sparse_gated_log_probabilities(

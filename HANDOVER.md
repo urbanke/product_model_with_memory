@@ -5081,3 +5081,71 @@ breadth-first: one worker per ready task, then second workers, then third and
 fourth workers only if capacity remains.  Existing tasks are moldable rather
 than malleable; resizing a running tail task remains a possible later
 improvement.
+
+## 2026-08-07 --- Full text8 V1024 split-pipeline validation
+
+The construction-only independent-pooled text8 run at V=1024, N=34,010,415
+tokens, C=32, and a 13-worker budget completed in 1007.1 s.  Mean assigned
+workers were 9.93, the peak was 13, and Activity Monitor showed sustained
+approximately 89% user CPU.  All 32 causal graph deltas were then published.
+
+The single warm-started relaxed F chain completed in 340.7 s with four worker
+groups and 12 total replicas.  Production states were the best finite factors
+selected by the adaptive stochastic plateau rule; exact regularized
+stationarity was recorded at every checkpoint, but the exact Wolfe polisher
+was not allowed to stall publication.  Stationarity generally fell from
+5.48e-3 at checkpoint 0 into the 1e-4--1e-3 range; checkpoint 26 reached
+9.44e-5 directly.  A diagnostic exact polish at checkpoint 0 spent more than
+two minutes in repeated line-search margin evaluations and was stopped.  The
+command-line spelling for this production policy is now
+`--accept-stochastic-plateau` (`--skip-fallback` remains an alias).
+
+Honest full-stream accounting (bits per original character) is:
+
+- reduced-alphabet prediction: 0.87670554;
+- vocabulary/tokenizer description: 0.09594552;
+- escaped-token payload: 0.76903219;
+- total: 1.74168325.
+
+The fit suffix beats the two-pair star rule by 0.001664 bits per reduced
+token overall.  Scoring all 31 intervals took 23.5 s serially and is naturally
+parallel.  The independent-pooled stream differs from the cl100k stream in the
+paper's existing comparison table, so these numbers are a separate scheduler
+validation, not a replacement row.
+
+Important performance clue: late F checkpoints had only about 100--175
+stochastic updates, yet wall time varied sharply.  Checkpoint 29 took 67.4 s,
+almost entirely in native sampled-gradient traversal.  Convergence-step count
+is therefore no longer the principal late-chain bottleneck; memory/workload
+variability is.  Keep one F chain for now.  A second interleaved chain is a
+future option only if integrated runs confirm that F is the critical path.
+
+## 2026-08-08 --- Pair orientation fix and independent cold fits
+
+The raw layered construction had a directional error when deriving the AB
+margin from the YA estimator.  With `(A,B)=(X_{t-1},X_{t-2})` and the layered
+table API `values(target, context)`, the correct lookup is
+`p_ya.values(edge_a, edge_b)`.  The old code used the transpose.  This has
+been corrected at the source in `sparse_relaxed_problem_from_layered_pairs`;
+no load-time transpose or compatibility shim was retained.  Old calibration
+problem states and graph stores that contain the transposed AB target must be
+rebuilt.  A directional regression test now enforces the correct lookup.
+
+Corrected cl100k/text8 V1024 checkpoints 0--2 were rebuilt and fitted with the
+relaxed stochastic solver.  The previous pathological first-checkpoint fit
+disappeared: independent cold starts took 4.1, 7.4, and 6.5 seconds.  All three
+selected the established `pair_product` initialization.  For comparison, the
+warm chain took 4.2, 64.9, and 7.8 seconds; transfer was actively harmful at
+checkpoint 1.  This supports making every F_k an independent cold fit rather
+than retaining an F chain.
+
+The scheduler DAG now has `F_k <- G_k` only.  Every F task passes
+`--cold-start` and writes to a checkpoint-specific output directory, avoiding
+both warm-state dependencies and concurrent `summary.json` races.  A fresh
+six-checkpoint bpe_text8 V256/N=1,000,000 validation completed all 41 tasks.
+All six fits independently chose `pair_product`, took 6.1--8.7 stochastic
+seconds, and published relaxed states without executing the slow fallback.
+The trace shows F0--F4 overlapping unfinished A/B construction and interval
+scoring; the scheduler used the available 12-worker budget throughout the
+wide part of the DAG.  Scheduler timing priors can now be refined separately;
+they are no longer needed to preserve a sequential fitting dependency.

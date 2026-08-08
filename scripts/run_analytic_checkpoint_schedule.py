@@ -57,6 +57,10 @@ def main() -> None:
             task_id: min(int(row["maximum_workers"]), maximum_workers)
             for task_id, row in tasks.items()
         },
+        worker_floors={
+            job.job_id: min(job.minimum_workers, maximum_workers)
+            for job in schedule.jobs
+        },
         working_directory=args.working_directory,
         event_callback=record_event,
     )
