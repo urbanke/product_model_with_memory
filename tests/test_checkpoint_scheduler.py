@@ -1,7 +1,9 @@
 """Tests for the deterministic coarse checkpoint scheduler."""
 
 import json
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,9 @@ from product_model_with_memory.checkpoint_scheduler import (
     run_fixed_schedule,
     run_planned_schedule,
 )
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
 
 
 def _job(tmp_path, name, dependencies=()):
@@ -95,6 +100,38 @@ def test_command_with_workers_changes_parallel_phase_option(tmp_path):
     )
     assert command_with_workers(c, 4)[-1] == "4"
     assert command_with_workers(f, 3)[-1] == "3"
+
+
+def test_generated_fit_preserves_fixed_batch_geometry(tmp_path):
+    schedule_path = tmp_path / "jobs.json"
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY / "scripts" / "make_fixed_checkpoint_schedule.py"),
+            "--root", str(tmp_path / "run"),
+            "--ids", str(tmp_path / "unused-stream"),
+            "--top-k", "31",
+            "--n", "1000",
+            "--checkpoints", "2",
+            "--first-checkpoint", "100",
+            "--policy", "pipeline",
+            "--out", str(schedule_path),
+        ],
+        check=True,
+        cwd=REPOSITORY,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(schedule_path.read_text())
+    command = next(row["command"] for row in payload["jobs"] if row["id"] == "F0")
+
+    def option(name):
+        return command[command.index(name) + 1]
+
+    assert option("--replicas") == "12"
+    assert option("--blocks") == "128"
+    assert option("--cache") == "128"
+    assert option("--exact-interval") == "50"
 
 
 def test_planned_executor_launches_dependency_graph(tmp_path):

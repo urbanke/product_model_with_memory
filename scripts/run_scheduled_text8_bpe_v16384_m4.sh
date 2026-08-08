@@ -11,7 +11,10 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 PY="${PMM_PYTHON:-.venv/bin/python3}"
-ROOT="${PMM_ROOT:-output/scheduler_text8_bpe_v16384_full_c32_cold_1000}"
+TOP_K="${PMM_TOP_K:-16383}"
+OBSERVATIONS="${PMM_OBSERVATIONS:-19429294}"
+VOCABULARY_SIZE=$((TOP_K + 1))
+ROOT="${PMM_ROOT:-output/scheduler_text8_bpe_v${VOCABULARY_SIZE}_full_c32_cold_1000}"
 MAXIMUM_WORKERS="${PMM_MAXIMUM_WORKERS:-12}"
 CONSTRUCTION_WORKERS="${PMM_CONSTRUCTION_WORKERS:-4}"
 FITTING_WORKERS="${PMM_FITTING_WORKERS:-4}"
@@ -27,8 +30,8 @@ if [ ! -f "$ROOT/jobs.json" ]; then
   "$PY" scripts/make_fixed_checkpoint_schedule.py \
     --root "$ROOT" \
     --ids output/streams/bpe_text8 \
-    --top-k 16383 \
-    --n 19429294 \
+    --top-k "$TOP_K" \
+    --n "$OBSERVATIONS" \
     --checkpoints 32 \
     --first-checkpoint 65536 \
     --policy pipeline \
@@ -37,6 +40,9 @@ if [ ! -f "$ROOT/jobs.json" ]; then
     --construction-workers "$CONSTRUCTION_WORKERS" \
     --fitting-workers "$FITTING_WORKERS" \
     --fitting-replicas 12 \
+    --fitting-blocks 128 \
+    --fitting-block-cache 128 \
+    --fitting-exact-interval 50 \
     --evaluation-workers 1 \
     --fitting-steps "$STEPS" \
     --out "$ROOT/jobs.json"
@@ -45,8 +51,8 @@ fi
 if [ ! -f "$ROOT/plan.json" ]; then
   "$PY" scripts/plan_analytic_checkpoint_schedule.py \
     --ids output/streams/bpe_text8 \
-    --top-k 16383 \
-    --n 19429294 \
+    --top-k "$TOP_K" \
+    --n "$OBSERVATIONS" \
     --checkpoints 32 \
     --first-checkpoint 65536 \
     --maximum-workers "$MAXIMUM_WORKERS" \
@@ -54,8 +60,8 @@ if [ ! -f "$ROOT/plan.json" ]; then
     --fitting-maximum-workers "$FITTING_WORKERS" \
     --stochastic-steps "$STEPS" \
     --replicas 12 \
-    --blocks 16 \
-    --exact-interval 5 \
+    --blocks 128 \
+    --exact-interval 50 \
     --out "$ROOT/plan.json"
 fi
 

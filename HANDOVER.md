@@ -5149,3 +5149,29 @@ The trace shows F0--F4 overlapping unfinished A/B construction and interval
 scoring; the scheduler used the available 12-worker budget throughout the
 wide part of the DAG.  Scheduler timing priors can now be refined separately;
 they are no longer needed to preserve a sequential fitting dependency.
+
+## 2026-08-08 --- Restored stochastic batch geometry
+
+The split-scheduler generator had accidentally replaced the established fit
+geometry by `--blocks 16 --cache 16 --exact-interval 5`.  With 12 total
+replicas this traversed 12 of 16 graph blocks per update and performed an
+exact evaluation every five updates.  The production geometry is again 128
+blocks, a 128-block lazy-reference cache, and an exact evaluation every 50
+updates.  The replica count remains 12 in total, independent of the worker
+count: workers only partition those same replicas (for example, four workers
+receive three replicas each).  Do not multiply the replica/batch count by the
+number of workers.
+
+On corrected cl100k/text8 V4096 checkpoint 21, the accidentally regressed run
+took 1039.2 s for 650 updates (certificate 0.04414, regularized stationarity
+0.001380).  The restored four-worker configuration took 126.1 s for 1000
+updates (certificate 0.04735, stationarity 0.001127).  Thus the complete fit
+was 8.2 times faster despite executing 54% more updates, or 12.7 times faster
+per update.  A 100-update microbenchmark understated this gain because cache
+and reference construction dominate its short wall time.  Judge this path
+with amortized fitting runs, not startup-heavy short probes.
+
+The scheduler generator, analytic planner, local M4 launcher, and Slurm
+launcher now share the 128/128/50 configuration.  A regression test inspects
+the generated F command and fixes the total replicas at 12 so this failure
+cannot silently recur.

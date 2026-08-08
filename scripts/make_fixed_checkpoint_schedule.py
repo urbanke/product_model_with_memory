@@ -22,6 +22,18 @@ def main() -> None:
     parser.add_argument("--construction-workers", type=int, default=2)
     parser.add_argument("--fitting-workers", type=int, default=4)
     parser.add_argument("--fitting-replicas", type=int, default=12)
+    parser.add_argument(
+        "--fitting-blocks", type=int, default=128,
+        help="number of stochastic graph blocks",
+    )
+    parser.add_argument(
+        "--fitting-block-cache", type=int, default=128,
+        help="maximum number of lazy reference blocks retained",
+    )
+    parser.add_argument(
+        "--fitting-exact-interval", type=int, default=50,
+        help="updates between exact certificate/snapshot evaluations",
+    )
     parser.add_argument("--evaluation-workers", type=int, default=1)
     parser.add_argument(
         "--fitting-steps", type=int, default=1_000,
@@ -165,8 +177,10 @@ def main() -> None:
                 "--relaxed", "--slack-precision", "1",
                 "--stationarity-tolerance", "1e-4",
                 "--accept-stochastic-plateau",
-                "--tolerance", "1e-2", "--exact-interval", "5",
-                "--blocks", "16", "--cache", "16",
+                "--tolerance", "1e-2", "--exact-interval",
+                str(args.fitting_exact_interval),
+                "--blocks", str(args.fitting_blocks),
+                "--cache", str(args.fitting_block_cache),
                 "--start", str(checkpoint), "--stop", str(checkpoint + 1),
                 "--cold-start",
             ],

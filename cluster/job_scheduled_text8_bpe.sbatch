@@ -55,6 +55,9 @@ if [ ! -f "$ROOT/jobs.json" ]; then
     --construction-workers "$CONSTRUCTION_WORKERS" \
     --fitting-workers "$FITTING_WORKERS" \
     --fitting-replicas 12 \
+    --fitting-blocks 128 \
+    --fitting-block-cache 128 \
+    --fitting-exact-interval 50 \
     --evaluation-workers 1 \
     --fitting-steps "$STEPS" \
     --out "$ROOT/jobs.json"
@@ -72,8 +75,8 @@ if [ ! -f "$ROOT/plan.json" ]; then
     --fitting-maximum-workers "$FITTING_WORKERS" \
     --stochastic-steps "$STEPS" \
     --replicas 12 \
-    --blocks 16 \
-    --exact-interval 5 \
+    --blocks 128 \
+    --exact-interval 50 \
     --out "$ROOT/plan.json"
 fi
 
