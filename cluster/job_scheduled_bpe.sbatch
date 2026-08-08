@@ -18,6 +18,11 @@ export MKL_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+# Late checkpoints map all graph deltas.  Make the required descriptor budget
+# explicit so behavior does not depend on the login shell or Slurm default.
+ulimit -n 4096
+echo "open-file limit: $(ulimit -n)"
+
 PY="${PMM_PYTHON:-$HOME/anaconda3/bin/python3}"
 CORPUS="${PMM_CORPUS:?set PMM_CORPUS, for example enwik9}"
 STREAM="${PMM_STREAM:-output/streams/bpe_${CORPUS}}"

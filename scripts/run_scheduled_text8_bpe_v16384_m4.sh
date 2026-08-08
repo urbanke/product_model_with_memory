@@ -10,6 +10,12 @@ export MKL_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+# A late fit maps all checkpoint graph deltas.  macOS commonly starts shells
+# with a 256-descriptor soft limit, which is too small for checkpoint 31 even
+# though the mapped representation itself fits comfortably in memory.
+ulimit -n 4096
+echo "open-file limit: $(ulimit -n)"
+
 PY="${PMM_PYTHON:-.venv/bin/python3}"
 TOP_K="${PMM_TOP_K:-16383}"
 OBSERVATIONS="${PMM_OBSERVATIONS:-19429294}"

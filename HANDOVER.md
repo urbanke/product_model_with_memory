@@ -5211,3 +5211,10 @@ counting rather than changing the estimator.  A full enwik9 reduction measured
 submit the enwik9 campaign until the current
 text8 V16384 run has supplied its final accounting and the 1000-step fitting
 ceiling has been assessed from those completed states.
+
+The first M4 text8 V16384 scheduled attempt stopped at F31 with macOS
+`Errno 24: Too many open files`: a late fit maps all 32 graph deltas, exceeding
+the shell's usual 256-descriptor soft limit.  This was not a numerical fit
+failure.  Both local and Slurm launchers now set and report `ulimit -n 4096`.
+The scheduler is restartable: its 13 completed F manifests remain valid, while
+F31 and the other fits terminated by the scheduler will be rerun.
