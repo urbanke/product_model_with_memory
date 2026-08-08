@@ -197,6 +197,7 @@ def main() -> None:
                     "--state", str(fit_state),
                     "--ids", args.ids, "--top-k", str(args.top_k),
                     "--n", str(args.n),
+                    "--reduced-stream", str(stream),
                     "--next-problem", str(
                         problems / "states"
                         / f"checkpoint_{checkpoint + 1:03d}.npz"

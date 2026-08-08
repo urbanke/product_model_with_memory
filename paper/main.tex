@@ -72,7 +72,7 @@ LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.8298$ & $2.1135$ & $1.8371$ \\
 second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.8298$ & $2.1135$ & $1.7915$ \\
 context tree (Sec.~\ref{sec:ctree})       & $\mathbf{1.8182}$ & $\mathbf{2.0606}$ & $\mathbf{1.6598}$ \\
-calibrated order two (Sec.~\ref{sec:calibration}) & \multicolumn{3}{c}{controlled rerun in progress} \\
+calibrated order two (Sec.~\ref{sec:calibration}) & $1.8766$ ($V=4096$) & pending & pending \\
 \midrule
 best published (Table~\ref{tab:files})    & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -803,10 +803,9 @@ can be reached while \emph{learning} only pairwise objects --- the
 three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
 $(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
 it is the first measured step of the constraint-model route of
-Appendix~\ref{app:routes}.  The measured campaign at the standard of
-this paper is being run as this draft stands; this section fixes the
-experiment's design, which is itself the product of an exploratory
-round, and the accounting its table will use.
+Appendix~\ref{app:routes}.  Table~\ref{tab:calibrated-text8} reports
+the first controlled full-file measurements; larger alphabets and the
+two remaining corpora are still being run.
 
 \paragraph{The predictors.}  Every table any rule consumes is
 estimated by the layered predictor --- the only estimator in this
@@ -863,33 +862,42 @@ members are reported with the checkpoint schedule they were
 computed under, always.
 
 \paragraph{The accounting.}  As everywhere now: full LLM vocabulary,
-complete codes, bits per character of the original file with the
-vocabulary charge included.  At the full vocabulary the pair tables
-are held sparsely --- each row a shared background plus corrections
-at observed symbols --- and mixtures and products cost only the
-observed entries, since a product of such rows lives on the union of
-their supports.  The one open feasibility question is the calibrated
-member: its fitted factors densify under the multiplicative fit, and
-if no sparse form is found it will be reported at a moderate
-alphabet as a \emph{complete} code --- the catch-all symbol's
-contents priced through a memoryless side channel --- so that even
-that number lives on the one scoreboard.
+complete codes, and bits per character of the original file.  For a
+reported alphabet size $V$, the $V-1$ retained token types and one
+escape symbol form the reduced stream.  The table separately shows
+the reduced-stream prediction, the external vocabulary and retained-
+subset description, and the sequential KT payload behind escape.
+These components sum to the honest full-stream rate.
 
-\paragraph{What the exploratory round fixed.}  A reduced-alphabet
-round (the mechanism arena; its raw figures are not file-comparable
-and are not reported here) made three design decisions.  Combining
-rules must consume layered tables: with crude count-smoothed tables
-the ranking of rules inverts, and the calibrated construction ---
-the principled one --- was the member most damaged by poor table
-estimates and most improved by good ones; under layered tables it
-overtook the backoff reference outright.  Checkpointing at $C = 32$
-is adequate for the smooth members and ruinous for share-nothing
-layered ones (the $0.198$ above).  And the calibration fit needs its
-margins made consistent to high precision before fitting, or it
-stalls short of its optimum --- the fitter, not the model, sets the
-floor.  The measured table --- the analogue of Table~\ref{tab:ctw}
-for this construction, three files, honest bits per character ---
-will replace this paragraph when the campaign completes.
+\begin{table}[ht]
+\centering
+\begin{tabular}{rcccc}
+\toprule
+$V$ & reduced prediction & vocabulary & escape payload & honest total \\
+\midrule
+$1{,}024$ & $0.9923$ & $0.0622$ & $0.9163$ & $1.9708$ \\
+$4{,}096$ & $1.3615$ & $0.0623$ & $0.4527$ & $1.8766$ \\
+\bottomrule
+\end{tabular}
+\caption{Calibrated three-pair prediction on \texttt{text8} with the
+  \texttt{cl100k\_base} representation, in bits per character of the
+  original $10^8$-character file.  Both rows use $32$ geometrically
+  spaced checkpoints, beginning after $65{,}536$ tokens.  The first
+  three code components sum to the honest total (up to rounding).}
+\label{tab:calibrated-text8}
+\end{table}
+
+For comparison under exactly the same accounting, the two-pair
+maximum-entropy rule gives $1.9825$ and $1.8964$ bits per character at
+$V=1{,}024$ and $V=4{,}096$, respectively.  Using only the most recent
+token gives $1.9836$ and $1.8801$.  The calibrated rule therefore gains
+$0.0117$ and $0.0198$ over the two-pair rule, and $0.0128$ and $0.0035$
+over the one-pair rule.  At $V=4{,}096$ the third context pair is on
+observed support for $91.78\%$ of the scored tokens; elsewhere the
+declared two-pair fallback is used.  The fits use the fixed relaxed
+calibration rule described in Appendix~\ref{app:calibration-implementation};
+they define honest predictive distributions even when the finite-sample
+pair margins are not exactly compatible.
 
 \section{The calibrated pairwise predictor}
 \label{sec:calibration}
@@ -964,9 +972,9 @@ The sparse factorization, intersection representation, solver, checkpoint
 workflow, and numerical validation are described in
 Appendix~\ref{app:calibration-implementation}.
 
-Controlled full-file measurements for this model are in progress.  Their
-implementation and complete-code accounting are specified in
-Appendix~\ref{app:calibration-implementation}.
+The controlled \texttt{text8} measurements are reported in
+Table~\ref{tab:calibrated-text8}.  Their implementation and complete-code
+accounting are specified in Appendix~\ref{app:calibration-implementation}.
 
 \appendix
 

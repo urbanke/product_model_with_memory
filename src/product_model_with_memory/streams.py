@@ -56,10 +56,10 @@ def save_stream(path, ids, *, representation: str, source_file: str,
     }, indent=2))
 
 
-def load_stream(path) -> tuple[np.ndarray, dict]:
+def load_stream(path, *, mmap_mode=None) -> tuple[np.ndarray, dict]:
     path = Path(path)
     meta = json.loads((path / "stream.json").read_text())
-    return np.load(path / "ids.npy"), meta
+    return np.load(path / "ids.npy", mmap_mode=mmap_mode), meta
 
 
 def reduce_ids(ids: np.ndarray, top_k: int, *, return_keep: bool = False):
@@ -82,12 +82,24 @@ def reduce_ids(ids: np.ndarray, top_k: int, *, return_keep: bool = False):
 
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
-    counts = np.bincount(ids.astype(np.int64))
+    ids = np.asarray(ids)
+    if ids.size and int(ids.min()) < 0:
+        raise ValueError("symbol ids must be nonnegative")
+    alphabet_size = int(ids.max()) + 1 if ids.size else 0
+    # np.bincount insists on int64 input.  Converting an entire enwik9
+    # stream would create a multi-gigabyte temporary, defeating mmap.  The
+    # bounded conversion below is bit-for-bit identical and keeps peak
+    # memory independent of corpus length apart from the returned stream.
+    chunk_size = 8_000_000
+    counts = np.zeros(alphabet_size, dtype=np.int64)
+    for start in range(0, ids.size, chunk_size):
+        chunk = np.asarray(ids[start:start + chunk_size], dtype=np.int64)
+        counts += np.bincount(chunk, minlength=alphabet_size)
     order = np.argsort(-counts, kind="stable")
     keep = order[:top_k][counts[order[:top_k]] > 0]
     lut = np.full(counts.size, top_k, dtype=np.int32)
     lut[keep] = np.arange(len(keep), dtype=np.int32)
-    reduced = lut[ids.astype(np.int64)]
+    reduced = lut[ids]
     capped = int(np.count_nonzero(reduced == top_k))
     if return_keep:
         return reduced, top_k + 1, capped, keep

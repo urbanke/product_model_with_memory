@@ -133,6 +133,13 @@ def test_generated_fit_preserves_fixed_batch_geometry(tmp_path):
     assert option("--cache") == "128"
     assert option("--exact-interval") == "50"
 
+    evaluation = next(
+        row["command"] for row in payload["jobs"] if row["id"] == "E0"
+    )
+    assert evaluation[evaluation.index("--reduced-stream") + 1] == str(
+        tmp_path / "run" / "reduced_stream"
+    )
+
 
 def test_planned_executor_launches_dependency_graph(tmp_path):
     def job(job_id, dependencies):

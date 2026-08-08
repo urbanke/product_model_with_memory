@@ -5175,3 +5175,39 @@ The scheduler generator, analytic planner, local M4 launcher, and Slurm
 launcher now share the 128/128/50 configuration.  A regression test inspects
 the generated F command and fixes the total replicas at 12 so this failure
 cannot silently recur.
+
+## 2026-08-08 --- Enwik9 three-node launch preparation
+
+The next server campaign is three simultaneous full-file enwik9 runs:
+V=16384 on node14 (64 cores and the high-memory allocation), V=4096 on node15
+(64 cores, 126868 MiB Slurm memory), and V=1024 on node16 (20 cores but only
+7644 MiB Slurm memory).  `cluster/job_scheduled_bpe.sbatch` is the generic
+corpus/V launcher.  Resource requests and node placement belong on the
+`sbatch` command line; the numerical rule remains 32 checkpoints, cold
+independent relaxed fits, 12 total replicas, and 128/128/50 stochastic batch
+geometry.
+
+Enwik9 exposed two avoidable whole-stream costs.  Scheduled E tasks used to
+reload and reduce all 273,662,103 original tokens independently.  They now
+mmap the single compact reduced stream and materialize only their interval.
+Stream reduction itself now memory-maps the original ids and performs the
+required int64 bincount conversion in bounded chunks.  The analytic planner
+also consumes the prepared reduced stream instead of reducing enwik9 again.
+These changes are numerically exact: a controlled text8 V4096 interval agrees
+bit-for-bit in candidate, star, pair-1, support, and boundary fields.
+
+`scripts/aggregate_scheduled_scores.py` performs the final honest accounting
+once per completed run.  It adds the initial-prefix KT code, tokenizer and
+selected-vocabulary descriptions, and escaped-token KT payload, and reports
+candidate, star, and pair-1 totals in bits per original input byte.  On the
+controlled text8 V4096 run it reproduces the recorded candidate total
+1.8765517583345621 bpc exactly.
+
+Because node16 exposes only 7.6 GiB to Slurm, its V1024 scheduler budget must
+initially be limited to three live workers; this caps simultaneous interval
+counting rather than changing the estimator.  A full enwik9 reduction measured
+3.01 GiB peak RSS, while the largest of the 32 delta-count jobs measured
+2.23 GiB.  Node15 and node14 can use their full CPU allocations.  Do not
+submit the enwik9 campaign until the current
+text8 V16384 run has supplied its final accounting and the 1000-step fitting
+ceiling has been assessed from those completed states.

@@ -25,6 +25,10 @@ from product_model_with_memory.streams import load_stream, reduce_ids
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ids", required=True)
+    parser.add_argument(
+        "--reduced-stream",
+        help="reuse an already prepared mmap-friendly reduced stream",
+    )
     parser.add_argument("--top-k", type=int, required=True)
     parser.add_argument("--n", type=int, required=True)
     parser.add_argument("--checkpoints", type=int, default=32)
@@ -40,9 +44,22 @@ def main() -> None:
     parser.add_argument("--construction-only", action="store_true")
     args = parser.parse_args()
 
-    ids, metadata = load_stream(args.ids)
-    stop = min(args.n, len(ids))
-    reduced, vocabulary_size, capped = reduce_ids(ids[:stop], args.top_k)
+    _, metadata = load_stream(args.ids, mmap_mode="r")
+    if args.reduced_stream:
+        reduced_root = Path(args.reduced_stream)
+        manifest = json.loads((reduced_root / "manifest.json").read_text())
+        if int(manifest["top_k"]) != args.top_k:
+            parser.error("reduced-stream top-k differs from --top-k")
+        if int(manifest["n"]) != args.n:
+            parser.error("reduced-stream length differs from --n")
+        reduced = np.load(reduced_root / "stream.npy", mmap_mode="r")
+        stop = len(reduced)
+        vocabulary_size = int(manifest["vocabulary_size"])
+        capped = int(np.count_nonzero(reduced == args.top_k))
+    else:
+        ids, _ = load_stream(args.ids, mmap_mode="r")
+        stop = min(args.n, len(ids))
+        reduced, vocabulary_size, capped = reduce_ids(ids[:stop], args.top_k)
     counts = np.bincount(reduced, minlength=vocabulary_size).astype(np.float64)
     probabilities = counts / counts.sum()
     prefixes = geometric_prefixes(

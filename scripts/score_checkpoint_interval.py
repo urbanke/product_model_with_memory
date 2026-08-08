@@ -27,6 +27,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", required=True)
     parser.add_argument("--ids", required=True)
+    parser.add_argument(
+        "--reduced-stream",
+        help=(
+            "mmap-friendly reduced stream prepared by "
+            "prepare_reduced_checkpoint_stream.py; when supplied, avoid "
+            "reloading and reducing the complete original token stream"
+        ),
+    )
     parser.add_argument("--top-k", type=int, required=True)
     parser.add_argument("--n", type=int, required=True)
     boundary = parser.add_mutually_exclusive_group(required=True)
@@ -47,14 +55,28 @@ def main() -> None:
             next_prefix = int(state["prefix"])
     if next_prefix <= prefix:
         parser.error("next prefix must lie after the fitted prefix")
-    ids, _ = load_stream(args.ids)
-    original = ids[:args.n].astype(np.int64)
-    x, _, _ = reduce_ids(original, args.top_k)
+    if args.reduced_stream:
+        reduced_source = Path(args.reduced_stream)
+        reduced_manifest = json.loads(
+            (reduced_source / "manifest.json").read_text()
+        )
+        if int(reduced_manifest["top_k"]) != args.top_k:
+            parser.error("reduced-stream top-k differs from requested top-k")
+        if int(reduced_manifest["n"]) != args.n:
+            parser.error("reduced-stream length differs from requested n")
+        x = np.load(reduced_source / "stream.npy", mmap_mode="r")
+    else:
+        ids, _ = load_stream(args.ids)
+        original = ids[:args.n].astype(np.int64)
+        x, _, _ = reduce_ids(original, args.top_k)
     if next_prefix > len(x):
         parser.error("next prefix lies beyond the reduced stream")
-    target = x[prefix:next_prefix]
-    lag1 = x[prefix - 1:next_prefix - 1]
-    lag2 = x[prefix - 2:next_prefix - 2]
+    # The shared stream is normally uint16/uint32.  Convert only this
+    # interval: the probability routines require integer indexing and the
+    # context key products below must not overflow the compact dtype.
+    target = np.asarray(x[prefix:next_prefix], dtype=np.int64)
+    lag1 = np.asarray(x[prefix - 1:next_prefix - 1], dtype=np.int64)
+    lag2 = np.asarray(x[prefix - 2:next_prefix - 2], dtype=np.int64)
     candidate = sparse_gated_log_probabilities(
         problem, result, target, lag1, lag2, p_ya, p_yb
     )

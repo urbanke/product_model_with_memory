@@ -24,7 +24,7 @@ def main() -> None:
     p.add_argument("--first-checkpoint", type=int, required=True)
     p.add_argument("--out", required=True)
     a = p.parse_args()
-    ids, _ = load_stream(a.ids)
+    ids, _ = load_stream(a.ids, mmap_mode="r")
     reduced, v, _ = reduce_ids(ids[:a.n], a.top_k)
     edges = geometric_edges(
         2, len(reduced), a.checkpoints, a.first_checkpoint
