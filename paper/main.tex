@@ -74,8 +74,8 @@ bytes, no memory                & $4.1235$ & $5.0802$ & $5.1565$ \\
 LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.7646$ & $2.0838$ & $1.8286$ \\
 second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.7646$ & $2.0838$ & $1.7306$ \\
-context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $\mathbf{2.0223}$ & $\mathbf{1.6392}$ \\
-pairwise constraint model (Sec.~\ref{sec:pairwise}) & $\mathbf{1.7086}$ & pending & pending \\
+context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $2.0223$ & $\mathbf{1.6392}$ \\
+pairwise constraint model (Sec.~\ref{sec:pairwise}) & $\mathbf{1.7086}$ & $\mathbf{1.8946}$ & pending \\
 \midrule
 best published (see Table~\ref{tab:files}) & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -674,8 +674,8 @@ three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
 $(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
 it is the first measured step of the constraint-model route of
 Appendix~\ref{app:routes}.  Table~\ref{tab:anchored-potential-text8} reports
-the current \texttt{text8} measurements; the two remaining corpora have not
-yet been run.
+the current \texttt{text8} and \texttt{enwik8} measurements.  The
+\texttt{enwik9} production grid remains in progress.
 
 \paragraph{The predictors.}  Every table any rule consumes is
 estimated by the layered predictor --- the only estimator in this
@@ -764,10 +764,12 @@ $64\times4{,}096$ & $1.717425\;[1.707044,1.727806]$ \\
 $64\times4{,}096$ & $1.710948\;[1.701111,1.720784]$ \\
 \texttt{text8} & $32{,}768$ & $16{,}384$ & $16{,}384$ &
 $64\times4{,}096$ & $\mathbf{1.708550}\;[1.698311,1.718790]$ \\
+\texttt{enwik8} & $32{,}768$ & $32{,}768$ & $32{,}768$ &
+$64\times4{,}096$ & $\mathbf{1.894562}\;[1.884280,1.904844]$ \\
 \bottomrule
 \end{tabular}
 \caption{Estimated continuous-update potential on the complete
-  \texttt{text8} stream.  Each row uses 64 paired stratified prefix positions
+  corpus streams.  Each row uses 64 paired stratified prefix positions
   and scores 4,096 following tokens at each position.  Values are honest bits
   per character of the original file; brackets are stratified analytic 95\%
   confidence intervals.}
@@ -781,6 +783,17 @@ $V=32{,}768$ while retaining $M_1=M_2=16{,}384$ gives the best point estimate,
 $1.708550$ honest bpc.  The three analytic intervals overlap substantially:
 the current evidence supports a small advantage for the larger emission
 alphabet, not a sharply located optimum.
+
+For \texttt{enwik8}, the exact honest first-order baseline at
+$V=M=32{,}768$ is $2.083819340$ bpc.  The anchored experiment estimates a
+graph-minus-Markov increment of $-0.733926651$ bit per eligible reduced-stream
+token over $25{,}786{,}940$ eligible positions, or $-18{,}925{,}722.5$ bits
+in total.  Dividing this increment by the original $100{,}000{,}000$ bytes
+and adding it to the complete first-order code gives $1.894562$ bpc.  Applying
+the same conversion to the stratified analytic interval gives
+$[1.884280,1.904844]$.  All vocabulary, retained-subset, escape-payload and
+initial-symbol charges are already present in the exact baseline and are
+therefore retained unchanged.
 
 \subsection{The calibrated pairwise predictor}
 \label{sec:calibration}
