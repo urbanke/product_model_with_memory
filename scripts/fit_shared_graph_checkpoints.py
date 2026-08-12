@@ -30,6 +30,10 @@ from product_model_with_memory.graphical_calibration import (
     sparse_deltas_as_layered_graph, stochastic_sparse_dual_approach,
     transfer_sparse_warm_start,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_sequence_estimator,
+)
 
 
 def select_warm_start(
@@ -355,6 +359,14 @@ def main() -> None:
         )
         with np.load(paths[checkpoint], allow_pickle=False) as source:
             prefix = int(source["prefix"])
+            estimator = (
+                str(source["sequence_estimator"])
+                if "sequence_estimator" in source.files
+                else PRODUCTION_SEQUENCE_ESTIMATOR
+            )
+        require_production_sequence_estimator(
+            estimator, source=str(paths[checkpoint])
+        )
         pair_variances = (
             empirical_pair_slack_variances(problem, prefix)
             if args.relaxed else (None, None)

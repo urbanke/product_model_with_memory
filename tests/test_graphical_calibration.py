@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from scipy.special import logsumexp
 
 from product_model_with_memory.graphical_calibration import (
     GroupedCheckpoint,
@@ -1942,6 +1943,46 @@ def test_sparse_gated_scoring_matches_direct_conditionals():
             star = p_ya[:, a] * p_yb[:, b] / p_ya.sum(axis=1)
             expected.append(np.log(star[y] / star.sum()))
     assert np.max(np.abs(got - expected)) < 1e-11
+
+
+def test_sparse_gated_scoring_normalizes_when_corrected_mass_rounds_to_one():
+    # A tiny true background must not be reconstructed as 1-corrected_mass:
+    # cancellation at machine precision can otherwise dominate corrections
+    # whose factors deliberately make the complete normalizer very small.
+    rng = np.random.default_rng(20260809)
+    v = 64
+    for _ in range(10_000):
+        log_base = rng.normal(size=v)
+        normalized = log_base - logsumexp(log_base)
+        if np.exp(normalized).sum() < 1.0:
+            break
+    else:  # pragma: no cover - deterministic seed finds one immediately
+        raise AssertionError("failed to construct cancellation fixture")
+    problem = SparseGroupedProblem(
+        vocabulary_size=v,
+        edge_a=np.array([0]), edge_b=np.array([0]),
+        edge_probability=np.array([1.0]), target_y=np.full(v, 1.0 / v),
+        active_ya_y=np.arange(v), active_ya_a=np.zeros(v, dtype=np.int64),
+        target_ya=np.full(v, 1.0 / v),
+        active_yb_y=np.empty(0, dtype=np.int64),
+        active_yb_b=np.empty(0, dtype=np.int64),
+        target_yb=np.empty(0),
+    )
+    result = SparseGroupedResult(
+        log_base_y=log_base,
+        correction_ya=np.full(v, -40.0), correction_yb=np.empty(0),
+        iterations=0, grouped_residual_ya_l1=0.0,
+        grouped_residual_yb_l1=0.0, residual_y_l1=0.0, converged=True,
+    )
+    fallback = np.full((v, v), 1.0 / (v * v))
+    targets = np.arange(v)
+    contexts = np.zeros(v, dtype=np.int64)
+
+    scores = sparse_gated_log_probabilities(
+        problem, result, targets, contexts, contexts, fallback, fallback,
+    )
+
+    assert np.exp(scores).sum() == pytest.approx(1.0, abs=2e-14)
 
 
 def test_sparse_layered_pair_projection_matches_dense_sinkhorn():

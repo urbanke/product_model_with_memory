@@ -19,6 +19,9 @@ from product_model_with_memory.analytic_schedule import (
     geometric_prefixes,
     plan_moldable_tasks,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+)
 from product_model_with_memory.streams import load_stream, reduce_ids
 
 
@@ -81,7 +84,8 @@ def main() -> None:
         tasks = tuple(task for task in tasks if task.task_id[0] in "SDUMABC")
     plan = plan_moldable_tasks(tasks, args.maximum_workers)
     payload = {
-        "version": 1,
+        "version": 2,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "model": "portable_analytic_prior",
         "units": "dimensionless estimated primitive visits, not seconds",
         "stream": args.ids,

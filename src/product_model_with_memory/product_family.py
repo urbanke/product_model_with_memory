@@ -10,18 +10,24 @@ frequency in the reduced stream) and to a shared backoff symbol otherwise;
 ``b_0`` maps everything to the backoff symbol.  Members:
 
   * (0, 0)   -- memoryless,
-  * (M, 0)   -- the first-order family of ``state_family``,
+  * (M, 0)   -- the first-order family of ``state_family`` exactly,
   * (M1, M2) -- genuine order-two memory, with the resolution split across
                 the two distances into the past chosen by the data.
+
+The missing second-lag context before ``x_2`` is deterministically assigned
+to the second-lag backoff bucket.  Consequently every member codes
+``x_2 .. x_n`` and the complete ``(M, 0)`` slice is bit-for-bit identical to
+the corresponding first-order member; it is not merely identical after
+discarding ``x_2``.
 
 The emission vocabulary V is fixed for all members, so every member is a
 probability assignment on the same sequence space; each is scored by the
 honest share-nothing construction (product over states of per-state
 depth-averaged layered mixtures, exact from counts), and the family is a
 uniform mixture over the supplied grid of (M1, M2) pairs with the posterior
-reported.  All members code tokens x_3 .. x_n (the first two tokens carry
-no complete order-two context), so codelengths are comparable across
-members.
+reported.  All members code tokens x_2 .. x_n.  The unavailable second-lag
+context for x_2 uses the declared backoff bucket, so codelengths are
+comparable across members and the M2=0 identity is exact.
 
 Computation: successor profiles are deduplicated globally --- rare contexts
 overwhelmingly share identical tiny profiles such as (1,), (1,1), (2,) ---
@@ -66,8 +72,12 @@ def member_profile_multiset(
     keep1 = set(order_vocab[:m1]) if m1 > 0 else set()
     keep2 = set(order_vocab[:m2]) if m2 > 0 else set()
     successors: dict[tuple[str, str], Counter] = defaultdict(Counter)
-    for t in range(2, len(reduced)):
-        state = (_bucket(reduced[t - 1], keep1), _bucket(reduced[t - 2], keep2))
+    for t in range(1, len(reduced)):
+        # Before x_2 there is no second-lag symbol.  Sending that missing
+        # context to the already-declared backoff bucket makes M2=0 exactly
+        # the first-order model on the full stream, including x_2.
+        lag2 = BACKOFF if t == 1 else _bucket(reduced[t - 2], keep2)
+        state = (_bucket(reduced[t - 1], keep1), lag2)
         successors[state][reduced[t]] += 1
     multiset: Counter = Counter()
     for counts in successors.values():
@@ -92,16 +102,32 @@ def member_profile_multiset_ids(
     tokens and impossible for the 2.7e8 of enwik9.
     """
 
-    x2, x1, y = ids[:-2], ids[1:-1], ids[2:]
-    b1 = np.minimum(rank[x1], m1)
-    if m2 == 0:
-        state = b1
-    else:
-        state = b1 * (m2 + 1) + np.minimum(rank[x2], m2)
-    _, state = np.unique(state, return_inverse=True)   # densify
+    x1, y = ids[:-1], ids[1:]
+    # `rank` is int64, so this is the one full-length int64 work array.  Pack
+    # both lag buckets and the successor into it in place.  In particular, do
+    # not materialize b1, b2, state, and key as four corpus-length arrays: on
+    # enwik9 each such array costs about 2.2 GB although they encode the same
+    # intermediate integer at successive stages.
+    state = np.minimum(rank[x1], m1)
+    if m2 > 0:
+        state *= m2 + 1
+        state[0] += m2  # the missing second lag uses the backoff bucket
+        # Bound the only second-lag temporary independently of corpus length.
+        chunk_size = 8_000_000
+        for start in range(1, len(y), chunk_size):
+            stop = min(start + chunk_size, len(y))
+            state[start:stop] += np.minimum(
+                rank[ids[start - 1:stop - 1]], m2
+            )
     V = int(ids.max()) + 1
-    uniq, counts = np.unique(state.astype(np.int64) * V + y.astype(np.int64),
-                             return_counts=True)
+    # `state` need not be dense: multiplying its existing integer label by V
+    # already gives a collision-free (state, successor) key.  The former
+    # np.unique(..., return_inverse=True) allocated another full-length int64
+    # array and then immediately discarded the dense-label interpretation.
+    # Avoiding it is exact and materially lowers the enwik9 counting peak.
+    state *= V
+    state += y
+    uniq, counts = np.unique(state, return_counts=True)
     owner = uniq // V
     cuts = np.flatnonzero(np.diff(owner)) + 1
     multiset: Counter = Counter()
@@ -134,11 +160,15 @@ def product_family_codelengths(
 
     if l_max is None:
         l_max = default_l_max(vocabulary_size)
-    n_coded = len(reduced) - 2  # tokens x_3 .. x_n are coded
+    n_coded = len(reduced) - 1  # tokens x_2 .. x_n are coded
 
     fast = isinstance(reduced, np.ndarray) and reduced.dtype.kind in "iu"
     if fast:
-        ids = reduced.astype(np.int64, copy=False)
+        # Keep the compact integer dtype produced by stream reduction.  Rank
+        # lookup promotes the packed state keys to int64 where that width is
+        # actually needed; converting every token here doubled the persistent
+        # enwik9 stream allocation for no mathematical reason.
+        ids = reduced
         n_sym = int(ids.max()) + 1
         if state_order is None:
             first = np.bincount(ids[1:-1], minlength=n_sym)

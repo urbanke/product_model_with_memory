@@ -12,11 +12,21 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.graphical_calibration import (
-    SparseProjectedPair, sparse_relaxed_problem_from_layered_pairs,
+    SparseProjectedPair,
+    sparse_relaxed_problem_from_layered_pairs,
+)
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_sequence_estimator,
 )
 
 
 def load_pair(path: Path) -> tuple[np.ndarray, SparseProjectedPair]:
+    manifest = json.loads((path / "manifest.json").read_text())
+    estimator = manifest.get(
+        "sequence_estimator", PRODUCTION_SEQUENCE_ESTIMATOR
+    )
+    require_production_sequence_estimator(estimator, source=str(path))
     marginal = np.load(path / "marginal.npy", mmap_mode="r")
     arrays = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in
               ("left", "right", "background", "active_y",
@@ -43,6 +53,9 @@ def main() -> None:
         p_ya, p_yb, ab // v, ab % v, marginal_a,
     )
     state = {"prefix": np.asarray(manifest["prefix"]),
+             "sequence_estimator": np.asarray(
+                 PRODUCTION_SEQUENCE_ESTIMATOR
+             ),
              "margin_preprocessing": np.asarray("raw_relaxed"),
              "edge_a": problem.edge_a, "edge_b": problem.edge_b,
              "edge_probability": problem.edge_probability,

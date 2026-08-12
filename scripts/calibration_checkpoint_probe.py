@@ -41,6 +41,9 @@ from product_model_with_memory.pooled_lags import (
     _layered_log_tables,
     _LayeredPredictiveBuilder,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+)
 from product_model_with_memory.streams import load_stream, reduce_ids
 
 
@@ -244,6 +247,7 @@ def main() -> None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "states").mkdir(exist_ok=True)
     resume_fingerprint = {
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "ids": str(Path(args.ids).resolve()),
         "n": len(x),
         "V": vocabulary_size,
@@ -319,6 +323,9 @@ def main() -> None:
         problem = point.problem
         state = {
             "prefix": np.asarray(edges[index]),
+            "sequence_estimator": np.asarray(
+                PRODUCTION_SEQUENCE_ESTIMATOR
+            ),
             "margin_preprocessing": np.asarray(
                 "raw_relaxed" if args.sparse_upstream else "projected_exact"
             ),
@@ -696,6 +703,7 @@ def main() -> None:
     construction_seconds = time.time() - construction_started
     if args.stream_checkpoints:
         payload = {
+            "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
             "ids": args.ids,
             "V": vocabulary_size,
             "n": len(x),
@@ -772,6 +780,9 @@ def main() -> None:
         problem = point.problem
         state = {
             "prefix": np.asarray(edges[index]),
+            "sequence_estimator": np.asarray(
+                PRODUCTION_SEQUENCE_ESTIMATOR
+            ),
             "margin_preprocessing": np.asarray(
                 "raw_relaxed" if args.sparse_upstream else "projected_exact"
             ),
@@ -916,6 +927,7 @@ def main() -> None:
             "rows": score_rows,
         }
     payload = {
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "ids": args.ids,
         "V": vocabulary_size,
         "n": len(x),

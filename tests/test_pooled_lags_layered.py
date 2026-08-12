@@ -91,6 +91,37 @@ def test_sparse_count_rows_build_same_layered_tables_as_dense_counts():
         assert np.allclose(sparse_table[key], dense_table[key])
 
 
+def test_family_shards_match_serial_sparse_tables():
+    v = 7
+    counts = np.array([
+        [0, 3, 0, 1, 0, 0, 2],
+        [1, 0, 4, 0, 2, 0, 0],
+        [2, 0, 1, 0, 4, 0, 0],
+        [0, 0, 0, 2, 0, 3, 0],
+        [1, 1, 1, 1, 1, 1, 1],
+        [0, 2, 0, 0, 0, 5, 0],
+        [0, 2, 0, 0, 3, 0, 0],
+    ], dtype=np.int64)
+    row, column = np.nonzero(counts)
+    sparse_counts = SparseCountRows.from_sorted_keys(
+        v, row * v + column, counts[row, column]
+    )
+    unigram = np.array([9, 7, 5, 3, 2, 1, 1], dtype=np.float64)
+    with tempfile.TemporaryDirectory() as tmp:
+        serial = _layered_log_sparse_tables(
+            _LayeredPredictiveBuilder(v, default_l_max(v), tmp, 1, None),
+            unigram, [sparse_counts],
+        )
+        sharded = _layered_log_sparse_tables(
+            _LayeredPredictiveBuilder(v, default_l_max(v), tmp, 2, None),
+            unigram, [sparse_counts],
+        )
+    assert np.allclose(serial[0], sharded[0], rtol=0, atol=0)
+    for key in ("ptr", "idx", "val", "unseen", "rho"):
+        assert np.allclose(serial[1][0][key], sharded[1][0][key],
+                           rtol=0, atol=0)
+
+
 def test_telescoping_identity_memoryless():
     # checkpoint at every step => the layered predictives telescope:
     # sum of per-step bits == log2 q_avg(profile of ids[:1]) -

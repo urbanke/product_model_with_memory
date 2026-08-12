@@ -15,10 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from calibration_score_states import load_state
+
 from product_model_with_memory.graphical_calibration import (
     sparse_gated_log_probabilities,
     sparse_pair_log_probabilities,
     sparse_star_log_probabilities,
+)
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
 )
 from product_model_with_memory.streams import load_stream, reduce_ids
 
@@ -94,7 +98,8 @@ def main() -> None:
     star_bits = -float(star.sum()) / np.log(2.0)
     pair1_bits = -float(pair1.sum()) / np.log(2.0)
     payload = {
-        "version": 1,
+        "version": 2,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "checkpoint": args.checkpoint,
         "fit_prefix": prefix,
         "next_prefix": next_prefix,

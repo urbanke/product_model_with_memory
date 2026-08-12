@@ -5197,11 +5197,11 @@ These changes are numerically exact: a controlled text8 V4096 interval agrees
 bit-for-bit in candidate, star, pair-1, support, and boundary fields.
 
 `scripts/aggregate_scheduled_scores.py` performs the final honest accounting
-once per completed run.  It adds the initial-prefix KT code, tokenizer and
-selected-vocabulary descriptions, and escaped-token KT payload, and reports
-candidate, star, and pair-1 totals in bits per original input byte.  On the
-controlled text8 V4096 run it reproduces the recorded candidate total
-1.8765517583345621 bpc exactly.
+once per completed run.  As of 9 August, it uses the production depth-averaged
+layered predictor for both the initial prefix and the escaped-token identity
+payload; the earlier KT accounting described in historical entries above is
+superseded.  It separately adds tokenizer and selected-vocabulary descriptions
+and reports candidate, star, and pair-1 totals in bits per original input byte.
 
 Because node16 exposes only 7.6 GiB to Slurm, its V1024 scheduler budget must
 initially be limited to three live workers; this caps simultaneous interval
@@ -5218,3 +5218,415 @@ the shell's usual 256-descriptor soft limit.  This was not a numerical fit
 failure.  Both local and Slurm launchers now set and report `ulimit -n 4096`.
 The scheduler is restartable: its 13 completed F manifests remain valid, while
 F31 and the other fits terminated by the scheduler will be rerun.
+
+## 2026-08-09 --- Scheduled numerical audit and scorer normalization
+
+A controlled audit kept all established production roots read-only and wrote
+only isolated `output/check_*` and `output/audit_*` artifacts.  The historical
+Markov-1 evaluator and scheduled `pair1` agree essentially bit-for-bit on the
+current boundaries: all V1024 intervals differ by only 0.00183 bit in total,
+and representative V4096/V16384 intervals agree at relative errors below
+1.3e-10/2.6e-12.  Direct recounting confirms that stored deltas are interval
+counts and their cumulative sums are full-prefix counts.  The suspected
+delta-versus-prefix bug is ruled out.
+
+Invoking the exact V4096 checkpoint-15 production F command directly, outside
+the scheduler, reproduced all three fitted factor arrays byte-for-byte.  The
+scheduler therefore changes overlap and resource assignment, not numerical F
+semantics.
+
+One real scoring defect was found.  Supported-context normalization recovered
+the uncorrected baseline by subtracting corrected mass from one.  Near unit
+mass this cancellation invented a false background and made some candidate
+conditionals non-normalized.  The scorer now evaluates the small complement
+directly in log space, with a regression test.  The measured correction over
+all V1024 intervals is -11,083 bits = -0.00011083 bpc, and representative
+V4096 impact is negligible; it cannot explain the V16384 candidate loss.
+Existing production accounting was deliberately not overwritten.
+
+Finally, all V4096 fits hit the 1,000-step cap, but a controlled checkpoint-15
+test shows that raising the cap is counterproductive: 500 and 1,000 steps give
+the same held-out 7.1727991 bits/token, whereas 2,000 steps improve regularized
+stationarity but worsen held-out coding to 7.3784689.  The evidence points to
+finite-prefix estimation cost/overfitting as V grows, not missing optimizer
+convergence.  Full details are in
+`docs/scheduled_pipeline_audit_20260809.md`.  Discuss a sequential Bayesian
+mixture of candidate and `pair1` next; it is honest and stays within one total
+bit of the better complete expert without a tuned threshold.
+
+## 2026-08-09 --- Layered estimator made production-wide
+
+The production rule is now explicit and enforced in
+`src/product_model_with_memory/production_coding.py`: every data-bearing
+symbol sequence uses the depth-averaged layered product-simplex predictor.
+The initial reduced prefix and the original tokenizer IDs hidden behind escape
+formerly used fixed-alphabet Jeffreys/KT.  Both now use the exact exchangeable
+layered sequence codelength.  The vocabulary and retained-subset charges remain
+description codes, not predictors.  Production schedules, pair manifests,
+problem/fitted states, interval scores, and accounting files carry the fixed
+estimator ID; an artifact that explicitly declares another estimator is
+rejected.  There is intentionally no production command-line estimator switch.
+The repository-level `AGENTS.md` records the same non-negotiable rule for
+future implementation work.  The exploratory pairwise arena now also defaults
+to layered tables; its count-table pilot is available only by an explicit
+comparison flag.
+
+Read-only re-accounting of the completed text8 runs gives the following
+updated honest candidate rates.  V1024 changes from 1.9708452921 to
+1.9694040179 bpc: its initial prefix costs 394444.30 layered bits and its
+escape payload costs 91490904.21 layered bits.  V4096 changes from
+1.8765517583 to 1.8754044208 bpc; its layered escape payload is
+0.4516167571 bpc.  No predictive interval was recomputed, and the established
+production accounting files were not overwritten; the checks were written to
+temporary files.  The paper table and global accounting convention now report
+the layered values.
+
+## 2026-08-09 --- Exact localization of Markov-1 checkpoint staleness
+
+The production checkpoint tables and the exact telescoping Markov-1 code use
+the same posterior-weighted depth mixture: production freezes the ratio of
+depth-averaged joint laws over an interval, whereas the exact code refreshes
+that ratio after every symbol.  A new read-only artifact audit,
+`scripts/audit_markov1_interval_regret.py`, evaluates exact layered prefix
+codelengths from cumulative YA counts and joins their differences to the
+persisted normalized `pair1_bits`.
+
+For cl100k/text8 V1024/C32, the production scored suffix is 100,116,224.245
+bits and the exact sequential suffix is 99,577,630.338 bits.  Checkpoint
+staleness therefore costs only 538,593.907 bits = 0.00538594 bpc.  Per-token
+regret falls strongly with prefix length, while long late blocks still carry
+substantial absolute regret.  The initial layered memoryless prefix adds only
+22,369.630 bits = 0.00022370 bpc relative to exact one-lag coding, so the two
+effects together cost 0.00560964 bpc.  The result is recorded in
+`output/audit_markov1_interval_regret_v1024_c32_20260809/results.json` and
+rules out checkpoint placement or the depth-mixture weighting as the source
+of the approximately 0.15 bpc gap to the full-vocabulary Markov-1 result.
+Next isolate the vocabulary-reduction/escaped-identity decomposition.
+
+The same exact-prefix audit was subsequently completed for cl100k/text8
+V4096/C32.  Scored checkpoint staleness is 0.01951635 bpc and the initial
+memoryless prefix adds 0.00006705 bpc, giving 0.01958341 bpc total, compared
+with 0.00560964 bpc at V1024.  Scored interval groups 1--8, 9--16, 17--24,
+and 25--31 contribute respectively 0.00376203, 0.00365099, 0.00560174, and
+0.00650159 bpc.  The increase with V occurs throughout the file and is
+slightly tail-heavy, rather than being caused by one sparse initial block.
+Results are in
+`output/audit_markov1_interval_regret_v4096_c32_20260809/results.json`.
+
+## 2026-08-09 --- Fresh exact reduced-alphabet Markov-1 sweep
+
+Section 4 now reports one compact, honest Markov-1 experiment.  For each
+corpus it predeclares
+`V = 1024, 2048, 4096, 8192, 16384, 32768, 65536, 100277`, retains the
+`V-1` most frequent cl100k token identifiers (ties by identifier), transmits
+that unordered subset, codes the reduced stream with the exact layered
+first-order predictor, and codes identifiers behind escape with the layered
+memoryless predictor.  The external tokenizer vocabulary and the three-bit
+grid choice are charged.  There are no checkpoints or fitting tolerances.
+
+All 24 corpus/grid combinations were rerun from the original streams with
+`scripts/run_markov1_alphabet_sweep.sh`; restartable results are under
+`output/markov1_alphabet_sweep_20260809`.  The validated honest bpc rows are:
+
+- text8: 1.976570, 1.922456, 1.859335, 1.800937, **1.764562**, 1.771240,
+  1.808048, 1.829825 (best V=16384);
+- enwik8: 2.478229, 2.400011, 2.311480, 2.218565, 2.134132, **2.083819**,
+  2.091210, 2.113518 (best V=32768);
+- enwik9: 2.316273, 2.229788, 2.136313, 2.036096, 1.933548, 1.852939,
+  **1.828580**, 1.837076 (best V=65536).
+
+Each JSON was checked to declare the layered estimator, the exact retained
+set size, and a three-bit grid charge.  Table 5 uses three decimals and adds
+the best external reported rate.  Its text8 accounting equation explicitly
+identifies `log2(binomial(100277,16383)) = 64,402.59 bits = 6.4403e-4 bpc`.
+The paper builds to 27 pages and the revised pages 6--7 were visually checked.
+
+## 2026-08-09 --- Separating Markov-1 output alphabet V and state resolution M
+
+The original Table 5 was the diagonal slice `M=V`: `V` is the reduced output
+alphabet (including escape), while `M` is the number of previous-symbol
+identities receiving individual states.  `scripts/state_family_experiment.py`
+now makes frequency-selected `M` honest by charging
+`log2(binomial(V,M))` for the transmitted unordered state subset and
+`log2(len(M_grid))` for the M choice.  Its complete-code JSON is version 2 and
+records all per-M charges.  `M=0` and `M=V` cost no subset bits.
+
+The integer state-family implementation was also changed from one complete
+adjacent-pair sort per M to one exact sort for the entire nested family.
+Promoting a state removes its sparse successor row from the backoff row.
+The optimized and old paths agree on the real text8 V=1024 production point
+to at worst `7.2e-15` bits/token across `M=0,16,64,256,1024`; synthetic profile
+identity tests were added.  This removal of repeated corpus passes is
+important for enwik9.
+
+Following the agreed hill-climb policy, only the two coordinate neighbors of
+each existing diagonal optimum need be tested; a new neighborhood is explored
+only if a neighbor wins.  Honest bpc results (including state-subset and
+one-bit M-choice charges) are:
+
+- text8 current `(M,V)=(16384,16384)`: 1.76456249; neighbors
+  `(8192,16384)`: 1.78063249 and `(16384,32768)`: 1.77244586;
+- enwik8 current `(32768,32768)`: 2.08381934; neighbors
+  `(16384,32768)`: 2.10676443 and `(32768,65536)`: 2.09295299;
+- enwik9 current `(65536,65536)`: 1.82858023; neighbors
+  `(32768,65536)`: 1.84259048 and `(65536,100277)`: 1.83711922.
+
+No neighbor wins, so the search stops and the diagonal Table 5 optima remain.
+The targeted artifacts are under `output/markov1_state_neighbors_20260809`
+(with the text8 central comparison under
+`output/markov1_state_sweep_20260809/target_text8_v16384_m8192`).  Use
+`scripts/run_markov1_state_neighbors.sh CORPUS V V_PLUS` for this policy.
+## 2026-08-09 — Agreed sparse memory-two frontier
+
+Use points `(V, M1, M2)`.  The reference is permanently the original honest
+memory-one result `(V*, M1*, 0)` for that corpus.  First verify the `M2=0`
+identity exactly; the product-state implementation now sends the missing
+second-lag context before `x2` to the second-lag backoff bucket, so it codes
+`x2..xn` and reproduces the complete first-order member rather than a stream
+trimmed by one token.
+
+The original memory-one point is itself the initial expansion center, so its
+valid radius-one/two neighbors are tested even though it cannot beat itself.
+A step changes one coordinate by exactly a factor two or one half; `M2=0`
+has the declared first edge to `M2=16`.  An order-two neighbor changes two
+distinct coordinates once each; it never changes one coordinate by a factor
+four or one quarter.  Thus `(M2,M1,V)=(16,V/2,V)` is included.  Search the special
+`M2=0 -> 16` arm first.  If 16 improves, continue upward on
+the declared geometric state grid one point at a time until the first
+reversal.  Maintain a winner set containing *every* tested point whose honest
+bpc is below the fixed original memory-one bpc, even when it is worse than the
+current best.  Exhaust every valid factor-two neighbor obtained by changing
+one coordinate, or two distinct coordinates once each, around every winner.
+Newly found
+winners expand the same frontier.  Memoize all evaluated triples and stop
+when no winner has an untested radius-two neighbor.  Implementation and audit
+state: `src/product_model_with_memory/memory2_frontier.py`; tests:
+`tests/test_memory2_frontier.py`.
+
+The earlier text8 state-resolution diagnostic also found a fixed-V interior
+point `(V,M)=(65536,16384)` at 1.8068 bpc versus 1.8080 at `M=V`.  This is a
+real local improvement but not a global winner relative to 1.7646 at
+`(16384,16384)`, so it correctly does not expand the agreed global frontier.
+
+## 2026-08-09 — Fixed-V greedy check one vocabulary step below the optimum
+
+Before moving to enwik9, the same memory-two greedy protocol was repeated
+with `V` held one declared alphabet-grid step below each corpus's Markov-1
+optimum.  Fixing `V` prevents the search from immediately walking back to the
+already audited optimum and targets the plausible lower-complexity corner:
+the number of state-conditional distributions grows roughly with the product
+of the retained resolutions.  Each fixed-V memory-one member is the new local
+reference; `M2=16` is tested first, and after that arm reverses the remaining
+permitted neighbors are `(M1=V/2,M2=0)` and `(M1=V/2,M2=16)`.
+
+For text8 at `V=8192`, the reference is 1.800937057383 bpc.  The honest
+candidate rates (including transmitted nested state subsets and a one-bit
+candidate comparison charge) are 1.827985729951 at `(M1,M2)=(8192,16)`,
+1.827971116884 at `(4096,0)`, and 1.845086234193 at `(4096,16)`.  For enwik8
+at `V=16384`, the reference is 2.134131675271 bpc; the corresponding rates
+are 2.156653920469, 2.173788461120, and 2.182381940399 bpc.  No point beats
+its fixed-V reference, so both frontiers are complete.  The exact M2=0 raw
+identity differences were `2.043e-13` and `4.663e-13` bits/token.  Machine-
+readable accounting is in
+`output/memory2_frontier_20260809/fixed_v_greedy_summary.json`.
+
+## 2026-08-09 — First honest enwik9 memory-two winner
+
+At the established enwik9 memory-one optimum `V=M1=65536`, the exact
+`M2=0` product member reproduced the Markov-1 raw rate to
+`4.47e-13` bits/token.  Raising only the second-lag resolution to `M2=16`
+reduced the layered member rate from 6.653817162067 to 6.536249878823
+bits/token.  After the 211.747-bit transmitted nested-state-subset charge and
+one comparison bit, the complete honest rate is **1.796406734070 bpc**, versus
+1.828580231181 bpc for memory one: a gain of 0.032173497112 bpc.  The model
+has 416,184 observed product states.  This is a strict winner, so the declared
+upward arm continues at `M2=32`.  Accounting is in
+`output/memory2_frontier_20260809/enwik9_frontier_summary.json`.
+
+The required upward arm then evaluated `M2=32`.  It improved again, to
+6.473627232562 bits/token with 566,158 observed states.  Charging the
+394.326-bit transmitted second-lag subset and one comparison bit gives
+**1.779269471640 bpc**.  This is 0.049310759542 bpc below the fixed memory-one
+reference, 0.017137262430 bpc below `M2=16`, and already about 0.0122 bpc below
+the paper's historical full-token `M2=1024` result (1.7915 bpc).  The arm is
+therefore still descending and must continue at `M2=64`.  The historical
+`(V,M1,M2)=(100277,100277,1024)` point remains a second expansion center:
+after the fixed-`V=65536` arm, revalidate its `M2=256,1024,2048` anchors and
+search capacity-redistributing triples near both basins rather than treating
+a local reversal on one arm as global completion.
+
+The broader follow-up campaign is now frozen before seeing its answers.  It
+uses `V in {65536,100277}`, powers-of-two `M1` from 2048 through `V`, powers-
+of-two `M2` from 1024 upward, and the strict constraint `M2 < M1 <= V`.
+Because the fixed-V arm was still improving at 64, its 128, 256, and 512
+bridge points are prepended.  This is 52 deduplicated triplets (24 reduced-V
+and 28 full-V), costing only `log2(52)=5.70044` model-selection bits.  Both
+lag-state sets use one frequency
+order and are nested, so their honest description is
+`log2 choose(V,M1) + log2 choose(M1,M2)`, not two independent subsets of V.
+The machine-readable declaration is
+`output/memory2_triplet_campaign_20260809/plan.json`; planner, accounting, and
+server entry points are `scripts/plan_memory2_triplet_campaign.py`,
+`scripts/summarize_memory2_triplet_campaign.py`, and
+`cluster/job_memory2_triplet_campaign.sbatch`.  The two V slices should run as
+shared batches so corpus scans and universal-table work are reused.
+
+The fixed-`V=M1=65536` arm subsequently completed `M2=64`: raw rate
+6.436628443748 bits/token, 932,299 observed states, and 727.960 transmitted
+state-subset bits.  The complete honest rate is **1.769144638956 bpc**, another
+0.010124832684 bpc below `M2=32` and 0.059435592225 bpc below memory one.  The
+arm is still descending; its next point is `M2=128`.  The large overnight
+campaign begins at `M2=1024`, so this small arm remains a separate required
+bridge.  A resumable laptop runner was added as
+`scripts/run_memory2_triplet_campaign_local.sh`; it evaluates the 52 declared
+points in memory-bounded batches of four, reuses completed batches and the
+existing V=65536 cache, and writes final accounting automatically.
+
+The first launch of that runner exposed a production-configuration omission:
+it did not export the four anchor-ladder variables and therefore began growing
+the obsolete 176 GB `tables/universal_v2` exact store (261,564 requested
+columns) instead of reading the sealed 2.8 GB `tables/anchors_prod` store.
+That launch was stopped after 53,300 requests.  The local runner now exports
+`PMM_UNIVERSAL_TABLES=tables/anchors_prod`, `PMM_PHI_LADDER_EVERY=1`,
+`PMM_PHI_LADDER_DEGREE=11`, and `PMM_PHI_SADDLE_MIN_L=54`.
+`product_family_experiment.py` also validates the sealed store and these
+settings before doing any work, so a production run can no longer silently
+grow ad-hoc columns.  A smoke run completed using anchor evaluation only, and
+the focused production/product-family/frontier suite passes (15 tests).
+
+## 2026-08-09 — New-conversation handover: unified reruns and hard lessons
+
+### Where the numerical campaign stands
+
+We are deliberately rerunning the earlier model families because the honest
+first-order sweep established that the full tokenizer alphabet is often not
+optimal.  The relevant controls are separate: output alphabet `V`, first-lag
+state resolution `M1`, and second-lag resolution `M2`.  A smaller `V` can win
+despite the escape payload because it leaves fewer conditional distributions
+to learn.  Consequently historical full-vocabulary rows must remain valid
+comparison codes, not be treated as optimized results.
+
+The first-order sweep is complete and is now the clean template in
+`paper/main.tex`: all three original corpora, the `cl100k_base` stream, the
+declared eight-point V grid, layered coding for both retained symbols and
+escaped identities, transmitted retained subsets, and all rates in honest
+bits per original character.  Its current optima are text8 1.7646 bpc at
+V=16384, enwik8 2.0838 at V=32768, and enwik9 1.8286 at V=65536.
+
+The current work is the memory-two family.  The exact `M2=0` identity against
+memory one has been verified to below 5e-13 bits/token.  At enwik9
+`V=M1=65536`, the honest frontier has so far fallen monotonically:
+
+| M2 | honest bpc | observed states |
+|---:|---:|---:|
+| 0 | 1.828580 | -- |
+| 16 | 1.796407 | 416,184 |
+| 32 | 1.779269 | 566,158 |
+| 64 | 1.769145 | 932,299 |
+| 128 | 1.750697 | 1,223,781 |
+| 256 | 1.740262 | 1,855,894 |
+| 512 | 1.730624 | 2,642,856 |
+
+The last three rows came from the first batch of the predeclared 52-triplet
+campaign and include its 5.70044-bit global model-choice charge.  That batch
+also tested `(V,M1,M2)=(65536,2048,1024)`, which scored 1.874385 bpc and is
+not competitive.  The machine-readable completed batch is
+`output/memory2_triplet_campaign_20260809/v65536/batch_00/results.json`.
+
+The resumable overnight process is running on the laptop from
+`scripts/start_memory2_triplet_campaign_local.sh`; at this handover it had
+advanced to V=65536 batch 1 and begun its 52-depth evaluation.  Its PID is
+recorded in
+`output/memory2_triplet_campaign_20260809/overnight_anchor.pid`, and its live
+log is
+`output/memory2_triplet_campaign_20260809/overnight_anchor.log`.  The runner
+skips any completed batch and writes final accounting after all 52 triplets.
+Do not infer status from the shell's `jobs`: the launcher intentionally
+detaches it.  The log must contain `evaluation: depth .../52`, never
+`tables: ... orders built`.
+
+`paper/main.tex` now reports the verified frontier through M2=512, labels the
+text8/enwik8 global memory-two optima as reruns in progress, and explicitly
+marks the existing CTW table as an honest full-vocabulary baseline rather
+than an alphabet-optimized result.  The memory-two table should be replaced
+by the completed declared-grid summary tomorrow, not extended by informal
+post-hoc choices.
+
+### Non-negotiable lessons (recorded after repeated costly failures)
+
+1. **Never build new moment tables in a production experiment.**  Production
+   uses the sealed designed store `tables/anchors_prod` with exactly
+   `PMM_PHI_LADDER_EVERY=1`, `PMM_PHI_LADDER_DEGREE=11`, and
+   `PMM_PHI_SADDLE_MIN_L=54`.  The obsolete `tables/universal_v2` exact store
+   must not grow.  Production entry points now validate this and refuse an
+   unsealed store.  If a log says `tables: ... orders built`, stop immediately;
+   it is a configuration bug, not useful work.
+
+2. **Every data-bearing sequence uses our depth-averaged layered
+   product-simplex predictor.**  This includes memoryless streams, conditional
+   successor streams, prefixes, escape identities, and fallbacks.  Never
+   substitute KT/Jeffreys, Laplace/add-one, plug-in counts, or another smoother
+   for convenience.  `AGENTS.md` and
+   `src/product_model_with_memory/production_coding.py` enforce this policy.
+
+3. **Use the standard ChatGPT `cl100k_base` tokenizer unless the user
+   explicitly requests a tokenizer comparison.**  The independent pooled
+   tokenizer may be scientifically interesting and performed well on text8,
+   but it is not the default representation and must never silently enter a
+   paper row.
+
+4. **Report only honest bits per character of the original file.**  Charge
+   the external tokenizer vocabulary, any retained-token subset, escaped
+   original identifiers, boundary/prefix symbols, state subsets, and declared
+   model choice.  Bits/token are useful internal diagnostics only and should
+   not appear as headline experimental results.
+
+5. **Checkpoint staleness is a statistical cost, not merely a runtime
+   detail.**  Updating a sequential probability only at 16 or 32 geometric
+   checkpoints can lose materially relative to updating after every symbol;
+   the loss grows with V in the measured Markov-1 audit.  We have interval-by-
+   interval regret curves, but not yet an efficient general cure.  Exact
+   telescoping families (memoryless, ordinary state-factorized Markov models,
+   and CTW) avoid this completely: their final-count calculation is exactly
+   the codelength of token-by-token updates.  The calibrated exponential-
+   family construction does not telescope across refits and therefore still
+   suffers from checkpoint staleness.
+
+6. **When checkpoints are unavoidable, split the computation into small
+   dependency-aware tasks and schedule them.**  Monolithic checkpoint loops
+   left most cores idle.  Separating count/delta construction, estimators,
+   graph/problem assembly, independent fits, and interval evaluation let the
+   scheduler overlap different resource profiles and produced sustained high
+   utilization.  Keep the actual dependency chains, but expose everything
+   else as independent jobs.  Preserve total stochastic batch size when the
+   worker count changes; changing workers must change per-worker batch size in
+   the opposite direction.
+
+7. **The three separately estimated pairwise marginals used by the calibrated
+   exponential family are generally inconsistent at finite sample size.**  A
+   77,930,496-variable HiGHS feasibility LP proved the early V=4096 checkpoint
+   infeasible.  Do not demand an exact marginal match or interpret solver
+   failure as an optimization mystery.  Solve the declared relaxed convex
+   problem and report its stationarity/slack diagnostics.
+
+8. **For that relaxed calibration fit, use the stochastic-gradient method
+   only.**  Cap it pragmatically (the current production diagnostic uses at
+   most 1000 stochastic steps), accept the declared approximate solution, and
+   do not restart the cycle of hand-tuned L-BFGS, IPF, Newton-CG, line-search,
+   or exact-solver fallbacks.  Those methods consumed hours, parallelized
+   poorly, and cannot repair incompatible targets.  Revisit them only after an
+   explicit new discussion and benchmark.
+
+### Tomorrow's order of work
+
+1. Let the predeclared memory-two campaign finish; summarize and interpret all
+   52 triplets, verify estimator/table/accounting provenance, and update the
+   paper table and scoreboard from the frozen grid.
+2. Rerun/extend the CTW family over reduced output alphabets and appropriate
+   context resolutions, with the same honest accounting.  The current CTW
+   numbers remain valid full-vocabulary baselines but may not be optima.
+3. Once direct memory two and CTW are settled, return to the checkpointed
+   predictor that fits an exponential-family joint to three pairwise
+   marginals.  Retain the scheduled small-task pipeline, relaxed inconsistent-
+   marginal objective, stochastic-only fit, standard tokenizer, production
+   anchor store, and bpc accounting above.

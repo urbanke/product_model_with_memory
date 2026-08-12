@@ -1,0 +1,87 @@
+The retained output alphabet $V$ and the resolutions of the two lags are
+three separate controls.  We use the state
+\[
+ \bigl(b_{M_1}(z_{t-1}),b_{M_2}(z_{t-2})\bigr),
+ \qquad 0\leq M_2\leq M_1\leq V,
+\]
+where $b_M$ gives individual states to $M$ retained symbols and pools the
+rest.  Both state sets follow the same corpus-frequency order, so they are
+nested.  The decoder is told them with
+\[
+ \log_2\binom{V}{M_1}+\log_2\binom{M_1}{M_2}
+\]
+bits, in addition to the vocabulary, escaped-identity, and declared
+model-grid charges.  Every data-bearing successor sequence, including
+fallback and escape-payload sequences, is coded by
+\texttt{layered\_depth\_averaged\_product\_simplex\_v1}.  The convention
+$M_2=0$ makes the second component constant and must reproduce the
+corresponding first-order member exactly; this identity is a hard numerical
+gate before an order-two result is accepted.  All rates divide the complete
+code length by the number of bytes in the original corpus.
+
+Table~\ref{tab:order-two-best} gives the best completed experiment for each
+corpus.  ``Observed states'' counts product states that actually occur, not
+the much larger formal Cartesian state space.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+corpus & $V$ & $M_1$ & $M_2$ & observed states & honest bpc \\
+\midrule
+\texttt{text8}  & $16{,}384$ & $16{,}384$ & $0$   & $16{,}384$   & $1.764562509$ \\
+\texttt{enwik8} & $32{,}768$ & $32{,}768$ & $0$   & $32{,}768$   & $2.083819340$ \\
+\texttt{enwik9} & $65{,}536$ & $65{,}536$ & $512$ & $2{,}642{,}856$ & $\mathbf{1.730623500}$ \\
+\bottomrule
+\end{tabular}
+\caption{Best completed direct order-two experiment for each corpus.  The
+  honest rate includes the primary stream, retained vocabulary, transmitted
+  state subsets, escaped identities, initial symbol, and the applicable
+  declared model-grid choice.}
+\label{tab:order-two-best}
+\end{table}
+
+For a concrete audit, Table~\ref{tab:order-two-ledger} expands the selected
+enwik9 code.  This is the winner of the frozen 52-triplet campaign; its
+independent 20-point power-of-two refinement gives $1.730623499$ bpc, with
+the $1.4\mathbin{\times}10^{-9}$ difference arising only from the smaller
+global grid charge.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+component & bits & bits/original byte \\
+\midrule
+primary successor streams & $1{,}722{,}936{,}540.44$ & $1.722936540$ \\
+tokenizer vocabulary & $6{,}208{,}152.00$ & $0.006208152$ \\
+retained-ID subset & $93{,}335.99$ & $0.000093336$ \\
+escaped token identities & $1{,}381{,}133.30$ & $0.001381133$ \\
+first retained symbol & $16.00$ & $0.000000016$ \\
+eight-way vocabulary choice & $3.00$ & $0.000000003$ \\
+nested state subsets & $4{,}313.95$ & $0.000004314$ \\
+52-way triplet choice & $5.70$ & $0.000000006$ \\
+\midrule
+complete code & $1{,}730{,}623{,}500.38$ & $\mathbf{1.730623500}$ \\
+\bottomrule
+\end{tabular}
+\caption{Exact accounting for
+  $(V,M_1,M_2)=(65{,}536,65{,}536,512)$ on enwik9.  Every data-bearing row
+  uses \texttt{layered\_depth\_averaged\_product\_simplex\_v1}; the subset
+  and grid-index rows are metadata descriptions.  The production run used
+  the sealed anchor store, the degree-11 depth ladder at every depth, and
+  saddle evaluation beginning at $L=54$; no table was fitted or grown from
+  enwik9.}
+\label{tab:order-two-ledger}
+\end{table}
+\FloatBarrier
+
+The direct second lag does not improve the best code on text8 or enwik8:
+their winners remain the exact $M_2=0$ first-order members.  On enwik9 the
+larger sample supports a genuine second-lag gain: $M_2=512$ improves on its
+$1.828580231$-bpc $M_2=0$ reference by $0.097956731$ bpc.  The gain depends
+strongly on allocating capacity jointly across $V$, $M_1$, and $M_2$, rather
+than fixing the full vocabulary.  Appendix~\ref{app:memory-two-results}
+lists every distinct completed experiment, one table per corpus, ordered
+lexicographically by $(V,M_1,M_2)$ rather than by performance.

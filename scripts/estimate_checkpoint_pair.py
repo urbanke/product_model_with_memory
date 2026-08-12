@@ -15,8 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.codelength import default_l_max
 from product_model_with_memory.graphical_calibration import sparse_layered_pair
 from product_model_with_memory.pooled_lags import (
-    SparseCountRows, _LayeredPredictiveBuilder,
+    SparseCountRows,
     _layered_log_sparse_conditionals,
+    _LayeredPredictiveBuilder,
+)
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_sequence_estimator,
 )
 
 
@@ -37,7 +42,15 @@ def main() -> None:
     counts = Path(a.counts)
     manifest = json.loads((counts / "manifest.json").read_text())
     v = int(manifest["vocabulary_size"])
-    marginal = np.load(Path(a.unigram) / "marginal.npy", mmap_mode="r")
+    unigram = Path(a.unigram)
+    unigram_manifest = json.loads((unigram / "manifest.json").read_text())
+    require_production_sequence_estimator(
+        unigram_manifest.get(
+            "sequence_estimator", PRODUCTION_SEQUENCE_ESTIMATOR
+        ),
+        source=str(unigram),
+    )
+    marginal = np.load(unigram / "marginal.npy", mmap_mode="r")
     if len(marginal) != v:
         raise RuntimeError("unigram and count snapshot vocabularies differ")
     keys = np.load(counts / f"keys_{a.pair}.npy", mmap_mode="r")
@@ -56,7 +69,16 @@ def main() -> None:
               "active_context": pair.active_context, "delta": pair.delta}
     for name, value in arrays.items():
         np.save(destination / f"{name}.npy", value)
-    payload = {"version": 1, "pair": a.pair, **manifest}
+    # Production pair margins are layered by definition. Do not add a
+    # convenience switch to KT, add-one, or plug-in smoothing here.
+    payload = {
+        **manifest,
+        "version": 2,
+        "kind": "pair",
+        "pair": a.pair,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "l_max": default_l_max(v),
+    }
     (destination / "manifest.json").write_text(json.dumps(payload, indent=2))
     print(json.dumps({"pair": a.pair, "active": len(pair.delta)}), flush=True)
 

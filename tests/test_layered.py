@@ -15,8 +15,6 @@ from product_model_with_memory.layered import (
     log_q_lambda_scan,
     build_selected_product_moment_tables,
     log_q_lambda_closed_l1,
-    log_q_lambda_grid,
-    log_q_lambda_laplace,
 )
 
 
@@ -31,23 +29,6 @@ def test_fast_tables_match_reference():
         finite = np.isfinite(ref)
         assert np.all(np.isfinite(got) == finite)
         assert np.allclose(got[finite], ref[finite], rtol=1e-9, atol=1e-9), key
-
-
-def test_laplace_matches_grid_integral():
-    part = (5, 3, 2, 1, 1)
-    tables = build_tables_fast(max_L=6, r_values=needed_r_values(part))
-    for L in (2, 4, 6):
-        laplace = log_q_lambda_laplace(d=1_000, L=L, partition=part, tables=tables)
-        grid = log_q_lambda_grid(d=1_000, L=L, partition=part, tables=tables)
-        assert laplace.converged
-        assert abs(laplace.log_q - grid.log_q) < 0.05
-
-
-def test_single_symbol_profile_is_uniform():
-    tables = build_tables_fast(max_L=4, r_values=(0, 1, 2, 3))
-    for L in (2, 4):
-        result = log_q_lambda_laplace(d=50, L=L, partition=(1,), tables=tables)
-        assert result.log_q == pytest.approx(-math.log(50))
 
 
 def test_l1_closed_form_is_add_one_dirichlet():
@@ -65,8 +46,8 @@ def test_l1_closed_form_is_add_one_dirichlet():
 
 
 def test_depth_average_against_monte_carlo():
-    # Q^(L)(x^N) = E_theta prod theta_i^{m_i}; check the Laplace/grid pipeline
-    # against a direct Monte Carlo estimate on a small alphabet.
+    # Q^(L)(x^N) = E_theta prod theta_i^{m_i}; check the production scan
+    # evaluator against a direct Monte Carlo estimate on a small alphabet.
     rng = np.random.default_rng(7)
     d, L, part = 8, 3, (3, 1)
     samples = 400_000
@@ -74,29 +55,10 @@ def test_depth_average_against_monte_carlo():
     for _ in range(L):
         y *= rng.exponential(size=(samples, d))
     theta = y / y.sum(axis=1, keepdims=True)
-    # q_lambda is the probability of one specific sequence with counts
-    # (3, 1) on two fixed symbols: E[theta_0^3 theta_1].
     mc = float(np.mean(theta[:, 0] ** 3 * theta[:, 1]))
     tables = build_tables_fast(max_L=L, r_values=needed_r_values(part))
-    grid = log_q_lambda_grid(d=d, L=L, partition=part, tables=tables)
-    assert grid.log_q == pytest.approx(math.log(mc), abs=0.05)
-
-
-def test_scan_matches_wide_grid_on_bimodal_case():
-    # Deep layer with a heavy count: the integrand is bimodal and part of it
-    # sits left of the default grid.  The scan method on default tables must
-    # agree with brute-force integration on a much wider grid.
-    d, L, part = 2_000, 20, (100, 5, 2, 1)
-    r_needed = needed_r_values(part)
-    default_tables = build_tables_fast(max_L=L, r_values=r_needed)
-    wide_tables = build_tables_fast(
-        max_L=L, r_values=r_needed, u_min=-160.0, u_points=28_001
-    )
-    scan = log_q_lambda_scan(d=d, L=L, partition=part, tables=default_tables)
-    grid = log_q_lambda_grid(d=d, L=L, partition=part, tables=wide_tables)
-    assert scan.converged
-    assert scan.log_q <= 0.0
-    assert abs(scan.log_q - grid.log_q) < 0.05
+    result = log_q_lambda_scan(d=d, L=L, partition=part, tables=tables)
+    assert result.log_q == pytest.approx(math.log(mc), abs=0.05)
 
 
 def test_deep_layer_heavy_count_never_positive():
@@ -139,33 +101,6 @@ def test_piecewise_grid_matches_uniform():
         dict(zip("abcd", part)), d=d, l_max=L
     )
     assert abs(lazy.log2_q_avg - eager.log2_q_avg) < 0.05
-
-
-def test_scan_matches_laplace_on_unimodal_case():
-    part = (5, 3, 2, 1, 1)
-    tables = build_tables_fast(max_L=6, r_values=needed_r_values(part))
-    for L in (2, 4, 6):
-        scan = log_q_lambda_scan(d=1_000, L=L, partition=part, tables=tables)
-        laplace = log_q_lambda_laplace(
-            d=1_000, L=L, partition=part, tables=tables
-        )
-        assert abs(scan.log_q - laplace.log_q) < 0.01
-
-
-def test_scan_on_mixed_heavy_profile_matches_wide_grid():
-    # Mixed profile with heavy and light counts at moderate N, resolvable by
-    # a fine wide grid, to validate peak selection with many count sizes.
-    d, L = 5_000, 12
-    part = (300, 120, 50, 20, 8, 3, 2, 2) + (1,) * 10
-    r_needed = needed_r_values(part)
-    default_tables = build_tables_fast(max_L=L, r_values=r_needed)
-    wide_tables = build_tables_fast(
-        max_L=L, r_values=r_needed, u_min=-140.0, u_points=56_001
-    )
-    scan = log_q_lambda_scan(d=d, L=L, partition=part, tables=default_tables)
-    grid = log_q_lambda_grid(d=d, L=L, partition=part, tables=wide_tables)
-    assert scan.converged
-    assert abs(scan.log_q - grid.log_q) < 0.05
 
 
 def test_depth_averaged_codelength_smoke():

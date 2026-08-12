@@ -6,6 +6,7 @@
 \usepackage{enumitem}
 \usepackage{flafter}
 \usepackage{graphicx}
+\usepackage{longtable}
 \usepackage{placeins}
 \usepackage[hidelinks]{hyperref}
 
@@ -53,10 +54,12 @@ the original corpus, never by the number of derived tokens.  When a run uses
 an external tokenizer, its vocabulary description is charged.  When it keeps
 only $V-1$ token types and maps the remainder to an escape symbol, the selected
 subset is transmitted, the reduced stream is coded by the stated predictor,
-and each original token hidden by escape is coded by a sequential
-Jeffreys--KT code over the excluded tokenizer identifiers.  Any initial symbols
-for which the stated memory or checkpoint predictor is unavailable are coded
-by the declared lower-order or fixed-alphabet KT rule.  The sum of these
+and each original token hidden by escape is coded by the depth-averaged layered
+predictor over the excluded tokenizer identifiers.  Initial symbols for which
+the stated memory or checkpoint predictor is unavailable are likewise coded
+by the depth-averaged layered predictor on the corresponding alphabet.  Thus
+every data-bearing symbol sequence uses the same estimator; only metadata such
+as the transmitted vocabulary subset uses a separate description code.  The sum of these
 components is therefore a lossless code for the original file.  Sections below
 state only what differs from this convention: the token representation,
 retained alphabet, state or context, and predictive rule.
@@ -69,18 +72,19 @@ retained alphabet, state or context, and predictive rule.
 \midrule
 bytes, no memory                & $4.1235$ & $5.0802$ & $5.1565$ \\
 LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
-first order (Sec.~\ref{sec:firstorder})   & $1.8298$ & $2.1135$ & $1.8371$ \\
-second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.8298$ & $2.1135$ & $1.7915$ \\
-context tree (Sec.~\ref{sec:ctree})       & $\mathbf{1.8182}$ & $\mathbf{2.0606}$ & $\mathbf{1.6598}$ \\
-calibrated order two (Sec.~\ref{sec:calibration}) & $1.8766$ ($V=4096$) & pending & pending \\
+first order (Sec.~\ref{sec:firstorder})   & $1.7646$ & $2.0838$ & $1.8286$ \\
+second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.7646$ & $2.0838$ & $1.7306$ \\
+context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $\mathbf{2.0223}$ & $\mathbf{1.6392}$ \\
+pairwise constraint model (Sec.~\ref{sec:pairwise}) & $\mathbf{1.7086}$ & pending & pending \\
 \midrule
-best published (Table~\ref{tab:files})    & $1.398$  & $1.170$  & $0.858$ \\
+best published (see Table~\ref{tab:files}) & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
 \end{tabular}
-\caption*{Best honest bits per character achieved by each
-  construction of this paper, against the published records
-  (decompressor size included, no external data --- the same rules).
-  Bold: the current bests.}
+\caption{Best honest bits per character achieved by each construction in
+  this paper.  The published records use the same complete-code convention;
+  the relevant sections give the construction and accounting details.
+  Bold entries are the current best results of this paper.}
+\label{tab:scoreboard}
 \end{table}
 
 \section{The model}
@@ -277,7 +281,7 @@ of~\cite{layered2026}.
 \subsection*{Files}
 
 Every result in this paper is measured on the three files of the
-standard text-compression benchmarks (Table~\ref{tab:files}).
+standard text-compression benchmarks, see Table~\ref{tab:files}.
 \texttt{text8} is the first $10^8$ bytes of an English Wikipedia dump
 with everything removed except lowercase \texttt{a}--\texttt{z} and the
 space: no markup, no capitals, no punctuation, no digits.
@@ -302,8 +306,7 @@ file & bytes & byte values & contents & best published \\
   on the public lists, in bits per character, by \texttt{paq8h},
   \texttt{cmix~v21} and \texttt{nncp~v3.2} respectively.  Those programs
   use memory heavily, so they are the target of this work rather than
-  a comparison for its early sections.  \texttt{text8} md5
-  \texttt{3bea1919949baf155f99411df5fada7e}.}
+  a comparison for its early sections.}
 \label{tab:files}
 \end{table}
 
@@ -370,7 +373,7 @@ valid benchmark entry & yes               & only if that is counted \\
 \label{sec:text8}
 
 This section fixes the floor: what the construction achieves with no
-memory at all (Table~\ref{tab:memoryless}).  Each file is a single count
+memory at all, see Table~\ref{tab:memoryless}.  Each file is a single count
 profile, so these are one evaluation apiece, and every figure is the
 exact codelength of a complete scheme converted to bits per character of
 the original file.
@@ -417,287 +420,130 @@ in the fourth decimal on \texttt{enwik9}.
 \section{Memory of order one}
 \label{sec:firstorder}
 
-Each symbol is conditioned on the one immediately before it and on
-nothing else (Table~\ref{tab:firstorder}).  The state is the previous
-symbol, every distinct symbol has its own state, nothing is pooled and
-nothing is capped, and each state's successors are coded by the
-per-state layered mixture used throughout.  The state map is a function
-of the past that the decoder computes for itself, and the product over
-states is exactly the codelength of a symbol-by-symbol predictor: the
-one that weights the depths, at every step, by their posterior given
-what that state has seen so far.  Appendix~\ref{app:factorisation}
-proves this, distinguishes it from the receiver that weights the depths
-uniformly --- a different code, and a worse one --- and reports the
-check that the sequential walk and the closed form agree to $0.000$
-bits.  With a single state the same machinery is the
-memoryless model, and it reproduces the
-Table~\ref{tab:memoryless} figures to four decimals.
+For a retained alphabet of size $V$, let $z_t$ be the retained token or
+the escape symbol at position $t$.  The first symbol is coded by the
+memoryless layered predictor.  Thereafter the state is exactly the previous
+reduced symbol, $z_{t-1}$, and the successors observed in each state are
+coded by the same depth-averaged layered predictor used in the memoryless
+model.  Its maximal depth is fixed by
+\[
+ L_{\max}(V)=\operatorname{round}\!\left(2c_\star\log V\right),
+ \qquad c_\star=(1-\gamma)^{-1},
+\]
+and all depths from $1$ through $L_{\max}(V)$ receive equal prior weight.
+The product over states is not a batch approximation: exchangeability within
+each state makes it exactly the codelength of the corresponding sequential
+Markov predictor.  Appendix~\ref{app:factorisation} gives the factorization.
+Consequently this section uses no checkpoints, frozen distributions, or
+fitting tolerance.
 
-\begin{table}[ht]
+\paragraph{The retained alphabet is part of the model.}
+Let $A=100{,}277$ be the external tokenizer alphabet.  For a candidate $V$,
+we retain the $V-1$ most frequent token types in the file (ties are broken by
+tokenizer identifier) and transmit their unordered set in
+\[
+ \log_2 \binom{A}{V-1}
+\]
+bits.  All other types become escape.  The reduced sequence is coded by the
+layered first-order predictor above, while the original identifiers hidden
+behind escape are coded, in their original order, by the layered memoryless
+predictor over the excluded identifiers.  Thus reducing $V$ does not discard
+any symbols and does not change the file being measured.
+
+We predeclare the grid
+\[
+ \mathcal V=\{1024,2048,4096,8192,16384,32768,65536,100277\}.
+\]
+\begin{table}[h!]
 \centering
-\begin{tabular}{lrrrrr}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrrrr}
 \toprule
-file & memoryless & first order & saved & states & best possible \\
+file & $1{,}024$ & $2{,}048$ & $4{,}096$ & $8{,}192$
+     & $16{,}384$ & $32{,}768$ & $65{,}536$ & full & best reported \\
 \midrule
-\texttt{text8}  & $2.1716$ & $1.8298$ & $0.3418$ & $35{,}767$ & $0.701$ \\
-\texttt{enwik8} & $2.9552$ & $2.1135$ & $0.8417$ & $71{,}161$ & $1.242$ \\
-\texttt{enwik9} & $2.9775$ & $1.8371$ & $1.1404$ & $81{,}276$ & $1.281$ \\
+\texttt{text8}  & $1.977$ & $1.922$ & $1.859$ & $1.801$
+                 & $\mathbf{1.765}$ & $1.771$ & $1.808$ & $1.830$ & $1.398$ \\
+\texttt{enwik8} & $2.478$ & $2.400$ & $2.311$ & $2.219$ & $2.134$
+                 & $\mathbf{2.084}$ & $2.091$ & $2.114$ & $1.170$ \\
+\texttt{enwik9} & $2.316$ & $2.230$ & $2.136$ & $2.036$ & $1.934$
+                 & $1.853$ & $\mathbf{1.829}$ & $1.837$ & $0.858$ \\
 \bottomrule
-\end{tabular}
-\caption{First-order memory over the LLM tokenizer, bits per character
-  of the original file, vocabulary counted throughout.  ``States'' is
-  how many distinct previous symbols occur, so it is the number of
-  separate distributions the model must learn.  ``Best possible'' is the
-  empirical conditional entropy --- what a first-order model would save
-  if handed the true distributions --- so the gap between it and
-  ``saved'' is the price of having to learn them from the file.}
+\end{tabular}%
+}
+\caption{Honest first-order codelength versus retained alphabet size $V$.
+  The displayed models give every retained previous symbol its own state
+  ($M=V$).  Every data-bearing sequence uses the layered estimator, and every rate
+  includes the tokenizer vocabulary, the retained-subset description,
+  escaped identities, the first symbol, and the three-bit choice of $V$.
+  Bold marks the best value measured so far on the declared grid, not a
+  claim of a continuous optimum.  ``Best reported'' repeats the external
+  benchmark from Table~\ref{tab:files}; it is not restricted to first-order
+  models.}
 \label{tab:firstorder}
 \end{table}
+\FloatBarrier
 
-\paragraph{Both accounting conventions.}  The figures above count the
-vocabulary.  The uncounted convention of Table~\ref{tab:memoryless} is
-obtained by subtracting the charge, $0.0621$ bits per character at
-$10^8$ and $0.0062$ at $10^9$: $1.7677$ on \texttt{text8}, $2.0514$ on
-\texttt{enwik8}, $1.8309$ on \texttt{enwik9}.  The charge does not
-depend on the model, so ``saved'' and ``best possible'' are the same
-under either convention and only the level changes.
+The encoder may choose a different $V$ for each file and sends its grid index
+in three bits.  Together with the tokenizer-vocabulary charge and the subset
+description above, every entry of Table~\ref{tab:firstorder} is therefore a
+complete two-part code, reported in bits per character of the original file.
+All 24 entries were recomputed from the three original files.  For the best
+\texttt{text8} entry, $V=16{,}384$, the complete accounting is
+\[
+ \underbrace{1.632921}_{\text{reduced first order}}
+ +\underbrace{0.068916}_{\text{escaped identities}}
+ +\underbrace{0.062082}_{\text{tokenizer vocabulary}}
+ +\underbrace{6.44\mathbin{\times}10^{-4}}_{\text{retained subset}}
+ =1.7646\ \text{bpc}.
+\]
+Here ``reduced first order'' is the layered Markov code for the retained
+symbols and escape markers after the first symbol.  ``Escaped identities'' is
+the layered memoryless code that recovers the original tokenizer identifiers
+behind those markers.  The tokenizer vocabulary itself costs $6{,}208{,}152$
+bits.  The retained-subset term is precisely
+\[
+ \log_2\binom{100{,}277}{16{,}383}
+ =64{,}402.59\ \text{bits}=6.4403\mathbin{\times}10^{-4}\ \text{bpc},
+\]
+about $8.05$ kB.  The displayed sum rounds to the table entry.  In the exact
+total the first reduced symbol contributes another $1.4\mathbin{\times}10^{-7}$
+bpc (14 bits), and the declared eight-point grid contributes
+$3\mathbin{\times}10^{-8}$ bpc (three bits).  All six terms use the same
+denominator of $100{,}000{,}000$ original characters and account for the
+reported total.  The result illustrates the
+tradeoff rather than fixing one universal vocabulary size.  A larger $V$
+routes fewer symbols through escape but asks the code to learn more
+conditional distributions; a smaller $V$ learns those distributions more
+reliably but pays a larger escape payload.  The balance depends on the file's
+length and token-frequency profile, so the optimum is selected separately for
+each corpus by the same honest rule.
 
-\paragraph{The cost of learning is large.}  In
-Section~\ref{sec:text8} one distribution is estimated from $25.8$
-million observations and the estimator is free.  First order estimates
-$71{,}161$ distributions from the same data, about $362$ observations
-each, and captures $68\%$ of what is available on \texttt{enwik8}.  The
-remainder is the cost of estimating that many distributions from that
-little data.
-
-\paragraph{The cost falls with data per state.}  \texttt{enwik8} and
-\texttt{enwik9} isolate this, since the vocabulary is fixed and the
-state count barely moves --- $71{,}161$ against $81{,}276$ --- while
-the data grows tenfold, from $362$ observations per state to $3{,}368$.
-The captured share rises from $68\%$ to $89\%$, and the shortfall falls
-from $0.400$ to $0.141$ bits per character.  \texttt{enwik9} is
-therefore cheaper per character than \texttt{enwik8} under first-order
-memory, $1.8371$ against $2.1135$, although it is the more expensive
-file without memory.  The learning cost is a property of the ratio of
-data to states, not of the alphabet.
-
-\paragraph{Coarsening the state does not help.}  If the shortfall in
-Table~\ref{tab:firstorder} is the price of learning too many
-distributions, the model should be able to lower it
-by learning fewer.  Fix a grid of values $M$ and let member $M$ give
-its own state to $M$ symbols and pool every other symbol into one
-shared backoff state, so member $M$ has at most $M+1$ states; $M=0$ is
-the memoryless model and $M$ at least the vocabulary size is first
-order.  The family is averaged uniformly, which costs $\log_2$ of the
-number of members over the whole file --- $3.5$ bits for the eleven
-members used here --- and guarantees a codelength within that of the
-best member.  Which $M$ symbols keep their own state is part of the code, so the
-decoder has to know it before decoding begins.  Ranking symbols by
-their frequency in the file being compressed does not satisfy this:
-the ranking would have to be transmitted, about $1.5$ million bits at
-$d = 100{,}277$, or $0.19$ bits per character on \texttt{enwik8},
-which exceeds the entire first-order saving.  Member $M$ therefore
-keeps the $M$ smallest vocabulary indices.  The tokenizer assigns
-indices in merge order, so a small index is a subword that was
-frequent in the tokenizer's training corpus, and the ordering is part
-of the vocabulary that Table~\ref{tab:firstorder} already pays for.
-At $M=0$ and at full memory the two rules coincide, so
-Tables~\ref{tab:memoryless} and~\ref{tab:firstorder} are unaffected.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrrr}
-\toprule
-states kept & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
-\midrule
-$0$        & $2.1716$ & $2.9552$ & $2.9775$ \\
-$1{,}024$  & $1.9805$ & $2.5686$ & $2.4670$ \\
-$8{,}192$  & $1.8698$ & $2.3311$ & $2.1686$ \\
-$32{,}768$ & $1.8318$ & $2.1666$ & $1.9323$ \\
-all        & $1.8298$ & $2.1135$ & $1.8371$ \\
-\bottomrule
-\end{tabular}
-\caption{Coarsening the first-order state, bits per character,
-  vocabulary counted.  ``All'' is $35{,}767$, $71{,}161$ and $81{,}276$
-  states respectively.  The full grids run to eleven members; the rows
-  shown are those the three grids have in common.}
-\label{tab:coarsen}
-\end{table}
-
-The codelength falls monotonically in $M$ on all three files
-(Table~\ref{tab:coarsen}), the posterior places all its weight on the
-full model, and the mixture equals the best member to four decimals.
-Coarsening never pays.  Each doubling of $M$ still buys between $0.048$
-and $0.11$ bits per character on \texttt{enwik8} up to $65{,}536$
-states, where the remaining states hold fewer than $400$ observations
-each.
-Giving a rare symbol its own state costs the layered estimator very
-little, while pooling it with seventy thousand others discards nearly
-everything it carries, and the family offers only that choice.
-
-The last step is the informative one.  Going from $65{,}536$ states to
-all $71{,}161$ gains $0.0049$ bits per character on \texttt{enwik8},
-and the corresponding last step on \texttt{text8} ($32{,}768$ to all
-$35{,}767$) gains $0.0020$, against tens of thousandths for every
-earlier doubling.  First-order memory sits at the point where additional state
-stops earning its cost, which is a statement about the data rather than
-about the estimator.
-
-\paragraph{Where the excess is.}  The shortfall is therefore not
-caused by having too many states, and its composition can be measured
-directly.  For each state, compare what the code pays with what a
-decoder that already knew that state's successor distribution would
-pay; the difference, summed, is the cost of learning.  The empirical
-conditional entropy is optimistic by an amount that grows with the
-number of states, so it is reported with the Miller--Madow correction
-$(\text{support}_s - 1)/2n_s$ nats per state.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrrrr}
-\toprule
-file & model & $H(X \mid \text{prev})$ & excess & obs.\ per state \\
-\midrule
-\texttt{text8}  & $1.8298$ & $1.4943$ & $0.3355$ & $543$ \\
-\texttt{enwik8} & $2.1135$ & $1.7359$ & $0.3776$ & $362$ \\
-\texttt{enwik9} & $1.8371$ & $1.7062$ & $0.1309$ & $3{,}367$ \\
-\bottomrule
-\end{tabular}
-\caption{The cost of learning under first-order memory, bits per
-  character of the original file, vocabulary counted, on the scale of
-  every other table here.  The conditional entropy carries the
-  Miller--Madow correction of Appendix~\ref{app:mm}, which is $0.026$,
-  $0.027$ and $0.011$ bits per character.  ``Excess'' is the difference
-  between the two columns to its left; the vocabulary charge is common
-  to both and cancels.}
-\label{tab:excess}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrrr}
-\toprule
-observations in the state & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
-\midrule
-$1$ to $29$          & $3.6\%$  & $7.5\%$  & $1.1\%$ \\
-$30$ to $99$         & $10.1\%$ & $14.9\%$ & $2.6\%$ \\
-$100$ to $999$       & $41.3\%$ & $41.8\%$ & $25.6\%$ \\
-$1{,}000$ to $9{,}999$ & $33.2\%$ & $22.9\%$ & $42.3\%$ \\
-$10{,}000$ and above & $11.8\%$ & $12.9\%$ & $28.4\%$ \\
-\bottomrule
-\end{tabular}
-\caption{Share of the total excess in Table~\ref{tab:excess},
-  by how many observations the state has.}
-\label{tab:excess-where}
-\end{table}
-
-Two facts follow.  The excess falls sharply with data per state:
-\texttt{enwik8} and \texttt{enwik9} differ by a factor of nine in
-observations per state and by a factor of three in excess, at a fixed
-vocabulary and nearly fixed state count.  And the excess does not sit
-in the near-empty states.  A state observed once costs $16.614$ bits
-for its single symbol on every file, which is $\log_2 100{,}277$
-exactly --- the model paying the uniform price over the whole alphabet
-when it knows nothing.  (That figure is per symbol rather than per
-character, because it is a statement about the alphabet; everything
-else in this section is per character.)  Such states hold too few
-tokens to matter.  Two thirds of the excess sits
-in states with between one hundred and ten thousand observations
-(Table~\ref{tab:excess-where}), where estimation would seem
-comfortable.  A state with a thousand observations spread over a
-hundred thousand symbols still pays, in effect, to say which symbols
-occur, and it pays separately from every other state, although the
-marginal distribution already answers most of the question.  What is
-missing is a way for a state to borrow the marginal by a graded amount
-while keeping its own evidence.  The family above cannot express that,
-because the only alternative it offers to a state's own counts is to
-discard them.
+The output alphabet size and the previous-symbol state resolution are, in
+principle, separate choices.  For $M\leq V$, let the $M$ most frequent reduced
+symbols retain individual previous-token states and pool the other $V-M$
+symbols into one backoff state.  Because this choice uses the file, its
+unordered state subset is transmitted in $\log_2\binom{V}{M}$ bits; the
+one-bit choice between the two locally compared values of $M$ is also
+charged.  We tested the two coordinate neighbors of each best diagonal point
+$(M,V)=(V,V)$.  On \texttt{text8}, the central rate $1.7646$ bpc is lower than
+$1.7806$ at $(8192,16384)$ and $1.7724$ at $(16384,32768)$.  On
+\texttt{enwik8}, $2.0838$ is lower than $2.1068$ at $(16384,32768)$ and
+$2.0930$ at $(32768,65536)$.  On \texttt{enwik9}, $1.8286$ is lower than
+$1.8426$ at $(32768,65536)$ and $1.8371$ at $(65536,100277)$, where the last
+value uses the largest available output alphabet rather than the unavailable
+$2V$.  Thus no neighbor improves the diagonal optimum, and the local search
+stops without expanding a full two-dimensional grid.  A broader diagnostic
+at fixed \texttt{text8} alphabet $V=65{,}536$ does find the interior choice
+$M=16{,}384$ ($1.8068$ rather than $1.8080$ bpc at $M=V$).  This confirms
+that $V$ and $M$ are genuinely distinct controls, but that local improvement
+remains well above the global $1.7646$-bpc result and therefore does not
+change the selected model.
 
 \section{Memory of order two}
 \label{sec:ordertwo}
 
-Each additional symbol of context multiplies the number of states
-while the data stay fixed, and Table~\ref{tab:excess-where} prices the
-consequence: a state observed twenty times carries about $2.2$ bits
-per character of excess, against the $0.378$ paid on average, and
-coarsening cannot recover the difference (Table~\ref{tab:coarsen}).
-Whether a second symbol of context pays is therefore a question about
-data per state, and it is answered by running it.
-
-Keep full resolution on the previous token and add graded resolution
-on the one before it: the state is $(x_{t-1},\, b_{M_2}(x_{t-2}))$,
-where $b_{M_2}$ keeps a token if its vocabulary identifier is among
-the $M_2$ smallest and buckets it otherwise, so that $M_2 = 0$
-recovers the first-order model of Table~\ref{tab:firstorder} exactly.
-The map must not depend on the data, which is why the retained set is
-defined by identifier and not by frequency; a frequency threshold
-would have to be transmitted.  Table~\ref{tab:order-two} gives the
-result on all three files.
-
-\begin{table}[ht]
-\centering
-\begin{tabular}{lrrrrr}
-\toprule
-file & $M_2$ & states & obs./state & bits/char & vs.\ order one \\
-\midrule
-\texttt{text8}
- &    0 &    35{,}767 &   543 & \textbf{1.8298} & --- \\
- &   16 &    59{,}664 &   326 & 1.8329 & $+0.0031$ \\
- &   64 &   179{,}826 &   108 & 1.8581 & $+0.0282$ \\
-\midrule
-\texttt{enwik8}
- &    0 &    71{,}160 &   363 & \textbf{2.1135} & --- \\
- &   16 &   146{,}050 &   177 & 2.1240 & $+0.0105$ \\
- &   64 &   243{,}396 &   106 & 2.1284 & $+0.0149$ \\
- &  256 &   427{,}694 &    60 & 2.1519 & $+0.0383$ \\
-\midrule
-\texttt{enwik9}
- &    0 &    81{,}275 & 3{,}367 & 1.8371 & --- \\
- &  256 & 1{,}063{,}906 &  257 & 1.7972 & $-0.0399$ \\
- & 1{,}024 & 2{,}753{,}260 &   99 & \textbf{1.7915} & $-0.0456$ \\
- & 2{,}048 & 3{,}719{,}340 &    74 & 1.7931 & $-0.0440$ \\
-\bottomrule
-\end{tabular}
-\caption{Order two on the subword alphabet at the full vocabulary
-  ($V = 100{,}277$, $M_1 = V$), against the first-order model
-  ($M_2 = 0$) of Table~\ref{tab:firstorder}.  Observations per state
-  are counted over states actually observed.  The sign of the answer
-  is set by the corpus, not by the construction: on \texttt{text8} and
-  \texttt{enwik8} every allocation of two-back resolution costs more
-  to learn than it gains, and the family posterior puts mass $1.0$ on
-  the first-order member; on \texttt{enwik9}, ten times the data, the
-  same grid pays $0.046$ bits per character, with an optimum in the
-  interior at $M_2 = 1{,}024$.  The two files that lose are exactly the
-  two that begin with a few hundred observations per state; the one
-  that wins begins with a few thousand.}
-\label{tab:order-two}
-\end{table}
-
-\paragraph{Where the crossing is.}  Two files disagreeing is weak
-evidence, because they differ in more than size.  Running prefixes of
-\texttt{enwik9} varies size alone, and brackets the crossing on a
-single source.  At $50$ million tokens the first-order model wins,
-$7.7075$ against $7.7330$ bits per token at $M_2 = 64$; at $100$
-million the order is reversed, $7.4277$ against $7.4182$; over the
-whole file order two wins by $0.1666$.  In observations per first-order
-state those three points are $669$, $1{,}283$ and $3{,}367$, so the
-crossing lies between roughly seven hundred and thirteen hundred
-observations per state.  (Prefixes are reported per token: bits per
-character needs the whole file's byte count and the vocabulary charge,
-neither of which applies to a prefix, so dividing a prefix's bits by
-the file's bytes would give a number that is neither a rate nor
-comparable between prefixes.)  Read together with
-Table~\ref{tab:excess-where}, this is the same statement twice.  The
-second symbol of context does not pay or fail to pay in itself; it pays
-once the states it creates are large enough to learn, and the threshold
-is a property of the estimator, measurable, and roughly a thousand
-observations here.
-
-The finding of these first three sections constrains everything that
-follows: the cost of memory is set by what a single state must pay to
-learn its own distribution, not by how many states there are.
-Table~\ref{tab:firstorder} is the reference point for the
-constructions of the next sections.
+\input{memory2_section_compact.tex}
 
 \section{Adaptive depth: the context-tree family}
 \label{sec:ctree}
@@ -708,14 +554,14 @@ condition each position on its last $k$ symbols, with $k$ chosen per
 context by an exact mixture over all prunings of the context tree up
 to depth $D$, the layered estimator at every node, and the whole
 codelength in closed form.  The measure is bits per character of the
-original file, fully accounted: the tree's codelength over the LLM
-token stream, plus the few boundary tokens the tree cannot
-condition, plus the vocabulary charge of Section~\ref{sec:sources}
-($0.0621$ bits per character at $10^{8}$ bytes).  At depth one the
-construction \emph{is} the first-order model of
-Section~\ref{sec:firstorder}, and its rows below reproduce
-Table~\ref{tab:firstorder} to the last digit --- the accounting is
-closed.
+original file, fully accounted: the tree's codelength over the reduced LLM
+token stream, the retained-identifier subset, the original identities behind
+escape, the few boundary symbols the tree cannot condition, the tokenizer
+vocabulary, and the declared model choice.  Every data-bearing component uses
+\texttt{layered\_depth\_averaged\_product\_simplex\_v1}.  An independent
+$D=1$ evaluation reproduces the corresponding first-order member of
+Section~\ref{sec:firstorder}; this identity is a numerical gate for every
+accepted row.
 
 \paragraph{No chunking anywhere.}  Two different things could be
 approximated here, and neither is.  The \emph{encoder} is fully
@@ -739,48 +585,54 @@ section pays, or approximates away, a staleness cost.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{llrrr}
+\begin{tabular}{lrrr}
 \toprule
-file & scheme & bits/char & vs.\ first order & best published \\
+file & $V$ & $D=2$ & $D=3$ \\
 \midrule
-\texttt{text8}  & first order ($D{=}1$) & $1.8298$ & ---       & $1.398$ \\
-\texttt{text8}  & tree, $D=2$           & $1.8185$ & $-0.0113$ & \\
-\texttt{text8}  & tree, $D=3$           & $1.8182$ & $-0.0116$ & \\
+\texttt{text8}  & $8{,}192$   & $1.788507$ & $1.787905$ \\
+                 & $16{,}384$  & $1.750898$ & $\mathbf{1.750340}$ \\
+                 & $32{,}768$  & $1.757179$ & $1.756759$ \\
+                 & $100{,}277$ & $1.818490$ & $1.818230$ \\
 \addlinespace
-\texttt{enwik8} & first order ($D{=}1$) & $2.1135$ & ---       & $1.170$ \\
-\texttt{enwik8} & tree, $D=2$           & $2.0676$ & $-0.0459$ & \\
-\texttt{enwik8} & tree, $D=3$           & $2.0606$ & $-0.0529$ & \\
+\texttt{enwik8} & $16{,}384$  & $2.076869$ & $2.068208$ \\
+                 & $32{,}768$  & $2.030357$ & $\mathbf{2.022300}$ \\
+                 & $65{,}536$  & $2.041096$ & $2.033551$ \\
+                 & $100{,}277$ & $2.067553$ & $2.060552$ \\
 \addlinespace
-\texttt{enwik9} & first order ($D{=}1$) & $1.8371$ & ---       & $0.858$ \\
-\texttt{enwik9} & tree, $D=2$           & $1.6840$ & $-0.1531$ & \\
-\texttt{enwik9} & tree, $D=3$           & $1.6598$ & $-0.1773$ & \\
+\texttt{enwik9} & $32{,}768$  & $1.674164$ & $1.646259$ \\
+                 & $65{,}536$  & $1.665033$ & $\mathbf{1.639153}$ \\
+                 & $100{,}277$ & $1.684037$ & $1.659776$ \\
 \bottomrule
 \end{tabular}
-\caption{The context-tree family at full fidelity: honest bits per
-  character of each file, vocabulary charge included, LLM
-  tokenization throughout.  ``vs.\ first order'' is the change
-  against the depth-one member, the first-order model of
-  Table~\ref{tab:firstorder}.  Every complete fixed depth beyond one
-  loses badly (depth two alone: $2.3072$ on \texttt{text8},
-  $2.5257$ on \texttt{enwik8}); all of the gain is the per-context
-  choice of depth.}
+\caption{The completed reduced-alphabet context-tree Wave~1, in honest bits
+  per character of the original files.  The first three text8 and enwik8
+  rows and first two enwik9 rows form the predeclared 16-candidate grid and
+  each includes its four-bit global choice charge.  The $V=100{,}277$ rows
+  are the previously measured full-alphabet anchors.  Here $V$ includes the
+  escape symbol, so a reduced member retains $V-1$ tokenizer identifiers.
+  Bold marks the best completed member for each corpus.  Every complete fixed
+  depth beyond one loses badly; the gain comes from the exact mixture over
+  context-specific pruning depths.}
 \label{tab:ctw}
 \end{table}
 
-Three remarks.  First, adaptive depth makes real progress on the
-scoreboard: $0.012$ bits per character on \texttt{text8}, $0.053$
-on \texttt{enwik8}, and $0.177$ on \texttt{enwik9} below the
-first-order numbers --- the best honest figures in this paper so
-far, and the clearest demonstration yet that what memory the data
-can afford is set by observations per context: tenfold data turns
-depth two from a $0.05$ improvement into a $0.15$ one, with
-$2.75$ million depth-two contexts kept.  Second, the file and the
-data volume decide how much depth is worth: on \texttt{text8} depth
-three adds almost nothing to depth two, on \texttt{enwik8}'s markup
-it adds $0.007$, and on \texttt{enwik9} --- the same markup with
-tenfold data --- $0.024$, with $2.8$ million depth-three contexts
-kept.  The \texttt{enwik9} curve has not saturated at depth three;
-depth four is the next measurement there.  Third,
+Alphabet selection materially improves all three codes.  Relative to the
+full-alphabet $D=3$ anchors, the winning reductions save $0.067890$ bpc on
+text8, $0.038252$ on enwik8, and $0.020623$ on enwik9.  Strikingly, the best
+$V$ is the first-order optimum on every corpus: $16{,}384$, $32{,}768$, and
+$65{,}536$, respectively.  At those alphabets adaptive depth then improves
+on the best first-order code by $0.014222$, $0.061520$, and $0.189427$ bpc.
+The full 16-row audit finds every declared candidate exactly once, the
+mandated estimator on the primary, boundary, and escape-payload sequences,
+the original-file denominator, and the common four-bit grid charge; all
+$D=1$ identity errors are below $9\mathbin{\times}10^{-13}$ bits per token.
+
+The file and data volume decide how much additional depth is worth.  Moving
+from $D=2$ to $D=3$ at the winning alphabet saves only $0.000558$ bpc on
+text8, but $0.008057$ on enwik8 and $0.025880$ on enwik9.  The enwik9 curve
+therefore has not saturated at depth three; depth four is the next plausible
+measurement, after repairing the current packed-key overflow at that depth.
+Finally,
 the remaining distance to the published targets ($0.42$ and $0.89$
 bits per character) is far larger than what deeper trees can close;
 the routes with longer reach (Appendix~\ref{app:routes}) remain the
@@ -790,7 +642,25 @@ gain at full fidelity; those runs are superseded --- on subword
 tokens, context depth carries information that word tokens absorb
 into the symbol itself.
 
-\section{Memory of order two from pairwise statistics}
+The $V$ shown in Table~\ref{tab:ctw} is both the emission alphabet and the
+alphabet used in every context coordinate: those rows have $M=V$.  A later
+check held the winning emission alphabet fixed and mapped every lag through
+one common smaller context alphabet $M$ (the same $M$ at depths one, two and
+three).  For \texttt{text8} at $V=16{,}384$, the $D=3$ honest rates were
+$1.7670$ at $M=8{,}192$ and $1.7980$ at $M=4{,}096$, versus $1.7503$ at
+$M=V$; for \texttt{enwik8} at $V=32{,}768$, they were $2.0418$ at
+$M=16{,}384$ and $2.0683$ at $M=8{,}192$, versus $2.0223$ at $M=V$; and for
+\texttt{enwik9} at $V=65{,}536$, they were $1.6473$ at $M=32{,}768$ and
+$1.6706$ at $M=16{,}384$, versus $1.6392$ at $M=V$.  Thus every tested common
+reduction lost: within this limited common-$M$ grid, the best combination on
+all three corpora set every context alphabet equal to the emission alphabet,
+$M_1=M_2=\cdots=V$.  This is an empirical conclusion over the tested grid,
+not a claim that no intermediate or lag-specific reduction can improve it.
+We have not tested separate lag alphabets $M_1$ and $M_2$;
+the current context-tree implementation applies one common context-symbol
+map to every coordinate of a history.
+
+\section{Memory of order two from pairwise constraints}
 \label{sec:pairwise}
 
 Section~\ref{sec:ordertwo} located the failure of order-two states:
@@ -803,9 +673,9 @@ can be reached while \emph{learning} only pairwise objects --- the
 three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
 $(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
 it is the first measured step of the constraint-model route of
-Appendix~\ref{app:routes}.  Table~\ref{tab:calibrated-text8} reports
-the first controlled full-file measurements; larger alphabets and the
-two remaining corpora are still being run.
+Appendix~\ref{app:routes}.  Table~\ref{tab:anchored-potential-text8} reports
+the current \texttt{text8} measurements; the two remaining corpora have not
+yet been run.
 
 \paragraph{The predictors.}  Every table any rule consumes is
 estimated by the layered predictor --- the only estimator in this
@@ -835,71 +705,84 @@ experiment:
   the final counts, with no checkpoint staleness at all.
 \end{itemize}
 
-\paragraph{The protocol.}  None of the combined rules telescopes, so
-they are coded sequentially with checkpointed tables: the stream is
-cut into $C$ blocks, every table and calibration is computed from
-the data strictly before the block, the block is coded, the tables
-refresh.  Every member pays the same staleness, so the internal
-comparison is fair; the exact order-two reference pays none, and the
-gap between its exact and checkpointed forms measures whether $C$ is
-large enough.  The checkpoints are placed \emph{geometrically} ---
-small blocks early, growing by a fixed ratio --- not equally.  This
-was decided by measurement against a scheme whose exact sequential
-value is known in closed form (the first-order model): at $C = 32$,
-equal blocks cost $0.170$ bits per token of staleness on the
-\texttt{text8} stream at $V=1024$ where geometric blocks cost
-$0.032$, and at $C = 8$ the ratio is nine to one.  The reason is
-the learning curve: the tables change fastest over the first
-tokens, so equal spacing wastes its refreshes where nothing moves
-and starves the stretch where everything does.  With geometric
-placement at $C = 32$ the residual staleness is a few hundredths of
-a bit per token --- known, small, and stated next to any number it
-affects.  Two further consequences of the exploratory round: the
-share-nothing layered reference is damaged far more than smooth
-members by any checkpointing ($0.198$ bits per token at $C = 32$
-equal), so it appears only in its exact, telescoped form; and
-members are reported with the checkpoint schedule they were
-computed under, always.
+\paragraph{The non-telescoping problem.}
+Unlike the preceding constructions, the calibrated rule does not telescope:
+its prequential codelength cannot be recovered from final counts.  A direct
+implementation must refit from the decoded prefix, and holding a fit fixed
+over a long chunk introduces a staleness loss.  That loss measures a chosen
+implementation, not the intrinsic potential of the model, and may itself
+depend on the alphabet size.
 
-\paragraph{The accounting.}  As everywhere now: full LLM vocabulary,
-complete codes, and bits per character of the original file.  For a
-reported alphabet size $V$, the $V-1$ retained token types and one
-escape symbol form the reduced stream.  The table separately shows
-the reduced-stream prediction, the external vocabulary and retained-
-subset description, and the sequential KT payload behind escape.
-These components sum to the honest full-stream rate.
+We therefore estimate the \emph{continuous-update potential}: the
+prequential codelength obtained if the pair laws and relaxed fit were updated
+from the complete decoded prefix before every token.  At 64 paired,
+stratified prefix positions we fit both the graph predictor and a first-order
+control from exactly the same prefix, then score the next 4,096 tokens.  The
+early strata are geometrically spaced, where the learning curve changes
+fastest, and the later strata are linearly spaced.  Stratified averaging
+estimates the graph-minus-control difference; adding it to the exact,
+telescoped first-order codelength gives the absolute rate.  The exact control
+also provides a direct audit for sampling bias.  Detailed interpolation,
+window-length, split-sample, bootstrap, and staleness diagnostics are given in
+Appendix~\ref{app:calibration-implementation}.
+
+\paragraph{The accounting.}
+As everywhere in the paper, the reported rate includes the external
+vocabulary, retained-subset descriptions, the reduced-stream prediction,
+initial symbols, and all token identities behind escape.  A smaller lag
+alphabet additionally pays for its nested retained-state subset.  The
+confidence interval applies only to the estimated predictive increment; all
+other components are charged exactly.
+
+\paragraph{Continuous-update results.}
+The newer anchored experiment fixes the complete layered $YA$ law, fits the
+$YB$ and $AB$ laws as relaxed constraints by cold-started SGD, and retains
+the complete layered $AB$ background rather than falling back on unobserved
+context pairs.  Table~\ref{tab:anchored-potential-text8} gives its first
+full-file-scale estimate.  This is deliberately an incremental result: it
+estimates the continuously refreshed graph code minus the continuously
+refreshed first-order code.  The table converts that increment to an absolute
+honest bpc by adding it to the independently evaluated, checkpoint-free
+first-order code with the same reduced alphabet and complete overhead.
 
 \begin{table}[ht]
 \centering
-\begin{tabular}{rcccc}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrrc}
 \toprule
-$V$ & reduced prediction & vocabulary & escape payload & honest total \\
+corpus & $V$ & $M_1$ & $M_2$ & sampled positions &
+estimated honest bpc ($95\%$ CI) \\
 \midrule
-$1{,}024$ & $0.9923$ & $0.0622$ & $0.9163$ & $1.9708$ \\
-$4{,}096$ & $1.3615$ & $0.0623$ & $0.4527$ & $1.8766$ \\
+\texttt{text8} & $1{,}024$ & $1{,}024$ & $1{,}024$ &
+$64\times4{,}096$ & $1.780497\;[1.771270,1.789724]$ \\
+\texttt{text8} & $4{,}096$ & $4{,}096$ & $4{,}096$ &
+$64\times4{,}096$ & $1.741533\;[1.731680,1.751385]$ \\
+\texttt{text8} & $16{,}384$ & $16{,}384$ & $8{,}192$ &
+$64\times4{,}096$ & $1.717425\;[1.707044,1.727806]$ \\
+\texttt{text8} & $16{,}384$ & $16{,}384$ & $16{,}384$ &
+$64\times4{,}096$ & $1.710948\;[1.701111,1.720784]$ \\
+\texttt{text8} & $32{,}768$ & $16{,}384$ & $16{,}384$ &
+$64\times4{,}096$ & $\mathbf{1.708550}\;[1.698311,1.718790]$ \\
 \bottomrule
 \end{tabular}
-\caption{Calibrated three-pair prediction on \texttt{text8} with the
-  \texttt{cl100k\_base} representation, in bits per character of the
-  original $10^8$-character file.  Both rows use $32$ geometrically
-  spaced checkpoints, beginning after $65{,}536$ tokens.  The first
-  three code components sum to the honest total (up to rounding).}
-\label{tab:calibrated-text8}
+\caption{Estimated continuous-update potential on the complete
+  \texttt{text8} stream.  Each row uses 64 paired stratified prefix positions
+  and scores 4,096 following tokens at each position.  Values are honest bits
+  per character of the original file; brackets are stratified analytic 95\%
+  confidence intervals.}
+\label{tab:anchored-potential-text8}
 \end{table}
 
-For comparison under exactly the same accounting, the two-pair
-maximum-entropy rule gives $1.9825$ and $1.8964$ bits per character at
-$V=1{,}024$ and $V=4{,}096$, respectively.  Using only the most recent
-token gives $1.9836$ and $1.8801$.  The calibrated rule therefore gains
-$0.0117$ and $0.0198$ over the two-pair rule, and $0.0128$ and $0.0035$
-over the one-pair rule.  At $V=4{,}096$ the third context pair is on
-observed support for $91.78\%$ of the scored tokens; elsewhere the
-declared two-pair fallback is used.  The fits use the fixed relaxed
-calibration rule described in Appendix~\ref{app:calibration-implementation};
-they define honest predictive distributions even when the finite-sample
-pair margins are not exactly compatible.
+At $V=16{,}384$, retaining the full alphabet at both lags gives an estimated
+$1.710948$ honest bpc, compared with $1.717425$ when only the second-lag
+alphabet is reduced to $8{,}192$.  Raising the emission alphabet to
+$V=32{,}768$ while retaining $M_1=M_2=16{,}384$ gives the best point estimate,
+$1.708550$ honest bpc.  The three analytic intervals overlap substantially:
+the current evidence supports a small advantage for the larger emission
+alphabet, not a sharply located optimum.
 
-\section{The calibrated pairwise predictor}
+\subsection{The calibrated pairwise predictor}
 \label{sec:calibration}
 
 Let $X_0$ be the target symbol and $X_1, X_2$ the two context
@@ -973,13 +856,35 @@ workflow, and numerical validation are described in
 Appendix~\ref{app:calibration-implementation}.
 
 The controlled \texttt{text8} measurements are reported in
-Table~\ref{tab:calibrated-text8}.  Their implementation and complete-code
+Table~\ref{tab:anchored-potential-text8}.  Their implementation and complete-code
 accounting are specified in Appendix~\ref{app:calibration-implementation}.
 
 \appendix
 
+\input{memory2_appendix_tables.tex}
+
 \section{Implementation of the calibrated pairwise predictor}
 \label{app:calibration-implementation}
+
+\subsection*{Potential-estimation diagnostics}
+At $V=1{,}024$ the graph-minus-Markov increment is $-0.3764$ bit per
+eligible reduced token, with stratified analytic 95\% interval
+$[-0.4035,-0.3492]$.  The two balanced one-position-per-stratum halves give
+$-0.3853$ and $-0.3675$.  Across scoring windows of 256, 512, 1,024, 2,048,
+and 4,096 tokens, the estimate ranges from $-0.4033$ to $-0.3666$.  The exact
+first-order endpoint audit gives sampled-minus-exact error $-0.0059$ bit per
+eligible token.  At $V=4{,}096$ the increment is $-0.4931$, with analytic
+interval $[-0.5221,-0.4641]$ and stratified-bootstrap interval
+$[-0.5138,-0.4728]$.  Leave-one-stratum-out estimates range from $-0.4973$
+to $-0.4848$; quadratic instead of linear zero-age extrapolation gives
+$-0.4825$.  These are diagnostics of the estimation procedure, not separate
+compression results.
+
+Each anchor uses a cold fit with 500 relaxed-SGD steps, minibatches of 64,
+learning rate $0.03$, and a fixed independent 4,096-sample validation set for
+iterate selection.  All 4,096 following tokens are retained so that nested
+shorter windows can diagnose staleness.  Eight early geometric and 24 late
+linear strata each contribute two uniformly sampled positions.
 
 Fix the observed-support context law and write
 \begin{equation}
@@ -1047,11 +952,81 @@ corpus results are accepted only from a fresh pipeline that rebuilds counts,
 pair estimates, calibration problems, factors, and interval scores under one
 orientation convention.
 
+\section{Full-alphabet first-order diagnostics}
+\label{app:firstorder-diagnostics}
+
+The production comparison in Section~\ref{sec:firstorder} changes the
+emission alphabet and pays for the escaped identities.  The following
+diagnostic asks a different question: keep the full $100{,}277$-symbol
+emission alphabet fixed, give separate context states to the $M$ smallest
+tokenizer identifiers, and pool all remaining previous-token states.  It is
+retained here only to diagnose the cost of learning many state-conditional
+distributions; its $M$ values must not be read as retained vocabulary sizes.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+separate context states $M$ & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
+\midrule
+$0$        & $2.1716$ & $2.9552$ & $2.9775$ \\
+$1{,}024$  & $1.9805$ & $2.5686$ & $2.4670$ \\
+$8{,}192$  & $1.8698$ & $2.3311$ & $2.1686$ \\
+$32{,}768$ & $1.8318$ & $2.1666$ & $1.9323$ \\
+all        & $1.8298$ & $2.1135$ & $1.8371$ \\
+\bottomrule
+\end{tabular}
+\caption{Context-state coarsening at a fixed full emission alphabet, in
+  honest bits per character.  This is not the reduced-alphabet experiment of
+  Table~\ref{tab:firstorder}.  ``All'' means the $35{,}767$, $71{,}161$, and
+  $81{,}276$ previous-token states actually observed in the three files.}
+\label{tab:coarsen}
+\end{table}
+
+For each full-alphabet state, one may also compare the layered codelength with
+the codelength obtained if its empirical successor law were known.  The latter
+is given the Miller--Madow correction described below.  The difference is a
+diagnostic learning excess, not an additional charge in the code.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+file & model & corrected $H(X\mid\mathrm{prev})$ & excess & obs./state \\
+\midrule
+\texttt{text8}  & $1.8298$ & $1.4943$ & $0.3355$ & $543$ \\
+\texttt{enwik8} & $2.1135$ & $1.7359$ & $0.3776$ & $362$ \\
+\texttt{enwik9} & $1.8371$ & $1.7062$ & $0.1309$ & $3{,}367$ \\
+\bottomrule
+\end{tabular}
+\caption{Learning excess of the full-alphabet first-order code, in bits per
+  original character.  Vocabulary cost is common to the model and reference
+  columns and therefore cancels in the excess.}
+\label{tab:excess}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+observations in the state & \texttt{text8} & \texttt{enwik8} & \texttt{enwik9} \\
+\midrule
+$1$--$29$             & $3.6\%$  & $7.5\%$  & $1.1\%$ \\
+$30$--$99$            & $10.1\%$ & $14.9\%$ & $2.6\%$ \\
+$100$--$999$          & $41.3\%$ & $41.8\%$ & $25.6\%$ \\
+$1{,}000$--$9{,}999$ & $33.2\%$ & $22.9\%$ & $42.3\%$ \\
+$10{,}000$ and above  & $11.8\%$ & $12.9\%$ & $28.4\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Share of the total excess in Table~\ref{tab:excess}, grouped by
+  the number of observations in the state.}
+\label{tab:excess-where}
+\end{table}
+
 \section{The bias of the empirical conditional entropy}
 \label{app:mm}
 
-The ``best possible'' column of Table~\ref{tab:firstorder} and the
-target in Table~\ref{tab:excess} are computed from the file's own
+The reference column in Table~\ref{tab:excess} is computed from the file's own
 counts, and such an estimate is systematically too small.  This
 appendix states the correction used and why it is needed, since the
 size of the bias differs between the files and a comparison across
@@ -1102,7 +1077,7 @@ And it is a first-order term only: it is accurate when $n_s$ is large
 relative to $k_s$ and understates the bias when it is not, so for
 states seen once or twice the corrected target is still optimistic.
 Those states hold a negligible share of the tokens
-(Table~\ref{tab:excess-where}), so this does not affect the totals,
+as shown in Table~\ref{tab:excess-where}, so this does not affect the totals,
 but it means the corrected entropy should be read as a lower bound on
 what a first-order model could achieve, not as an attainable target.
 
@@ -1520,7 +1495,7 @@ never materializes.  A node is created the first time its context
 occurs in the file, so after $n$ symbols at most $Dn$ nodes exist,
 whatever $d$ is --- and far fewer in practice; on \texttt{enwik8}
 only $71{,}161$ of the $d$ possible depth-one contexts occur at all
-(Table~\ref{tab:firstorder}).  What limits useful depth is data, not
+as shown in Table~\ref{tab:coarsen}.  What limits useful depth is data, not
 the alphabet.  At larger depths most contexts occur once or twice,
 their nodes hold one or two counts, and the posterior weights
 $\gamma$ shut them off in favour of their parents, at the structural
@@ -1552,7 +1527,7 @@ relative, the hierarchical Pitman--Yor chain of the sequence
 memoizer~\cite{memoizer}, matches PPM-class compressors on text with
 linear resources.  In-house: markov2-with-backoff beat every
 share-nothing order-2 member in the pairwise round, and the learning
-shortfall of Table~\ref{tab:firstorder} ($0.400$ bits per character
+shortfall of Table~\ref{tab:excess} ($0.378$ bits per character
 on \texttt{enwik8}, the largest single measured loss in the paper) is
 precisely the quantity that parent-sharing attacks.
 

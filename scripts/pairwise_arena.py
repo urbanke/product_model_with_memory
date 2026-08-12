@@ -355,7 +355,7 @@ def main() -> None:
                     help="pseudo-tokens toward the unigram, per row "
                          "(counts mode; also the markov2 backoff)")
     ap.add_argument("--tables", choices=("counts", "layered"),
-                    default="counts",
+                    default="layered",
                     help="where the probability tables come from: "
                          "simple count blending, or the layered "
                          "estimator evaluated on the counts so far")
@@ -364,7 +364,7 @@ def main() -> None:
                          "(internal comparisons) or lowest vocabulary "
                          "id (decoder-reproducible)")
     ap.add_argument("--order2", choices=("backoff", "layered", "both"),
-                    default="backoff",
+                    default="layered",
                     help="order-two reference: count backoff, the "
                          "share-nothing layered estimator per context "
                          "pair, or both")

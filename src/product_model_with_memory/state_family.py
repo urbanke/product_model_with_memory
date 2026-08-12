@@ -82,6 +82,66 @@ def member_state_profiles_ids(
     }
 
 
+def nested_member_state_profiles_ids(
+    ids: np.ndarray, state_order: np.ndarray, m_grid: Sequence[int]
+) -> dict[int, list[tuple[int, ...]]]:
+    """Profiles for every nested M from one exact adjacent-pair sort.
+
+    Promoting a state removes its sparse successor row from the backoff row.
+    Therefore the entire nested family needs one pair table, not one full
+    corpus pass and sort per M.  Returned lists contain the same profile
+    multiset as repeated :func:`member_state_profiles_ids` calls.
+    """
+
+    grid = sorted(set(int(m) for m in m_grid))
+    ids = ids.astype(np.int64, copy=False)
+    if len(ids) < 2:
+        return {m: [] for m in grid}
+    packing_v = int(ids.max()) + 1
+    keys = np.asarray(ids[:-1], dtype=np.int64).copy()
+    keys *= packing_v
+    keys += ids[1:]
+    uniq, pair_counts = np.unique(keys, return_counts=True)
+    del keys
+    previous = uniq // packing_v
+    successor = uniq % packing_v
+    cuts = np.flatnonzero(np.diff(previous)) + 1
+    starts = np.concatenate(([0], cuts))
+    stops = np.concatenate((cuts, [len(previous)]))
+    heads = previous[starts]
+    row_index = np.full(packing_v, -1, dtype=np.int64)
+    row_index[heads] = np.arange(len(heads), dtype=np.int64)
+
+    backoff = np.bincount(ids[1:], minlength=packing_v).astype(
+        np.int64, copy=False
+    )
+    promoted_profiles: list[tuple[int, ...]] = []
+    promoted = 0
+    members: dict[int, list[tuple[int, ...]]] = {}
+    for m in grid:
+        target = min(m, len(state_order))
+        while promoted < target:
+            state = int(state_order[promoted])
+            group = int(row_index[state])
+            if group < 0:
+                raise RuntimeError("state order contains an unobserved state")
+            lo, hi = int(starts[group]), int(stops[group])
+            counts = pair_counts[lo:hi]
+            promoted_profiles.append(
+                tuple(sorted((int(c) for c in counts), reverse=True))
+            )
+            backoff[successor[lo:hi]] -= counts
+            promoted += 1
+        member = list(promoted_profiles)
+        remaining = backoff[backoff > 0]
+        if remaining.size:
+            member.append(
+                tuple(sorted((int(c) for c in remaining), reverse=True))
+            )
+        members[m] = member
+    return members
+
+
 def member_state_profiles(
     reduced: Sequence[str], state_vocab: Sequence[str], m: int
 ) -> dict[str, tuple[int, ...]]:
@@ -119,11 +179,17 @@ def state_family_codelengths(
     pools the rest.  Pass `streams.state_order_by_id` for the ADMISSIBLE
     family: that order is fixed by the vocabulary and so is known to the
     decoder before the file is seen.  Left as None the order is this
-    file's own frequency ranking, which is not admissible without
-    transmitting the ranking (about 1.5 million bits at V = 100,277);
-    it is kept for comparison with the earlier text8 runs.
+    file's own frequency ranking.  In that case the caller must transmit
+    the selected top-M subset; the production experiment does so with an
+    enumerative subset code.  The full ranking is unnecessary because a
+    member depends only on membership in its selected subset.
     """
 
+    grid = sorted(set(int(m) for m in m_grid))
+    if not grid:
+        raise ValueError("m_grid must be nonempty")
+    if any(m < 0 or m > vocabulary_size for m in grid):
+        raise ValueError("every M must satisfy 0 <= M <= vocabulary_size")
     if l_max is None:
         l_max = default_l_max(vocabulary_size)
     n_coded = len(reduced) - 1  # tokens x_2 .. x_n are coded
@@ -144,20 +210,29 @@ def state_family_codelengths(
         first_counts = Counter(reduced[:-1])
         state_vocab = [w for w, _ in first_counts.most_common()]
 
-    # all state profiles across all members, evaluated in one pass
-    profiles: dict[tuple[int, str], tuple[int, ...]] = {}
-    for m in m_grid:
-        per_state = (member_state_profiles_ids(ids, state_order, m) if fast
-                     else member_state_profiles(reduced, state_vocab, m))
-        for state, prof in per_state.items():
-            profiles[(m, state)] = prof
+    # All state profiles across all members.  Integer production streams use
+    # the nested one-sort construction; the reference token path remains for
+    # small scientific tests.
+    if fast:
+        member_profiles = nested_member_state_profiles_ids(
+            ids, state_order, grid
+        )
+    else:
+        member_profiles = {
+            m: list(member_state_profiles(reduced, state_vocab, m).values())
+            for m in grid
+        }
 
     # Distinct profiles only.  A state's codelength depends on its
     # profile and nothing else, and across a grid of M values most
     # states share a profile --- (1) and (1, 1) alone account for the
     # bulk of a heavy-tailed alphabet --- so evaluating per state would
     # repeat the same integral thousands of times.
-    distinct = {prof: prof for prof in profiles.values()}
+    distinct = {
+        prof: prof
+        for profiles in member_profiles.values()
+        for prof in profiles
+    }
     evaluated: Mapping = depth_averaged_codelength_profiles(
         distinct,
         d=vocabulary_size,
@@ -169,11 +244,10 @@ def state_family_codelengths(
 
     member_log2_q: dict[int, float] = {}
     member_states: dict[int, int] = {}
-    for (m, _state), prof in profiles.items():
-        member_log2_q[m] = member_log2_q.get(m, 0.0) + evaluated[prof].log2_q_avg
-        member_states[m] = member_states.get(m, 0) + 1
+    for m, profiles in member_profiles.items():
+        member_log2_q[m] = sum(evaluated[prof].log2_q_avg for prof in profiles)
+        member_states[m] = len(profiles)
 
-    grid = sorted(m_grid)
     logs = np.array([member_log2_q[m] for m in grid])
     prior = -math.log2(len(grid))
     family_log2_q = _log2sumexp(logs + prior)

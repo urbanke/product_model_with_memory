@@ -91,6 +91,10 @@ def context_tree_codelengths(
     jobs: int = 1,
     leaf_model: str = "layered",
     progress=None,
+    tables_source: str | None = None,
+    universal_path: str | Path | None = None,
+    context_ids=None,
+    context_alphabet_size: int | None = None,
 ) -> dict:
     """Context-tree-weighted codelength, plus baselines.
 
@@ -119,7 +123,13 @@ def context_tree_codelengths(
         raise ValueError(
             f"{len(vocab_ids)} distinct tokens exceed vocabulary_size="
             f"{vocabulary_size}")
-    tables = context_profile_tables(ids, vocabulary_size, max_depth)
+    tables = context_profile_tables(
+        ids,
+        vocabulary_size,
+        max_depth,
+        context_ids=context_ids,
+        context_alphabet_size=context_alphabet_size,
+    )
     unique = tables.profiles
     contexts_observed = sum(tables.n_contexts)
     if progress is not None:
@@ -135,6 +145,8 @@ def context_tree_codelengths(
             cache_dir=cache_dir,
             jobs=jobs,
             progress=progress,
+            tables_source=tables_source,
+            universal_path=universal_path,
         )
         per_profile = [results[i].log2_q_avg for i in range(len(unique))]
     else:
@@ -194,6 +206,10 @@ def context_tree_codelengths(
         "l_max": l_max,
         "leaf_model": leaf_model,
         "max_depth": max_depth,
+        "context_alphabet_size": (
+            vocabulary_size if context_alphabet_size is None
+            else int(context_alphabet_size)
+        ),
         "contexts_observed": contexts_observed,
         "unique_profiles": len(unique),
         "family_bits_per_token": family_bits,

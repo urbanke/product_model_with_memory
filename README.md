@@ -5,6 +5,16 @@ A simple product model but for sources with memory.
 Companion project to `product_model`: same stack (Python with NumPy/SciPy),
 same layout, extended to sources with memory.
 
+## Production estimator invariant
+
+Every data-bearing symbol sequence in the production code uses the
+depth-averaged layered product-simplex predictor, including initial prefixes
+and identities transmitted behind an escape symbol. KT/Jeffreys, Laplace
+add-one, and plug-in estimators may appear only in explicitly named comparison
+experiments; they must never be silent production fallbacks. The enforced
+identifier and honest-sequence helper live in
+`product_model_with_memory.production_coding`.
+
 ## Environment
 
 Create and activate the local virtual environment:

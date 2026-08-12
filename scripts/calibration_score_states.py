@@ -25,11 +25,22 @@ from product_model_with_memory.graphical_calibration import (
     sparse_pair_log_probabilities,
     sparse_star_log_probabilities,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    layered_sequence_code,
+    require_production_sequence_estimator,
+)
 from product_model_with_memory.streams import load_stream, reduce_ids
 
 
 def load_state(path: Path):
     data = np.load(path)
+    estimator = (
+        str(data["sequence_estimator"])
+        if "sequence_estimator" in data.files
+        else PRODUCTION_SEQUENCE_ESTIMATOR
+    )
+    require_production_sequence_estimator(estimator, source=str(path))
     problem = SparseGroupedProblem(
         vocabulary_size=len(data["target_y"]),
         edge_a=data["edge_a"], edge_b=data["edge_b"],
@@ -57,20 +68,6 @@ def load_state(path: Path):
         )
 
     return problem, result, pair("ya"), pair("yb"), int(data["prefix"])
-
-
-def kt_multinomial_bits(counts: np.ndarray, alphabet_size: int) -> float:
-    """Sequential Jeffreys/KT codelength for a fixed finite alphabet."""
-
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    alpha = 0.5
-    log_probability = (
-        gammaln(alphabet_size * alpha)
-        - gammaln(total + alphabet_size * alpha)
-        + float(np.sum(gammaln(counts + alpha) - gammaln(alpha)))
-    )
-    return -float(log_probability) / np.log(2.0)
 
 
 def score_interval(task):
@@ -193,10 +190,11 @@ def main() -> None:
         total_records += row["scored_records"]
         rows.append(row)
     first_prefix = first_state[4]
-    initial_reduced_bits = kt_multinomial_bits(
+    initial_code = layered_sequence_code(
         np.bincount(x[:first_prefix], minlength=args.top_k + 1),
         args.top_k + 1,
     )
+    initial_reduced_bits = initial_code.bits
     reduced_full_bits = initial_reduced_bits + total_candidate
     tokenizer_alphabet = int(metadata.get(
         "alphabet", int(original.max()) + 1
@@ -215,9 +213,10 @@ def main() -> None:
     original_counts = np.bincount(original, minlength=tokenizer_alphabet)
     escaped_counts = original_counts[~retained]
     escaped_total = int(escaped_counts.sum())
-    escape_bits = kt_multinomial_bits(
+    escape_code = layered_sequence_code(
         escaped_counts, tokenizer_alphabet - len(keep)
     )
+    escape_bits = escape_code.bits
     positive_escape = escaped_counts[escaped_counts > 0]
     escape_probability = positive_escape / escaped_total
     oracle_escape_bits = -float(np.sum(
@@ -225,9 +224,15 @@ def main() -> None:
     ))
     honest_bits = reduced_full_bits + vocabulary_bits + escape_bits
     accounting = {
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "unit": "bits_per_bpe_token",
         "initial_prefix_tokens": first_prefix,
         "initial_prefix_reduced_bits": initial_reduced_bits,
+        "initial_prefix_code": {
+            "estimator": initial_code.estimator,
+            "alphabet_size": initial_code.alphabet_size,
+            "l_max": initial_code.l_max,
+        },
         "reduced_alphabet_predictive_bpc": reduced_full_bits / len(original),
         "tokenizer_vocabulary_bits": tokenizer_vocabulary_bits,
         "selected_subset_description_bits": subset_bits,
@@ -235,6 +240,11 @@ def main() -> None:
         "escaped_tokens": escaped_total,
         "escape_fraction": escaped_total / len(original),
         "escaped_token_payload_bpc": escape_bits / len(original),
+        "escaped_token_payload_code": {
+            "estimator": escape_code.estimator,
+            "alphabet_size": escape_code.alphabet_size,
+            "l_max": escape_code.l_max,
+        },
         "oracle_escape_payload_bpc_noncode": (
             oracle_escape_bits / len(original)
         ),

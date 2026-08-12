@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -26,13 +27,41 @@ import numpy as np
 
 from product_model_with_memory.corpus import load_tokens
 from product_model_with_memory.pairs import empirical_entropies, reduce_vocabulary
+from product_model_with_memory.memory2_frontier import (
+    MemoryTwoPoint,
+    enumerative_subset_bits,
+    nested_frequency_subset_bits,
+)
 from product_model_with_memory.product_family import product_family_codelengths
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    configure_production_tables,
+    layered_sequence_code,
+)
 from product_model_with_memory.streams import (
     bits_per_character,
     load_stream,
     reduce_ids,
     state_order_by_id,
 )
+
+
+def _chunked_counts(ids: np.ndarray, alphabet_size: int) -> np.ndarray:
+    counts = np.zeros(alphabet_size, dtype=np.int64)
+    for start in range(0, len(ids), 8_000_000):
+        chunk = np.asarray(ids[start:start + 8_000_000], dtype=np.int64)
+        counts += np.bincount(chunk, minlength=alphabet_size)
+    return counts
+
+
+def _mixture_bits(total_bits: list[float], declared_members: int) -> float:
+    """Contribution of this slice to a declared uniform model mixture."""
+
+    if not total_bits or declared_members < len(total_bits):
+        raise ValueError("invalid declared mixture size")
+    smallest = min(total_bits)
+    mass = sum(2.0 ** (-(value - smallest)) for value in total_bits)
+    return smallest - math.log2(mass) + math.log2(declared_members)
 
 
 def main() -> None:
@@ -58,9 +87,23 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=None)
     parser.add_argument("--l-max", type=int, default=None)
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument(
+        "--alphabet-grid-size", type=int, default=1,
+        help="number of declared emission-vocabulary choices",
+    )
+    parser.add_argument(
+        "--triplet-grid-size", type=int, default=None,
+        help="global number of declared (V,M1,M2) choices; defaults to the "
+             "members in this invocation",
+    )
     parser.add_argument("--out", required=True)
     parser.add_argument("--cache-dir", default=None)
     args = parser.parse_args()
+
+    # This experiment produces paper-facing codelengths.  Refuse the old
+    # grow-on-demand exact store: production uses the sealed designed anchor
+    # ladder and must never spend hours creating ad-hoc columns.
+    configure_production_tables()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +112,11 @@ def main() -> None:
         (int(a), int(b))
         for a, b in (pair.split(":") for pair in args.grid.split(","))
     ]
+    if len(grid) != len(set(grid)):
+        raise SystemExit("--grid contains duplicate members")
+    triplet_grid_size = args.triplet_grid_size or len(grid)
+    if args.alphabet_grid_size < 1 or triplet_grid_size < len(grid):
+        raise SystemExit("declared grid sizes are inconsistent")
 
     if (args.corpus is None) == (args.ids is None):
         raise SystemExit("give exactly one of --corpus or --ids")
@@ -96,12 +144,17 @@ def main() -> None:
               f"{meta['bytes_per_token']:.2f} bytes/token; {fixed} "
               f"({time.time()-t0:.0f}s)", flush=True)
         if capped:
-            print(f"  WARNING: {capped:,} positions fall outside the top "
-                  f"{args.top_k} and are coded as <unk>", flush=True)
+            print(
+                f"  escape mapping: {capped:,} positions fall outside the "
+                f"top {args.top_k} and map to <unk>; their original token "
+                "identities are coded separately in the honest accounting",
+                flush=True,
+            )
         print("  state map: symbols leave the backoff state in order of "
               + ("ascending vocabulary id (admissible)"
                  if state_order is not None else
-                 "frequency IN THIS FILE (NOT admissible)"), flush=True)
+                 "frequency in this file (nested subsets are transmitted "
+                 "and charged in the honest accounting)"), flush=True)
     else:
         tokens = load_tokens(args.corpus)
         if args.n:
@@ -170,10 +223,24 @@ def main() -> None:
               f"(includes fixed_bits {meta['fixed_bits']:,.0f})", flush=True)
 
     payload = {
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "corpus": args.corpus or args.ids,
         "stream": meta,
         "state_order": args.state_order if args.ids else "frequency",
-        "state_order_admissible": bool(args.ids and args.state_order == "id"),
+        "state_order_known_without_description": bool(
+            args.ids and args.state_order == "id"
+        ),
+        "state_order_admissible": bool(
+            args.ids
+            and (
+                args.state_order == "id"
+                or (
+                    args.state_order == "frequency"
+                    and meta is not None
+                    and "fixed_bits" in meta
+                )
+            )
+        ),
         "top_k": args.top_k,
         "vocabulary_size": V,
         "n_tokens": len(reduced),
@@ -196,6 +263,116 @@ def main() -> None:
         "best_member": f"{best[0]}:{best[1]}",
         "seconds": time.time() - t0,
     }
+    if meta is not None and "fixed_bits" in meta:
+        tokenizer_alphabet = int(meta["alphabet"])
+        full_vocabulary = args.top_k >= tokenizer_alphabet - 1
+        if full_vocabulary:
+            retained_count = tokenizer_alphabet
+            emission_subset_bits = 0.0
+            escaped_tokens = 0
+            escape_code = None
+        else:
+            retained_count = args.top_k
+            emission_subset_bits = enumerative_subset_bits(
+                tokenizer_alphabet, retained_count
+            )
+            original_counts = _chunked_counts(ids, tokenizer_alphabet)
+            selected = np.argsort(-original_counts, kind="stable")[
+                :retained_count
+            ]
+            retained = np.zeros(tokenizer_alphabet, dtype=bool)
+            retained[selected] = True
+            escape_code = layered_sequence_code(
+                original_counts[~retained],
+                tokenizer_alphabet - retained_count,
+                jobs=args.jobs,
+            )
+            escaped_tokens = escape_code.tokens
+        escape_bits = 0.0 if escape_code is None else escape_code.bits
+        first_counts = np.bincount(
+            np.asarray(reduced[:1], dtype=np.int64), minlength=V
+        )
+        first_code = layered_sequence_code(first_counts, V, jobs=args.jobs)
+        alphabet_selection_bits = math.log2(args.alphabet_grid_size)
+        common_bits = (
+            float(meta["fixed_bits"])
+            + emission_subset_bits
+            + escape_bits
+            + first_code.bits
+            + alphabet_selection_bits
+        )
+        state_bits: dict[str, float] = {}
+        total_before_triplet_choice: dict[str, float] = {}
+        honest_member_bpc: dict[str, float] = {}
+        denominator = float(meta["n_bytes"])
+        triplet_selection_bits = math.log2(triplet_grid_size)
+        for m1, m2 in out["grid"]:
+            member = f"{m1}:{m2}"
+            point = MemoryTwoPoint(V, m1, m2)
+            description = (
+                nested_frequency_subset_bits(point)
+                if args.state_order == "frequency" else 0.0
+            )
+            before_choice = (
+                out["member_bits_per_token"][(m1, m2)] * out["n_coded"]
+                + common_bits + description
+            )
+            state_bits[member] = description
+            total_before_triplet_choice[member] = before_choice
+            honest_member_bpc[member] = (
+                before_choice + triplet_selection_bits
+            ) / denominator
+        slice_mixture = _mixture_bits(
+            list(total_before_triplet_choice.values()), triplet_grid_size
+        )
+        payload["honest_accounting"] = {
+            "version": 1,
+            "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+            "alphabet_selection": (
+                "full_tokenizer_vocabulary" if full_vocabulary else
+                "corpus_frequency_top_k_transmitted_as_unordered_subset"
+            ),
+            "alphabet_grid_size": args.alphabet_grid_size,
+            "alphabet_selection_bits": alphabet_selection_bits,
+            "retained_tokenizer_ids": retained_count,
+            "selected_subset_description_bits": emission_subset_bits,
+            "tokenizer_vocabulary_bits": float(meta["fixed_bits"]),
+            "escaped_tokens": escaped_tokens,
+            "escaped_token_payload_bits": escape_bits,
+            "escaped_token_payload_code": (
+                None if escape_code is None else {
+                    "estimator": escape_code.estimator,
+                    "alphabet_size": escape_code.alphabet_size,
+                    "l_max": escape_code.l_max,
+                }
+            ),
+            "first_symbol_bits": first_code.bits,
+            "first_symbol_code": {
+                "estimator": first_code.estimator,
+                "alphabet_size": first_code.alphabet_size,
+                "l_max": first_code.l_max,
+            },
+            "state_selection": (
+                "nested_corpus_frequency_subsets_transmitted_enumeratively"
+                if args.state_order == "frequency" else
+                "ascending_tokenizer_id_known_from_transmitted_vocabulary"
+            ),
+            "nested_state_subset_description_bits": state_bits,
+            "triplet_grid_size": triplet_grid_size,
+            "triplet_selection_bits": triplet_selection_bits,
+            "total_bits_before_triplet_selection": total_before_triplet_choice,
+            "honest_member_bits_per_character": honest_member_bpc,
+            "honest_declared_family_slice_bits_per_character": (
+                slice_mixture / denominator
+            ),
+        }
+        best_honest = min(honest_member_bpc, key=honest_member_bpc.get)
+        print(
+            f"  honest best in this slice: {best_honest} "
+            f"{honest_member_bpc[best_honest]:.6f} bpc; "
+            f"global-grid slice mixture {slice_mixture / denominator:.6f}",
+            flush=True,
+        )
     out_file = out_dir / "results.json"
     out_file.write_text(json.dumps(payload, indent=2))
     print(f"written: {out_file} ({time.time()-t0:.0f}s total)", flush=True)

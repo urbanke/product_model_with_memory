@@ -23,13 +23,12 @@ def test_profiles_partition_the_coded_tokens():
     for m1, m2 in [(0, 0), (2, 0), (4, 4)]:
         multiset = member_profile_multiset(reduced, order, m1, m2)
         total = sum(sum(p) * mult for p, mult in multiset.items())
-        assert total == len(reduced) - 2
+        assert total == len(reduced) - 1
 
 
 def test_m0_slice_matches_first_order_family():
-    # (M, 0) members must equal the first-order family evaluated on the
-    # stream trimmed by one token (both then code x_3..x_n with state
-    # = previous token).
+    # (M, 0) members must equal the first-order family on the complete
+    # stream, including the x_1 -> x_2 transition.
     reduced, vocab = reduce_vocabulary(_order2_stream(), 10)
     V = len(vocab)
     with tempfile.TemporaryDirectory() as tmp:
@@ -38,7 +37,7 @@ def test_m0_slice_matches_first_order_family():
             cache_dir=tmp + "/a",
         )
         first = state_family_codelengths(
-            reduced[1:], vocabulary_size=V, m_grid=[4], l_max=6,
+            reduced, vocabulary_size=V, m_grid=[4], l_max=6,
             cache_dir=tmp + "/b",
         )
     assert abs(

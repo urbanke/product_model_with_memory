@@ -13,19 +13,12 @@ from scipy.special import gammaln
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    layered_sequence_code,
+    require_production_sequence_estimator,
+)
 from product_model_with_memory.streams import load_stream
-
-
-def kt_multinomial_bits(counts: np.ndarray, alphabet_size: int) -> float:
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    alpha = 0.5
-    log_probability = (
-        gammaln(alphabet_size * alpha)
-        - gammaln(total + alphabet_size * alpha)
-        + float(np.sum(gammaln(counts + alpha) - gammaln(alpha)))
-    )
-    return -float(log_probability) / np.log(2.0)
 
 
 def chunked_counts(ids: np.ndarray, stop: int, alphabet_size: int) -> np.ndarray:
@@ -77,6 +70,15 @@ def main() -> None:
             parser.error(f"score {checkpoint} has wrong fit prefix")
         if int(row["next_prefix"]) != expected_stop:
             parser.error(f"score {checkpoint} has wrong next prefix")
+        # Legacy score files predate provenance but were produced by this
+        # layered-only path. Every new score is explicit; any explicit
+        # alternative is a hard error.
+        estimator = row.get(
+            "sequence_estimator", PRODUCTION_SEQUENCE_ESTIMATOR
+        )
+        require_production_sequence_estimator(
+            estimator, source=str(score_paths[checkpoint])
+        )
 
     reduced = np.load(reduced_root / "stream.npy", mmap_mode="r")
     vocabulary_size = args.top_k + 1
@@ -85,7 +87,10 @@ def main() -> None:
         np.asarray(reduced[:first_prefix], dtype=np.int64),
         minlength=vocabulary_size,
     )
-    initial_bits = kt_multinomial_bits(initial_counts, vocabulary_size)
+    # The initial sequence is data, not bookkeeping, and therefore uses the
+    # same layered predictor as every fitted interval.
+    initial_code = layered_sequence_code(initial_counts, vocabulary_size)
+    initial_bits = initial_code.bits
     interval_bits = {
         name: sum(float(row[f"{name}_bits"]) for row in rows)
         for name in ("candidate", "star", "pair1")
@@ -111,9 +116,12 @@ def main() -> None:
     retained[keep] = True
     escaped_counts = original_counts[~retained]
     escaped_total = int(escaped_counts.sum())
-    escape_bits = kt_multinomial_bits(
+    # Identities hidden behind escape are also a symbol sequence. Never
+    # silently replace their layered code with KT or add-one smoothing.
+    escape_code = layered_sequence_code(
         escaped_counts, tokenizer_alphabet - len(keep)
     )
+    escape_bits = escape_code.bits
 
     denominator = float(metadata["n_bytes"])
     reduced_bits = {
@@ -124,7 +132,8 @@ def main() -> None:
         for name, bits in reduced_bits.items()
     }
     payload = {
-        "version": 1,
+        "version": 2,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "source": str(root),
         "stream": str(Path(args.ids)),
         "representation": metadata.get("representation"),
@@ -134,6 +143,11 @@ def main() -> None:
         "checkpoints": len(edges),
         "initial_prefix_tokens": first_prefix,
         "initial_prefix_reduced_bits": initial_bits,
+        "initial_prefix_code": {
+            "estimator": initial_code.estimator,
+            "alphabet_size": initial_code.alphabet_size,
+            "l_max": initial_code.l_max,
+        },
         "scored_tokens": sum(int(row["scored_records"]) for row in rows),
         "supported_fraction": (
             sum(
@@ -152,6 +166,11 @@ def main() -> None:
         "escaped_tokens": escaped_total,
         "escape_fraction": escaped_total / args.n,
         "escaped_token_payload_bpc": escape_bits / denominator,
+        "escaped_token_payload_code": {
+            "estimator": escape_code.estimator,
+            "alphabet_size": escape_code.alphabet_size,
+            "l_max": escape_code.l_max,
+        },
         "honest_full_stream_bpc": {
             name: bits / denominator for name, bits in honest_bits.items()
         },

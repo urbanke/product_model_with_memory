@@ -10,17 +10,32 @@ data/*
 paper/main.aux
 paper/main.log
 paper/main.out
+paper/*.aux
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/output/
+docs/*.aux
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.log
+docs/*.out
+docs/*.pdf
+.cache/
+build/
 output/**/cache/
 output/_sync/
 slurm-*.out
 ._*
 paper/*.pdf
 tables/
-# output/ stays untracked EXCEPT the small results.json files,
-# so results flow between machines through git
-output/*
-!output/*/
-output/*/*
-!output/*/results.json
+# Experiment products are machine-local by default.  Existing tracked result
+# summaries remain tracked; add any new publication artifact explicitly after
+# review instead of exposing every nested campaign directory in `git status`.
+output/**
+tmp/
+vocab_cache/
 # compiled kernel binaries: built on demand per machine by kernel.py
 src/product_model_with_memory/*.so

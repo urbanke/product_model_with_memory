@@ -78,6 +78,39 @@ def _pack_keys(ids: np.ndarray, V: int, d: int, start: int) -> list[np.ndarray]:
     return words
 
 
+def _pack_context_output_keys(
+    context_ids: np.ndarray,
+    output_ids: np.ndarray,
+    context_V: int,
+    d: int,
+    start: int,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Pack context digits and a separately alphabetized output digit.
+
+    Context words use base ``context_V``.  The output is deliberately a
+    separate least-significant word, so its alphabet need not equal the
+    context alphabet and no mixed-radix product can overflow.
+    """
+
+    n = len(output_ids)
+    m = n - start
+    digits = [
+        context_ids[start - d + j:n - d + j] for j in range(d)
+    ]
+    context_words: list[np.ndarray] = []
+    per_word = _digits_per_word(context_V)
+    for w_start in range(0, len(digits), per_word):
+        word = np.zeros(m, dtype=np.int64)
+        for dig in digits[w_start:w_start + per_word]:
+            word *= context_V
+            word += dig
+        context_words.append(word)
+    if not context_words:
+        context_words = [np.zeros(m, dtype=np.int64)]
+    output_word = np.asarray(output_ids[start:n], dtype=np.int64)
+    return context_words + [output_word], context_words
+
+
 def _run_starts(words: list[np.ndarray], order: np.ndarray) -> np.ndarray:
     """Boolean array: True where a new distinct key starts in sorted
     order (first element always True)."""
@@ -92,7 +125,8 @@ def _run_starts(words: list[np.ndarray], order: np.ndarray) -> np.ndarray:
 
 
 def context_profile_tables(
-    ids, V: int, max_depth: int
+    ids, V: int, max_depth: int, *, context_ids=None,
+    context_alphabet_size: int | None = None,
 ) -> ContextProfileTables:
     """Contexts, rows-as-profiles, and the tree structure for all
     depths 0..max_depth, by sorting packed keys."""
@@ -103,6 +137,16 @@ def context_profile_tables(
         raise ValueError("sequence shorter than max_depth")
     if np.any(ids < 0) or np.any(ids >= V):
         raise ValueError("ids outside [0, V)")
+    separate_context = context_ids is not None
+    if separate_context:
+        context_ids = np.ascontiguousarray(context_ids, dtype=np.int64)
+        if len(context_ids) != n:
+            raise ValueError("context_ids and output ids must have equal length")
+        if context_alphabet_size is None or context_alphabet_size < 1:
+            raise ValueError("a positive context_alphabet_size is required")
+        if (np.any(context_ids < 0)
+                or np.any(context_ids >= context_alphabet_size)):
+            raise ValueError("context_ids outside context alphabet")
     start = max_depth
     m = n - start
 
@@ -114,15 +158,18 @@ def context_profile_tables(
     prev_group_of_pos: np.ndarray | None = None
 
     for d in range(0, max_depth + 1):
-        words = _pack_keys(ids, V, d, start)
+        if separate_context:
+            words, ctx_words = _pack_context_output_keys(
+                context_ids, ids, context_alphabet_size, d, start
+            )
+        else:
+            words = _pack_keys(ids, V, d, start)
+            # context part = all digits except the last output digit.
+            ctx_words = [w.copy() for w in words]
+            ctx_words[-1] //= V
         order = (np.argsort(words[0], kind="stable") if len(words) == 1
                  else np.lexsort(words[::-1]))
         new_key = _run_starts(words, order)
-        # context part = all digits except the last (the token): a new
-        # context starts where the context digits change.  Rebuild the
-        # context words by integer-dividing the last word by V.
-        ctx_words = [w.copy() for w in words]
-        ctx_words[-1] //= V
         new_ctx = _run_starts(ctx_words, order)
         del ctx_words
 

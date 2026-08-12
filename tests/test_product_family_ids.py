@@ -56,9 +56,7 @@ def test_matches_the_reference_implementation():
 
 def test_m2_zero_is_the_first_order_family():
     """The (M, 0) slice must be the first-order family, computed by
-    completely different code.  Order two codes x_3..x_n and order one
-    codes x_2..x_n, so the comparison is against order one run on the
-    stream with its first symbol dropped."""
+    completely different code, on the same complete transition stream."""
 
     from collections import Counter
 
@@ -71,7 +69,7 @@ def test_m2_zero_is_the_first_order_family():
     order, rank = _frequency_rank(ids, d)
     for m1 in (1, 2, 4, 6):
         two = member_profile_multiset_ids(ids, rank, m1, 0)
-        one = Counter(member_state_profiles_ids(ids[1:], order, m1).values())
+        one = Counter(member_state_profiles_ids(ids, order, m1).values())
         assert two == one, m1
 
 
@@ -82,7 +80,7 @@ def test_memoryless_corner():
     ms = member_profile_multiset_ids(ids, rank, 0, 0)
     assert sum(ms.values()) == 1, "(0, 0) must have exactly one state"
     profile = next(iter(ms))
-    assert sum(profile) == len(ids) - 2
+    assert sum(profile) == len(ids) - 1
 
 
 def test_state_counts_grow_with_resolution():

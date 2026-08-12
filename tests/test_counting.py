@@ -6,6 +6,7 @@ whose totals telescope exactly.
 """
 
 import numpy as np
+from collections import Counter
 
 from product_model_with_memory.codelength import profile_of
 from product_model_with_memory.context_tree import build_context_nodes
@@ -57,3 +58,38 @@ def test_multiword_keys_match_singleword_regime():
                        if len(ctx) == d)
         new_d = sorted(new.profiles[i] for i in new.profile_id[d])
         assert old_d == new_d
+
+
+def test_separate_context_and_output_alphabets_match_naive_counts():
+    rng = np.random.default_rng(19)
+    outputs = rng.integers(0, 11, size=7000)
+    contexts = np.where(outputs < 3, outputs, 3)
+    D = 3
+    got = context_profile_tables(
+        outputs, 11, D, context_ids=contexts, context_alphabet_size=4
+    )
+    for d in range(D + 1):
+        rows = {}
+        for t in range(D, len(outputs)):
+            ctx = tuple(int(x) for x in contexts[t-d:t])
+            rows.setdefault(ctx, Counter())[int(outputs[t])] += 1
+        expected = sorted(profile_of(row) for row in rows.values())
+        actual = sorted(got.profiles[i] for i in got.profile_id[d])
+        assert actual == expected
+
+
+def test_separate_path_is_identical_when_context_alphabet_equals_output():
+    ids, _ = _random_case(23, 17, 10000, 3)
+    original = context_profile_tables(ids, 17, 3)
+    separate = context_profile_tables(
+        ids, 17, 3, context_ids=ids, context_alphabet_size=17
+    )
+    assert original.n_contexts == separate.n_contexts
+    for d in range(4):
+        assert sorted(original.profiles[i] for i in original.profile_id[d]) == sorted(
+            separate.profiles[i] for i in separate.profile_id[d]
+        )
+        if d:
+            original_totals = sorted(np.bincount(original.parent[d]))
+            separate_totals = sorted(np.bincount(separate.parent[d]))
+            assert original_totals == separate_totals

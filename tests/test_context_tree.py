@@ -2,6 +2,8 @@ import math
 import tempfile
 from collections import Counter
 
+import numpy as np
+
 from product_model_with_memory.codelength import (
     depth_averaged_codelength_profiles,
     profile_of,
@@ -11,6 +13,7 @@ from product_model_with_memory.context_tree import (
     context_tree_codelengths,
 )
 from product_model_with_memory.pairs import reduce_vocabulary
+from product_model_with_memory.state_family import state_family_codelengths
 
 
 def _stream():
@@ -83,6 +86,70 @@ def test_family_never_worse_than_best_fixed_depth_plus_prior():
     # every complete-depth tree is one pruning; its prior cost is at most
     # (#nodes) bits, tiny per token here
     assert out["family_bits_per_token"] <= best_fixed + 0.05
+
+
+def test_complete_depth_one_member_matches_full_state_first_order():
+    reduced, vocab = reduce_vocabulary(_stream(), 10)
+    V = len(vocab)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = context_tree_codelengths(
+            reduced, vocabulary_size=V, max_depth=1, l_max=6,
+            cache_dir=tmp + "/tree",
+        )
+        first_order = state_family_codelengths(
+            reduced, vocabulary_size=V, m_grid=[V], l_max=6,
+            cache_dir=tmp + "/first-order",
+        )
+    assert tree["n_coded"] + 1 == len(reduced)
+    assert first_order["n_coded"] + 1 == len(reduced)
+    assert abs(
+        tree["fixed_depth_bits_per_token"][1]
+        - first_order["member_bits_per_token"][V]
+    ) < 1e-12
+
+
+def test_pooled_common_m_depth_one_matches_same_markov_state_map():
+    ids = np.asarray(([0, 1, 4, 0, 2, 1, 3] * 300) + [0], dtype=np.int64)
+    V, M = 5, 2
+    contexts = np.where(ids < M, ids, M)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = context_tree_codelengths(
+            ids, vocabulary_size=V, max_depth=1, l_max=6,
+            cache_dir=tmp + "/tree", context_ids=contexts,
+            context_alphabet_size=M + 1,
+        )
+        first_order = state_family_codelengths(
+            ids, vocabulary_size=V, m_grid=[M], l_max=6,
+            cache_dir=tmp + "/first-order",
+            state_order=np.arange(V, dtype=np.int64),
+        )
+    assert abs(
+        tree["fixed_depth_bits_per_token"][1]
+        - first_order["member_bits_per_token"][M]
+    ) < 1e-12
+
+
+def test_common_m_equals_v_is_exact_original_ctw_path():
+    ids = np.asarray(([0, 1, 4, 0, 2, 1, 3] * 200) + [0], dtype=np.int64)
+    V = 5
+    with tempfile.TemporaryDirectory() as tmp:
+        original = context_tree_codelengths(
+            ids, vocabulary_size=V, max_depth=2, l_max=6,
+            cache_dir=tmp + "/original",
+        )
+        separated = context_tree_codelengths(
+            ids, vocabulary_size=V, max_depth=2, l_max=6,
+            cache_dir=tmp + "/separate", context_ids=ids,
+            context_alphabet_size=V,
+    )
+    assert original["n_coded"] == separated["n_coded"]
+    assert abs(
+        original["family_bits_per_token"]
+        - separated["family_bits_per_token"]
+    ) < 1e-12
+    assert original["fixed_depth_bits_per_token"] == separated[
+        "fixed_depth_bits_per_token"
+    ]
 
 
 def test_kt_leaf_matches_sequential_product():

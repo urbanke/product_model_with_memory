@@ -25,6 +25,14 @@ Ruediger's rules. Follow them without being reminded.
 
 - Everything Bayesian: mixtures with priors, integrated exactly by
   algorithms. No learned or tuned weights.
+- Production invariant: every data-bearing symbol sequence uses the
+  depth-averaged layered product-simplex predictor. This includes initial
+  prefixes and token identities behind escape. Never substitute KT/Jeffreys,
+  Laplace add-one, plug-in probabilities, or another estimator as a coding
+  convenience. A different estimator is allowed only as an explicitly named
+  scientific comparison with separate provenance and accounting. Metadata
+  descriptions such as an enumerative vocabulary-subset code are not symbol
+  predictors and are the only exception.
 - Small-vocabulary runs (for example V=1024) are behavioral: they rank
   methods in a controlled arena. They are not compression schemes for
   the original file. Real-scheme claims live at the full vocabulary.

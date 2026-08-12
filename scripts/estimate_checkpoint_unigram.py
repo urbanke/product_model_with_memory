@@ -14,7 +14,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.codelength import default_l_max
 from product_model_with_memory.pooled_lags import (
-    _LayeredPredictiveBuilder, _layered_log_sparse_tables,
+    _layered_log_sparse_tables,
+    _LayeredPredictiveBuilder,
+)
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
 )
 
 
@@ -40,9 +44,15 @@ def main() -> None:
     destination = Path(a.out)
     destination.mkdir(parents=True, exist_ok=True)
     np.save(destination / "marginal.npy", np.exp2(log_m))
-    (destination / "manifest.json").write_text(json.dumps(
-        {"version": 1, "kind": "unigram", **manifest}, indent=2
-    ))
+    # Production invariant: this artifact must remain layered. A different
+    # estimator requires a separately named scientific experiment.
+    (destination / "manifest.json").write_text(json.dumps({
+        **manifest,
+        "version": 2,
+        "kind": "unigram",
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "l_max": default_l_max(v),
+    }, indent=2))
     print(json.dumps({"checkpoint": manifest["checkpoint"],
                       "vocabulary_size": v}), flush=True)
 

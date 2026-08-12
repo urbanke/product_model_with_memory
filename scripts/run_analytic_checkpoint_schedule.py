@@ -14,6 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.checkpoint_scheduler import (
     load_fixed_schedule, run_planned_schedule,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_sequence_estimator,
+)
 
 
 def main() -> None:
@@ -33,6 +37,10 @@ def main() -> None:
     # their aggregate capacity is irrelevant here.
     schedule = load_fixed_schedule(args.jobs, enforce_wave_capacity=False)
     payload = json.loads(Path(args.plan).read_text())
+    require_production_sequence_estimator(
+        payload.get("sequence_estimator", PRODUCTION_SEQUENCE_ESTIMATOR),
+        source=str(args.plan),
+    )
     planned = {row["task_id"]: row for row in payload["plan"]}
     tasks = {row["task_id"]: row for row in payload["tasks"]}
     maximum_workers = args.maximum_workers or payload["maximum_workers"]
