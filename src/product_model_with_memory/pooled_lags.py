@@ -185,6 +185,43 @@ def _augmented_profile(base: tuple, c: int) -> tuple:
     return tuple(sorted(lst))
 
 
+def _evaluate_layered_family_shard(args):
+    """Evaluate independent profile families serially inside one worker.
+
+    Sharding by family, rather than synchronizing all workers after every
+    depth, lets different families progress through their own certified
+    depth windows independently.  Each family is still evaluated by the
+    unchanged production codelength routine.
+    """
+
+    families, d, l_max, cache_dir = args
+    from product_model_with_memory.codelength import (
+        depth_averaged_codelength_families,
+    )
+    return depth_averaged_codelength_families(
+        families, d=d, l_max=l_max, cache_dir=cache_dir, jobs=1,
+    )
+
+
+def _balanced_family_shards(families: dict, shards: int) -> list[dict]:
+    """Greedily balance families by profile and augmentation size."""
+
+    if shards < 1:
+        raise ValueError("shards must be positive")
+    groups: list[dict] = [{} for _ in range(min(shards, len(families)))]
+    loads = [0] * len(groups)
+    weighted = sorted(
+        families.items(),
+        key=lambda row: len(row[1][0]) + len(row[1][1]),
+        reverse=True,
+    )
+    for key, value in weighted:
+        target = min(range(len(groups)), key=loads.__getitem__)
+        groups[target][key] = value
+        loads[target] += len(value[0]) + len(value[1])
+    return groups
+
+
 class _LayeredPredictiveBuilder:
     """Builds per-row predictive tables of the layered per-state mixture.
 
@@ -203,10 +240,6 @@ class _LayeredPredictiveBuilder:
         self.jobs = jobs
         self.progress = progress
         self.memo: dict[tuple, FloatArray] = {}
-        # one worker team for the whole run (started lazily; workers
-        # are daemonic and die with the parent)
-        from product_model_with_memory.codelength import WorkerPoolHolder
-        self.pool_holder = WorkerPoolHolder() if jobs and jobs > 1 else None
 
     def _ensure_families(self, fams: dict[tuple, tuple]) -> None:
         """Evaluate whatever is missing, grouped as base + augmented
@@ -228,15 +261,36 @@ class _LayeredPredictiveBuilder:
                 todo[base] = missing_cs
         if not todo:
             return
-        results = depth_averaged_codelength_families(
-            {base: (base, cs) for base, cs in todo.items()},
-            d=self.V,
-            l_max=self.l_max,
-            cache_dir=self.cache_dir,
-            jobs=self.jobs,
-            progress=self.progress,
-            pool_holder=self.pool_holder,
-        )
+        families = {base: (base, cs) for base, cs in todo.items()}
+        if self.jobs > 1 and len(families) > 1:
+            import multiprocessing as mp
+            # More shards than workers let the pool repair imperfect static
+            # cost estimates and avoid a single long family group forming a
+            # serial tail.  The worker count remains exactly ``self.jobs``.
+            shards = _balanced_family_shards(families, 4 * self.jobs)
+            with mp.get_context("spawn").Pool(
+                min(self.jobs, len(shards))
+            ) as pool:
+                parts = list(pool.imap_unordered(
+                    _evaluate_layered_family_shard,
+                    [
+                        (shard, self.V, self.l_max, self.cache_dir)
+                        for shard in shards
+                    ],
+                    chunksize=1,
+                ))
+            results = {
+                key: value for part in parts for key, value in part.items()
+            }
+        else:
+            results = depth_averaged_codelength_families(
+                families,
+                d=self.V,
+                l_max=self.l_max,
+                cache_dir=self.cache_dir,
+                jobs=1,
+                progress=self.progress,
+            )
         for base, (b_res, a_res) in results.items():
             if b_res is not None:
                 self.memo[base] = np.asarray(b_res.log2_q_by_depth)

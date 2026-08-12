@@ -5322,13 +5322,27 @@ def sparse_gated_log_probabilities(
                 corrections[yy] = corrections.get(yy, 0.0) + value
             corrected_y = np.fromiter(corrections, dtype=np.int64)
             corrected_mass = float(base[corrected_y].sum())
-            background_mass = max(0.0, 1.0 - corrected_mass)
+            # Subtracting corrected_mass from one is inaccurate when the
+            # corrected targets carry almost all baseline mass.  In that
+            # regime the rounding residue can exceed the true complement
+            # (or invent a background when every target is corrected), and
+            # the resulting conditional no longer normalizes.  Use
+            # subtraction only when it is well conditioned; otherwise sum
+            # the usually small complement directly in log space.
+            if corrected_mass <= 0.5:
+                log_background_mass = np.log1p(-corrected_mass)
+            elif len(corrected_y) == v:
+                log_background_mass = -np.inf
+            else:
+                uncorrected = np.ones(v, dtype=bool)
+                uncorrected[corrected_y] = False
+                log_background_mass = logsumexp(log_base[uncorrected])
             corrected_log_mass = logsumexp(np.array([
                 log_base[yy] + value
                 for yy, value in corrections.items()
             ])) if corrections else -np.inf
             log_normalizer = np.logaddexp(
-                np.log(background_mass) if background_mass > 0.0 else -np.inf,
+                log_background_mass,
                 corrected_log_mass,
             )
             chosen = y[selected]
