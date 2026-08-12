@@ -26,7 +26,8 @@ def main() -> None:
     edges = manifest["edges"]
     if not 0 <= a.checkpoint < len(edges):
         raise ValueError("checkpoint outside schedule")
-    x = np.load(source / "stream.npy", mmap_mode="r")
+    stream_path = Path(manifest.get("stream_path", source / "stream.npy"))
+    x = np.load(stream_path, mmap_mode="r")
     v = int(manifest["vocabulary_size"])
     start = 0 if a.checkpoint == 0 else int(edges[a.checkpoint - 1])
     edge = int(edges[a.checkpoint])
@@ -48,6 +49,8 @@ def main() -> None:
         np.save(destination / f"{name}.npy", value)
     payload = {**manifest, "version": 1, "kind": "count_delta",
                "checkpoint": a.checkpoint, "start": start, "prefix": edge}
+    if "anchor_ids" in manifest:
+        payload["anchor_id"] = int(manifest["anchor_ids"][a.checkpoint])
     (destination / "manifest.json").write_text(json.dumps(payload, indent=2))
     print(json.dumps({"checkpoint": a.checkpoint, "start": start,
                       "prefix": edge, "ya_edges": len(k1),
