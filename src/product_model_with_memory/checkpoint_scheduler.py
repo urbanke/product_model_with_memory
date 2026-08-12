@@ -6,9 +6,14 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_sequence_estimator,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,10 @@ def load_fixed_schedule(
 
     source = Path(path)
     payload = json.loads(source.read_text())
+    require_production_sequence_estimator(
+        payload.get("sequence_estimator", PRODUCTION_SEQUENCE_ESTIMATOR),
+        source=str(source),
+    )
     jobs = tuple(CheckpointJob(
         job_id=row["id"],
         job_type=row["type"],
@@ -165,6 +174,7 @@ def run_planned_schedule(
     priorities: dict[str, float],
     *,
     maximum_workers: int,
+    maximum_private_memory_bytes: int = 0,
     worker_caps: dict[str, int] | None = None,
     worker_floors: dict[str, int] | None = None,
     working_directory: str | Path,
@@ -174,7 +184,7 @@ def run_planned_schedule(
 ) -> tuple[dict, ...]:
     """Execute a dependency graph whenever workers become available."""
 
-    if maximum_workers < 1 or poll_seconds <= 0:
+    if maximum_workers < 1 or maximum_private_memory_bytes < 0 or poll_seconds <= 0:
         raise ValueError("invalid executor resource setting")
     root = Path(working_directory)
     by_id = {job.job_id: job for job in jobs}
@@ -270,17 +280,46 @@ def run_planned_schedule(
                 })
 
         available = maximum_workers - sum(row[3] for row in running.values())
+        memory_available = (
+            maximum_private_memory_bytes
+            - sum(row[0].private_memory_bytes for row in running.values())
+            if maximum_private_memory_bytes else None
+        )
         ready = [
             job for job in jobs
             if job.job_id not in launched
             and set(job.dependencies) <= completed
             and (worker_caps is not None or planned_workers[job.job_id] <= available)
+            and (
+                memory_available is None
+                or job.private_memory_bytes <= memory_available
+            )
         ]
+        # PERFORMANCE INVARIANT: priorities choose among dependency-ready
+        # jobs; they must not become synchronization barriers.  The schedule
+        # generator deliberately uses anchor-causal priorities so multi-core
+        # pair work cannot be starved behind a corpus-wide set of serial jobs.
+        # Keep resource admission live and dependency-driven; changes require
+        # an explicit utilization replay because a superficially harmless
+        # priority change previously reduced a 12-core workload to 4-5 cores.
+        #
         # E jobs have no descendants.  They fill otherwise idle capacity but
         # must never delay a ready causal-chain job because of an imperfect
         # analytic duration estimate.
+        # Once construction for an anchor is ready, finish its short
+        # topology/fit/score tail before opening still more construction.  A
+        # prior priority-only order let pair construction for all 64 anchors
+        # run first, then drained scoring at four cores.  Stage rank is only a
+        # tie-break among dependency-ready jobs and therefore creates no
+        # barrier: unused capacity still advances later anchors.
+        tail_rank = {
+            "S": 0, "F": 1, "T": 2, "C": 3,
+            "A": 4, "B": 4, "M": 5, "U": 6, "D": 7, "R": 8,
+        }
         ready.sort(key=lambda job: (
-            job.job_type == "E", priorities[job.job_id], job.job_id,
+            job.job_type == "E",
+            tail_rank.get(job.job_type, 4),
+            priorities[job.job_id], job.job_id,
         ))
         launched_now = False
         assignments: dict[str, int] = {}
@@ -292,12 +331,21 @@ def run_planned_schedule(
             # at one core when the rest of the DAG drains.
             selected = []
             remaining = available
+            remaining_memory = memory_available
             for job in ready:
                 floor = 1 if worker_floors is None else worker_floors[job.job_id]
-                if floor <= remaining:
+                if (
+                    floor <= remaining
+                    and (
+                        remaining_memory is None
+                        or job.private_memory_bytes <= remaining_memory
+                    )
+                ):
                     selected.append(job)
                     assignments[job.job_id] = floor
                     remaining -= floor
+                    if remaining_memory is not None:
+                        remaining_memory -= job.private_memory_bytes
             while remaining and any(
                 assignments[job.job_id] < worker_caps[job.job_id]
                 for job in selected
@@ -409,3 +457,48 @@ def run_fixed_schedule(
                 f"wave {wave_number} failed for jobs {sorted(failed)}"
             )
     return tuple(records)
+
+
+def run_dependency_schedule(
+    schedule: FixedSchedule,
+    *,
+    working_directory: str | Path,
+    maximum_workers: int | None = None,
+    environment: dict[str, str] | None = None,
+    poll_seconds: float = 0.1,
+    event_callback: Callable[[dict], None] | None = None,
+) -> tuple[dict, ...]:
+    """Run a fixed schedule's DAG without treating its waves as barriers.
+
+    Wave order supplies only a stable priority hint.  Every job launches as
+    soon as its declared dependencies and live worker capacity permit.
+    """
+
+    capacity = schedule.maximum_workers if maximum_workers is None else maximum_workers
+    if capacity < 1:
+        raise ValueError("maximum_workers must be positive")
+    priority = {
+        job_id: float(wave_number)
+        for wave_number, wave in enumerate(schedule.waves)
+        for job_id in wave
+    }
+    return run_planned_schedule(
+        schedule.jobs,
+        {job.job_id: min(job.workers, capacity) for job in schedule.jobs},
+        priority,
+        maximum_workers=capacity,
+        maximum_private_memory_bytes=getattr(
+            schedule, "maximum_private_memory_bytes", 0
+        ),
+        worker_caps={
+            job.job_id: min(job.workers, capacity) for job in schedule.jobs
+        },
+        worker_floors={
+            job.job_id: min(job.minimum_workers, capacity)
+            for job in schedule.jobs
+        },
+        working_directory=working_directory,
+        environment=environment,
+        poll_seconds=poll_seconds,
+        event_callback=event_callback,
+    )

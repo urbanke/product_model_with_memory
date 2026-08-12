@@ -11,10 +11,10 @@ from product_model_with_memory.checkpoint_scheduler import (
     CheckpointJob,
     command_with_workers,
     load_fixed_schedule,
+    run_dependency_schedule,
     run_fixed_schedule,
     run_planned_schedule,
 )
-
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 
@@ -123,6 +123,9 @@ def test_generated_fit_preserves_fixed_batch_geometry(tmp_path):
         text=True,
     )
     payload = json.loads(schedule_path.read_text())
+    assert payload["sequence_estimator"] == (
+        "layered_depth_averaged_product_simplex_v1"
+    )
     command = next(row["command"] for row in payload["jobs"] if row["id"] == "F0")
 
     def option(name):
@@ -139,6 +142,19 @@ def test_generated_fit_preserves_fixed_batch_geometry(tmp_path):
     assert evaluation[evaluation.index("--reduced-stream") + 1] == str(
         tmp_path / "run" / "reduced_stream"
     )
+
+
+def test_schedule_rejects_explicit_nonproduction_estimator(tmp_path):
+    schedule_path = tmp_path / "jobs.json"
+    schedule_path.write_text(json.dumps({
+        "sequence_estimator": "kt",
+        "maximum_workers": 1,
+        "maximum_private_memory_bytes": 0,
+        "jobs": [],
+        "waves": [],
+    }))
+    with pytest.raises(RuntimeError, match="production requires"):
+        load_fixed_schedule(schedule_path)
 
 
 def test_planned_executor_launches_dependency_graph(tmp_path):
@@ -161,6 +177,40 @@ def test_planned_executor_launches_dependency_graph(tmp_path):
         maximum_workers=2, working_directory=tmp_path, poll_seconds=0.01,
     )
     assert {row["job_id"] for row in records} == {"A", "B", "D"}
+
+
+def test_dependency_executor_crosses_fixed_wave_boundaries(tmp_path):
+    events = []
+
+    def job(job_id, dependencies=(), delay=0.05):
+        output = tmp_path / f"{job_id}.txt"
+        return CheckpointJob(
+            job_id, "E", 0,
+            (
+                sys.executable, "-c",
+                "import time; from pathlib import Path; "
+                f"time.sleep({delay!r}); Path({str(output)!r}).write_text('ok')",
+            ),
+            dependencies, (str(output),),
+            str(tmp_path / "manifests" / f"{job_id}.json"), 1,
+        )
+
+    jobs = (
+        job("A0", delay=0.01), job("A1", delay=0.15),
+        job("B0", ("A0",), delay=0.01), job("B1", ("A1",), delay=0.01),
+    )
+    schedule = type("Schedule", (), {
+        "jobs": jobs, "waves": (("A0", "A1"), ("B0", "B1")),
+        "maximum_workers": 2,
+    })()
+    run_dependency_schedule(
+        schedule, working_directory=tmp_path, poll_seconds=0.005,
+        event_callback=events.append,
+    )
+    launches = [row for row in events if row["event"] == "launched"]
+    assert {row["job_id"] for row in launches} == {"A0", "A1", "B0", "B1"}
+    b0 = next(row for row in launches if row["job_id"] == "B0")
+    assert "A1" in b0["running"]
 
 
 def test_planned_executor_uses_evaluation_only_as_capacity_filler(tmp_path):
@@ -186,6 +236,37 @@ def test_planned_executor_uses_evaluation_only_as_capacity_filler(tmp_path):
     )
     launches = [row["job_id"] for row in events if row["event"] == "launched"]
     assert launches == ["G0", "E0"]
+
+
+def test_dependency_executor_finishes_ready_anchor_tail_before_more_construction(tmp_path):
+    events = []
+
+    def job(job_id, kind):
+        output = tmp_path / f"{job_id}.txt"
+        worker_option = (
+            ("--jobs", "1") if kind == "M" else
+            (("--workers", "1") if kind == "F" else ())
+        )
+        return CheckpointJob(
+            job_id, kind, 0,
+            (sys.executable, "-c",
+             f"from pathlib import Path; Path({str(output)!r}).write_text('ok')",
+             *worker_option),
+            (), (str(output),),
+            str(tmp_path / "manifests" / f"{job_id}.json"), 1,
+        )
+
+    # All jobs are ready.  S/F/T represent an existing anchor's tail, while
+    # M is later construction with an earlier legacy wave priority.
+    jobs = (job("M9", "M"), job("T1", "T"), job("F1", "F"), job("S1", "S"))
+    run_planned_schedule(
+        jobs, {job.job_id: 1 for job in jobs},
+        {"M9": 0.0, "T1": 10.0, "F1": 11.0, "S1": 12.0},
+        maximum_workers=1, working_directory=tmp_path, poll_seconds=0.005,
+        event_callback=events.append,
+    )
+    launches = [row["job_id"] for row in events if row["event"] == "launched"]
+    assert launches == ["S1", "F1", "T1", "M9"]
 
 
 def test_planned_executor_expands_job_to_available_cap(tmp_path):
