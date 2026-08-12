@@ -83,6 +83,9 @@ def test_unequal_deltas_merge_to_direct_full_prefix(tmp_path):
 
 
 def test_natural_alphabet_marginals_and_pairs_smoke(tmp_path):
+    if not (REPOSITORY / "tables" / "anchors_prod" / "anchors.json").is_file():
+        import pytest
+        pytest.skip("requires the external sealed production anchor store")
     stream = ([0, 1, 4, 3, 2, 4, 1, 0, 3, 4, 2, 1] * 3)
     source = construction(tmp_path, stream, [len(stream) - 2])
     counts = tmp_path / "counts"
