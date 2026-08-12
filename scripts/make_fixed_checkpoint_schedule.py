@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+)
 
 
 def main() -> None:
@@ -247,7 +253,10 @@ def main() -> None:
                 waves.append([f"E{checkpoint - 1}"])
 
     payload = {
-        "version": 1,
+        "version": 2,
+        # This is deliberately not a command-line choice. Changing it is a
+        # scientific model change, not a scheduler tuning parameter.
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
         "policy": args.policy,
         "maximum_workers": args.maximum_workers,
         "maximum_private_memory_bytes": 0,
