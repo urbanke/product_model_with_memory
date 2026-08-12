@@ -4,6 +4,7 @@
 # cross-anchor utilization, and memory profile before the 64-anchor campaign.
 #SBATCH --job-name=pmm-e9-replay
 #SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=220G
 #SBATCH --time=04:00:00
@@ -31,7 +32,7 @@ echo "cpus=$SLURM_CPUS_PER_TASK memory=220G"
 
 # Validate imports and scheduler invariants in the environment that will run
 # the campaign, rather than on the login node.
-srun -c 1 "$PY" -m pytest -q \
+srun --ntasks=1 --cpus-per-task=1 "$PY" -m pytest -q \
   tests/test_checkpoint_scheduler.py \
   tests/test_anchored_potential_schedule.py \
   tests/test_unequal_anchored_schedule.py
@@ -60,7 +61,7 @@ if [ ! -f "$ROOT/schedule.json" ]; then
     --fitting-steps 100 --exact-interval 25 --out "$ROOT/schedule.json"
 fi
 
-srun -c "$SLURM_CPUS_PER_TASK" "$PY" -u \
+srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" "$PY" -u \
   scripts/run_fixed_checkpoint_schedule.py "$ROOT/schedule.json" \
   --dependency-driven --working-directory . \
   --event-log "$ROOT/events.jsonl"
