@@ -15,6 +15,26 @@ silent fallback or the default of a production entry point.
 Metadata descriptions, such as an enumerative code for the selected
 vocabulary subset, are not symbol predictors and are outside this rule.
 
+# Non-negotiable production tokenizer
+
+Every production corpus stream must be the complete ChatGPT
+`cl100k_base` BPE tokenization of the named source file. The repository's
+custom `ours` tokenizer, word tokenization, raw bytes, truncated prefixes, and
+other representations are diagnostic scientific comparisons only. They must
+never feed a production planner, schedule, result, or paper table.
+
+Production stream preparation must validate `stream.json` and `ids.npy`,
+require `representation=bpe` and `encoding=cl100k_base`, require the complete
+token sequence rather than a prefix, and propagate immutable source-manifest
+and source-ID hashes through the reduced-stream manifest, anchor plan, and
+schedule. Production consumers must fail closed when this provenance is
+missing or different. Shared enforcement belongs in
+`src/product_model_with_memory/production_coding.py`.
+
+Programs that intentionally compare tokenizers must say `DIAGNOSTIC ONLY` in
+their description and write to clearly diagnostic output paths. Do not add an
+override that makes a diagnostic stream production eligible.
+
 Production artifacts must record the estimator identifier and consumers must
 reject an explicitly different identifier. Put shared enforcement in
 `src/product_model_with_memory/production_coding.py`; do not add independent

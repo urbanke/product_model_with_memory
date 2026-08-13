@@ -5630,3 +5630,18 @@ post-hoc choices.
    marginals.  Retain the scheduled small-task pipeline, relaxed inconsistent-
    marginal objective, stochastic-only fit, standard tokenizer, production
    anchor store, and bpc accounting above.
+
+### 13 August 2026: tokenizer regression is now fail-closed
+
+Section 7's `ours_*` anchored campaigns were withdrawn: they used the custom
+repository tokenizer instead of the paper-wide ChatGPT `cl100k_base` stream.
+This is not an accounting detail; those artifacts are scientifically
+incomparable and must never be restored to the paper.
+
+The rule is now executable. Production preparation accepts only a complete
+`bpe`/`cl100k_base` `stream.json` plus matching `ids.npy`; it rejects prefixes,
+records hashes in the reduced-stream manifest, propagates provenance into the
+anchor plan and schedule, and refuses to execute a schedule without that
+provenance. Obsolete `ours` Slurm and shell launchers were deleted. Generic
+cross-tokenizer utilities remain only as explicitly marked diagnostics, and
+creating a non-BPE stream requires `--diagnostic-only`.

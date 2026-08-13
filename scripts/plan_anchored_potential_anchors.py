@@ -15,7 +15,10 @@ from product_model_with_memory.potential_sampling import (
     POTENTIAL_SAMPLING_DESIGN,
     plan_potential_anchors,
 )
-from product_model_with_memory.production_coding import PRODUCTION_SEQUENCE_ESTIMATOR
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_reduced_stream,
+)
 
 
 def sha256(path: Path) -> str:
@@ -39,6 +42,7 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     stream = Path(args.stream).resolve()
+    reduced_manifest = require_production_reduced_stream(stream)
     windows = sorted(set(int(value) for value in args.windows.split(",")))
     if not windows or windows[0] < 1:
         parser.error("windows must be positive integers")
@@ -56,6 +60,14 @@ def main() -> None:
         "version": 1,
         "design": POTENTIAL_SAMPLING_DESIGN,
         "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "production_eligible": True,
+        "tokenizer_provenance": {
+            key: reduced_manifest[key] for key in (
+                "representation", "encoding", "complete_source",
+                "source_n_tokens", "source_n_bytes", "source_manifest_sha256",
+                "source_ids_sha256",
+            )
+        },
         "stream": str(stream), "stream_sha256": sha256(stream), "n": n,
         "minimum_prefix": args.minimum_prefix, "windows": windows,
         "seed": args.seed, "early_strata": args.early_strata,

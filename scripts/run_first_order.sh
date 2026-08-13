@@ -1,4 +1,6 @@
 #!/bin/bash
+# DIAGNOSTIC ONLY: cross-tokenizer comparison, not a production paper pipeline.
+# Outputs involving `ours`, bytes, or words must never feed production runs.
 # Strict first-order Markov on every representation, in order, from
 # scratch.  Rebuilds the streams first: the ones made before 31 July
 # picked the wrong case-model scheme for `fixed_bits` on text8 (the
@@ -37,16 +39,16 @@ PY
 echo "############ streams"
 for f in text8 enwik8; do
   step "stream_bytes_$f" python scripts/make_stream.py --representation bytes \
-      --file "data/$f" --out "output/streams/bytes_$f"
+      --diagnostic-only --file "data/$f" --out "output/streams/bytes_$f"
   step "stream_bpe_$f" python scripts/make_stream.py --representation bpe \
       --file "data/$f" --vocab-dir vocab_cache --charge-vocabulary 776019 \
       --out "output/streams/bpe_$f"
 done
 step "stream_ours_text8" python scripts/make_stream.py --representation ours \
-    --file data/text8 --aux-results output/tok_text8/results.json \
+    --diagnostic-only --file data/text8 --aux-results output/tok_text8/results.json \
     --out output/streams/ours_text8
 step "stream_ours_enwik8" python scripts/make_stream.py --representation ours \
-    --file data/enwik8 --aux-results output/tok_enwik8_ic/results.json \
+    --diagnostic-only --file data/enwik8 --aux-results output/tok_enwik8_ic/results.json \
     --out output/streams/ours_enwik8
 
 echo ""

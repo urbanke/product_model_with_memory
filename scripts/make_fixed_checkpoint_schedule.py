@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.production_coding import (
     PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_token_stream,
 )
 
 
@@ -50,6 +51,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.checkpoints < 2:
         parser.error("at least two checkpoints are required")
+    provenance = require_production_token_stream(args.ids)
+    if args.n != provenance["n_tokens"]:
+        parser.error("production schedules must use the complete cl100k_base stream")
 
     root = Path(args.root)
     problems = root / "problems"
@@ -257,6 +261,8 @@ def main() -> None:
         # This is deliberately not a command-line choice. Changing it is a
         # scientific model change, not a scheduler tuning parameter.
         "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "production_eligible": True,
+        "tokenizer_provenance": provenance,
         "policy": args.policy,
         "maximum_workers": args.maximum_workers,
         "maximum_private_memory_bytes": 0,

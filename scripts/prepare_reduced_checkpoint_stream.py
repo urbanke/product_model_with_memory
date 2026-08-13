@@ -13,6 +13,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from calibration_checkpoint_probe import geometric_edges
 from product_model_with_memory.streams import load_stream, reduce_ids
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR,
+    require_production_token_stream,
+    sha256_file,
+)
 
 
 def main() -> None:
@@ -24,7 +29,13 @@ def main() -> None:
     p.add_argument("--first-checkpoint", type=int, required=True)
     p.add_argument("--out", required=True)
     a = p.parse_args()
+    provenance = require_production_token_stream(a.ids)
     ids, _ = load_stream(a.ids, mmap_mode="r")
+    if a.n != len(ids):
+        raise SystemExit(
+            f"production refuses a prefix: --n={a.n}, complete cl100k_base "
+            f"stream has {len(ids)} tokens"
+        )
     reduced, v, _ = reduce_ids(ids[:a.n], a.top_k)
     edges = geometric_edges(
         2, len(reduced), a.checkpoints, a.first_checkpoint
@@ -36,9 +47,18 @@ def main() -> None:
     dtype = np.uint16 if v <= np.iinfo(np.uint16).max + 1 else np.uint32
     np.save(destination / "stream.npy", reduced.astype(dtype, copy=False))
     payload = {
-        "version": 1, "ids": str(Path(a.ids).resolve()), "n": len(reduced),
+        "version": 2, "kind": "production_reduced_stream",
+        "ids": str(Path(a.ids).resolve()), "n": len(reduced),
         "top_k": a.top_k, "vocabulary_size": int(v),
         "dtype": np.dtype(dtype).str, "edges": [int(x) for x in edges],
+        "representation": provenance["representation"],
+        "encoding": provenance["encoding"], "complete_source": True,
+        "source_n_tokens": provenance["n_tokens"],
+        "source_n_bytes": provenance["n_bytes"],
+        "source_manifest_sha256": provenance["source_manifest_sha256"],
+        "source_ids_sha256": provenance["source_ids_sha256"],
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "stream_sha256": sha256_file(destination / "stream.npy"),
     }
     (destination / "manifest.json").write_text(json.dumps(payload, indent=2))
     print(json.dumps(payload), flush=True)

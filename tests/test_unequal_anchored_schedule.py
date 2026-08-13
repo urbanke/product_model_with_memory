@@ -9,10 +9,25 @@ from product_model_with_memory.checkpoint_scheduler import (
     command_with_workers,
     load_fixed_schedule,
 )
-from product_model_with_memory.production_coding import PRODUCTION_SEQUENCE_ESTIMATOR
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR, sha256_file,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
+
+
+def mark_production_reduced(stream: Path, vocabulary_size: int) -> None:
+    (stream.parent / "manifest.json").write_text(json.dumps({
+        "version": 2, "kind": "production_reduced_stream",
+        "n": len(np.load(stream)), "vocabulary_size": vocabulary_size,
+        "representation": "bpe", "encoding": "cl100k_base",
+        "complete_source": True, "source_n_tokens": len(np.load(stream)),
+        "source_n_bytes": 1, "source_manifest_sha256": "test",
+        "source_ids_sha256": "test",
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "stream_sha256": sha256_file(stream),
+    }))
 
 
 def test_unequal_schedule_preserves_anchor_causal_resource_policy(tmp_path):
@@ -20,7 +35,7 @@ def test_unequal_schedule_preserves_anchor_causal_resource_policy(tmp_path):
     reduced.mkdir()
     stream = np.arange(20_000, dtype=np.uint16) % 16
     np.save(reduced / "stream.npy", stream)
-    (reduced / "manifest.json").write_text(json.dumps({"vocabulary_size": 16}))
+    mark_production_reduced(reduced / "stream.npy", 16)
     plan = tmp_path / "anchors.json"
     subprocess.run([
         sys.executable, str(REPOSITORY / "scripts/plan_anchored_potential_anchors.py"),
@@ -63,7 +78,7 @@ def test_unequal_schedule_cpu64_profile_exposes_anchor_breadth(tmp_path):
     reduced = tmp_path / "reduced"
     reduced.mkdir()
     np.save(reduced / "stream.npy", np.arange(20_000, dtype=np.uint16) % 16)
-    (reduced / "manifest.json").write_text(json.dumps({"vocabulary_size": 16}))
+    mark_production_reduced(reduced / "stream.npy", 16)
     plan = tmp_path / "anchors.json"
     subprocess.run([
         sys.executable, str(REPOSITORY / "scripts/plan_anchored_potential_anchors.py"),

@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from product_model_with_memory.production_coding import PRODUCTION_SEQUENCE_ESTIMATOR
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR, require_production_anchor_plan,
+)
 
 
 RESOURCE_PROFILES = {
@@ -108,6 +110,7 @@ def main() -> None:
     ) > a.maximum_workers:
         p.error("per-job workers exceed schedule capacity")
     plan = json.loads(Path(a.plan).read_text())
+    require_production_anchor_plan(plan, source=a.plan)
     anchors = sorted(plan["anchors"], key=lambda row: int(row["prefix"]))
     root = Path(a.root)
     causal = root / "construction_stream"
@@ -236,6 +239,8 @@ def main() -> None:
     payload = {
         "version": 1, "model": "anchored_ya_relaxed_pair_graph_v1",
         "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "production_eligible": True,
+        "tokenizer_provenance": plan["tokenizer_provenance"],
         "resource_profile": a.resource_profile,
         "plan": str(Path(a.plan).resolve()), "maximum_workers": a.maximum_workers,
         "maximum_private_memory_bytes": int(

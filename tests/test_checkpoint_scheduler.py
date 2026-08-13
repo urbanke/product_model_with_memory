@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 from product_model_with_memory.checkpoint_scheduler import (
     CheckpointJob,
@@ -104,12 +105,20 @@ def test_command_with_workers_changes_parallel_phase_option(tmp_path):
 
 def test_generated_fit_preserves_fixed_batch_geometry(tmp_path):
     schedule_path = tmp_path / "jobs.json"
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    np.save(stream / "ids.npy", np.arange(1000, dtype=np.int32) % 32)
+    (stream / "stream.json").write_text(json.dumps({
+        "representation": "bpe", "encoding": "cl100k_base",
+        "source_file": "test", "n_bytes": 1000, "n_tokens": 1000,
+        "alphabet": 100277, "fixed_bits": 0,
+    }))
     subprocess.run(
         [
             sys.executable,
             str(REPOSITORY / "scripts" / "make_fixed_checkpoint_schedule.py"),
             "--root", str(tmp_path / "run"),
-            "--ids", str(tmp_path / "unused-stream"),
+            "--ids", str(stream),
             "--top-k", "31",
             "--n", "1000",
             "--checkpoints", "2",

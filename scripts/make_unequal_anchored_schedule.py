@@ -11,7 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from product_model_with_memory.anchored_state_maps import state_map_manifest
-from product_model_with_memory.production_coding import PRODUCTION_SEQUENCE_ESTIMATOR
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR, require_production_anchor_plan,
+)
 
 
 RESOURCE_PROFILES = {
@@ -96,6 +98,7 @@ def main() -> None:
         if getattr(a, name) is None:
             setattr(a, name, value)
     plan = json.loads(Path(a.plan).read_text())
+    require_production_anchor_plan(plan, source=a.plan)
     stream_manifest = json.loads(
         (Path(plan["stream"]).parent / "manifest.json").read_text()
     )
@@ -200,6 +203,8 @@ def main() -> None:
         scores, [aggregate]); waves.append(["Z"])
     payload = {"version": 2, "model": "anchored_ya_relaxed_pair_graph_v1",
                "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+               "production_eligible": True,
+               "tokenizer_provenance": plan["tokenizer_provenance"],
                "resource_profile": a.resource_profile,
                "plan": str(Path(a.plan).resolve()), **mapping,
                "maximum_workers": a.maximum_workers,

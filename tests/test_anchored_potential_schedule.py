@@ -6,14 +6,31 @@ from pathlib import Path
 import numpy as np
 
 from product_model_with_memory.checkpoint_scheduler import load_fixed_schedule
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR, sha256_file,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
+def mark_production_reduced(stream: Path, vocabulary_size: int) -> None:
+    (stream.parent / "manifest.json").write_text(json.dumps({
+        "version": 2, "kind": "production_reduced_stream",
+        "n": len(np.load(stream)), "vocabulary_size": vocabulary_size,
+        "representation": "bpe", "encoding": "cl100k_base",
+        "complete_source": True, "source_n_tokens": len(np.load(stream)),
+        "source_n_bytes": 1, "source_manifest_sha256": "test",
+        "source_ids_sha256": "test",
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "stream_sha256": sha256_file(stream),
+    }))
+
+
 def test_random_anchor_ids_are_constructed_in_sorted_prefix_order(tmp_path):
     stream = tmp_path / "stream.npy"
     np.save(stream, np.arange(20_000, dtype=np.uint16) % 16)
+    mark_production_reduced(stream, 16)
     plan = tmp_path / "anchors.json"
     subprocess.run([
         sys.executable, str(REPOSITORY / "scripts/plan_anchored_potential_anchors.py"),

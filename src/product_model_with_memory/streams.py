@@ -38,13 +38,14 @@ import numpy as np
 
 def save_stream(path, ids, *, representation: str, source_file: str,
                 n_bytes: int, alphabet: int, fixed_bits: float = 0.0,
-                notes: str = "") -> None:
+                notes: str = "", encoding: str | None = None) -> None:
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     ids = np.ascontiguousarray(ids, dtype=np.int32)
     np.save(path / "ids.npy", ids)
     (path / "stream.json").write_text(json.dumps({
         "representation": representation,
+        "encoding": encoding,
         "source_file": source_file,
         "n_bytes": int(n_bytes),
         "n_tokens": int(ids.size),

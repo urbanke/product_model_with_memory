@@ -14,6 +14,9 @@ from product_model_with_memory.potential_sampling import (
     extrapolate_zero_age,
     stratified_delta_estimate,
 )
+from product_model_with_memory.production_coding import (
+    PRODUCTION_SEQUENCE_ESTIMATOR, require_production_anchor_plan,
+)
 
 
 def main() -> None:
@@ -27,6 +30,7 @@ def main() -> None:
     args = parser.parse_args()
     plan_path = Path(args.plan)
     plan = json.loads(plan_path.read_text())
+    require_production_anchor_plan(plan, source=str(plan_path))
     anchors = tuple(PotentialAnchor(**row) for row in plan["anchors"])
     values, sensitivities, score_rows = {}, {}, []
     for anchor in anchors:
@@ -61,6 +65,9 @@ def main() -> None:
     )["delta_bits_per_token"]
     payload = {
         "version": 1,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+        "production_eligible": True,
+        "tokenizer_provenance": plan["tokenizer_provenance"],
         "estimand": "eligible_domain_zero_age_graph_minus_markov1_v1",
         "plan": str(plan_path.resolve()),
         "extrapolation_maximum_window": args.extrapolation_maximum_window,

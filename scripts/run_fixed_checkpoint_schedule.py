@@ -15,6 +15,7 @@ from product_model_with_memory.checkpoint_scheduler import (
     load_fixed_schedule, run_dependency_schedule,
     run_fixed_schedule,
 )
+from product_model_with_memory.production_coding import require_production_schedule
 
 
 def main() -> None:
@@ -28,6 +29,8 @@ def main() -> None:
     parser.add_argument("--maximum-workers", type=int)
     parser.add_argument("--event-log")
     args = parser.parse_args()
+    raw_schedule = json.loads(Path(args.schedule).read_text())
+    require_production_schedule(raw_schedule, source=args.schedule)
     schedule = load_fixed_schedule(
         args.schedule, enforce_wave_capacity=not args.dependency_driven
     )

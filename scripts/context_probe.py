@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Is first-order memory worth anything on this representation?
+"""DIAGNOSTIC ONLY: inspect first-order memory on any representation.
+
+This accepts non-production tokenizers by design. Its outputs must not feed a
+production planner, schedule, result, or paper table.
 
 A first-order model conditions each symbol on the one before it.  That
 is a very different amount of information depending on what a symbol

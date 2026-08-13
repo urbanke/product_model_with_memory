@@ -1,11 +1,47 @@
 """Guards for the production-wide layered-estimator invariant."""
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from product_model_with_memory import production_coding
+
+
+def write_stream(tmp_path, *, representation="bpe", encoding="cl100k_base"):
+    root = tmp_path / representation
+    root.mkdir()
+    np.save(root / "ids.npy", np.array([1, 2, 3], dtype=np.int32))
+    (root / "stream.json").write_text(json.dumps({
+        "representation": representation, "encoding": encoding,
+        "source_file": "corpus", "n_bytes": 7, "n_tokens": 3,
+        "alphabet": 100277, "fixed_bits": 0,
+    }))
+    return root
+
+
+def test_production_accepts_complete_cl100k_base_stream(tmp_path):
+    provenance = production_coding.require_production_token_stream(
+        write_stream(tmp_path)
+    )
+    assert provenance["representation"] == "bpe"
+    assert provenance["encoding"] == "cl100k_base"
+    assert provenance["n_tokens"] == 3
+
+
+def test_production_rejects_custom_tokenizer_stream(tmp_path):
+    with pytest.raises(RuntimeError, match="diagnostic only"):
+        production_coding.require_production_token_stream(
+            write_stream(tmp_path, representation="ours", encoding=None)
+        )
+
+
+def test_production_rejects_other_bpe_encoding(tmp_path):
+    with pytest.raises(RuntimeError, match="cl100k_base"):
+        production_coding.require_production_token_stream(
+            write_stream(tmp_path, encoding="p50k_base")
+        )
 
 
 def test_production_lmax_values_match_conditional_estimators():

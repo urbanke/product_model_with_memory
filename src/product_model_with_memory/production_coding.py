@@ -13,6 +13,8 @@ are outside this rule.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,101 @@ from product_model_with_memory.codelength import (
 )
 
 PRODUCTION_SEQUENCE_ESTIMATOR = "layered_depth_averaged_product_simplex_v1"
+PRODUCTION_TOKEN_REPRESENTATION = "bpe"
+PRODUCTION_TOKEN_ENCODING = "cl100k_base"
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def require_production_token_stream(path: str | Path) -> dict:
+    """Validate the only tokenizer stream admissible in production."""
+
+    root = Path(path)
+    manifest_path, ids_path = root / "stream.json", root / "ids.npy"
+    if not manifest_path.is_file() or not ids_path.is_file():
+        raise RuntimeError(f"production token stream {root} needs stream.json and ids.npy")
+    payload = json.loads(manifest_path.read_text())
+    representation = payload.get("representation")
+    encoding = payload.get("encoding")
+    if encoding is None and str(payload.get("notes", "")).startswith(
+        PRODUCTION_TOKEN_ENCODING + ";"
+    ):
+        encoding = PRODUCTION_TOKEN_ENCODING
+    if representation != PRODUCTION_TOKEN_REPRESENTATION or encoding != PRODUCTION_TOKEN_ENCODING:
+        raise RuntimeError(
+            f"{manifest_path} describes representation={representation!r}, "
+            f"encoding={encoding!r}; production requires the complete ChatGPT "
+            f"token stream ('bpe', 'cl100k_base'). Non-BPE streams are diagnostic only."
+        )
+    ids = np.load(ids_path, mmap_mode="r", allow_pickle=False)
+    if int(payload.get("n_tokens", -1)) != len(ids):
+        raise RuntimeError(f"{manifest_path} n_tokens does not match ids.npy")
+    return {
+        "representation": representation, "encoding": encoding,
+        "source_file": payload.get("source_file"),
+        "n_bytes": int(payload["n_bytes"]), "n_tokens": len(ids),
+        "alphabet": int(payload["alphabet"]),
+        "fixed_bits": float(payload.get("fixed_bits", 0.0)),
+        "source_manifest": str(manifest_path.resolve()),
+        "source_manifest_sha256": sha256_file(manifest_path),
+        "source_ids_sha256": sha256_file(ids_path),
+    }
+
+
+def require_production_reduced_stream(path: str | Path) -> dict:
+    """Reject reduced streams lacking complete BPE source provenance."""
+
+    stream = Path(path)
+    manifest_path = stream.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"production reduced stream lacks {manifest_path}")
+    payload = json.loads(manifest_path.read_text())
+    required = {
+        "representation": PRODUCTION_TOKEN_REPRESENTATION,
+        "encoding": PRODUCTION_TOKEN_ENCODING,
+        "complete_source": True,
+        "sequence_estimator": PRODUCTION_SEQUENCE_ESTIMATOR,
+    }
+    bad = {key: (payload.get(key), value) for key, value in required.items()
+           if payload.get(key) != value}
+    if bad:
+        raise RuntimeError(
+            f"{manifest_path} is not production eligible ({bad}); rebuild from "
+            "the complete cl100k_base stream"
+        )
+    values = np.load(stream, mmap_mode="r", allow_pickle=False)
+    if int(payload.get("n", -1)) != len(values):
+        raise RuntimeError(f"{manifest_path} n does not match stream.npy")
+    if payload.get("stream_sha256") != sha256_file(stream):
+        raise RuntimeError(f"{stream} hash does not match its production manifest")
+    return payload
+
+
+def require_production_anchor_plan(payload: dict, *, source: str) -> None:
+    """Require immutable production tokenizer provenance on an anchor plan."""
+
+    if payload.get("production_eligible") is not True:
+        raise RuntimeError(f"{source} is not marked production_eligible")
+    provenance = payload.get("tokenizer_provenance", {})
+    if (provenance.get("representation"), provenance.get("encoding")) != (
+        PRODUCTION_TOKEN_REPRESENTATION, PRODUCTION_TOKEN_ENCODING
+    ):
+        raise RuntimeError(f"{source} lacks complete cl100k_base provenance")
+
+
+def require_production_schedule(payload: dict, *, source: str) -> None:
+    """Reject execution of schedules without audited tokenizer provenance."""
+
+    require_production_anchor_plan(payload, source=source)
+    require_production_sequence_estimator(
+        payload.get("sequence_estimator", "missing"), source=source
+    )
 
 PRODUCTION_TABLE_DEFAULTS = {
     "PMM_UNIVERSAL_TABLES": "tables/anchors_prod",

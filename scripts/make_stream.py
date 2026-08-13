@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Emit the token stream of one representation, for the memory experiments.
+"""Emit token streams for comparisons and the production BPE pipeline.
+
+Only ``bpe --encoding cl100k_base`` is production eligible.  The ``ours``,
+``words``, and ``bytes`` modes are diagnostic comparisons; production entry
+points reject their manifests.
 
 Four representations, one output format (see
 `product_model_with_memory.streams`), so the same family machinery runs
@@ -19,7 +23,7 @@ on each without knowing which it is:
     words   the text8 word tokenization, for continuity with the
             existing results; text8 only.
 
-    python scripts/make_stream.py --representation ours --file data/enwik8 \
+    python scripts/make_stream.py --representation ours --diagnostic-only --file data/enwik8 \
         --aux-results output/tok_enwik8_ic/results.json \
         --out output/streams/ours_enwik8
 """
@@ -81,7 +85,16 @@ def main() -> None:
     p.add_argument("--charge-vocabulary", type=int, default=0,
                    help="zipped vocabulary size in BYTES, charged as "
                         "fixed_bits (bpe only)")
+    p.add_argument(
+        "--diagnostic-only", action="store_true",
+        help="required acknowledgement for bytes/ours/words representations",
+    )
     args = p.parse_args()
+    if args.representation != "bpe" and not args.diagnostic_only:
+        p.error(
+            f"--representation {args.representation} is DIAGNOSTIC ONLY; "
+            "repeat with --diagnostic-only if that comparison is intentional"
+        )
 
     raw = np.fromfile(args.file, dtype=np.uint8)
     if args.bytes:
@@ -143,7 +156,8 @@ def main() -> None:
 
     save_stream(args.out, ids, representation=args.representation,
                 source_file=args.file, n_bytes=n_bytes, alphabet=alphabet,
-                fixed_bits=fixed, notes=notes)
+                fixed_bits=fixed, notes=notes,
+                encoding=args.encoding if args.representation == "bpe" else None)
     meta = json.loads((Path(args.out) / "stream.json").read_text())
     for k, v in meta.items():
         print(f"  {k}: {v}")
