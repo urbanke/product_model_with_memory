@@ -72,19 +72,20 @@ if [[ ! -f "$PLAN" ]]; then
     --seed 44117 --out "$PLAN"
 fi
 
-if [[ ! -f "$SCHEDULE" ]]; then
-  if [[ "$M1" == "$V" && "$M2" == "$V" ]]; then
+# Always regenerate the declarative schedule on submission.  Completion
+# manifests, not a stale schedule JSON, are the restart authority.  This keeps
+# measured resource contracts current while preserving every completed job.
+if [[ "$M1" == "$V" && "$M2" == "$V" ]]; then
     "$PY" scripts/make_anchored_potential_schedule.py \
       --plan "$PLAN" --root "$ROOT/run" --python "$PY" \
       --resource-profile scitas --fitting-steps 500 --batch-size 64 \
       --exact-interval 25 --out "$SCHEDULE"
-  else
+else
     "$PY" scripts/make_unequal_anchored_schedule.py \
       --plan "$PLAN" --root "$ROOT/run" --python "$PY" \
       --m1 "$M1" --m2 "$M2" --resource-profile scitas \
       --fitting-steps 500 --batch-size 64 --exact-interval 25 \
       --out "$SCHEDULE"
-  fi
 fi
 
 srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" "$PY" -u \

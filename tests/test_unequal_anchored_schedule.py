@@ -98,4 +98,5 @@ def test_declared_machine_profiles_are_distinct():
     assert profiles["m4pro"]["maximum_private_memory_gib"] == 24.0
     assert profiles["cpu64"]["maximum_workers"] == 64
     assert profiles["scitas"]["maximum_workers"] == 72
+    assert profiles["scitas"]["marginal_max_memory_gib"] == 16.0
     assert "slurm72" not in profiles

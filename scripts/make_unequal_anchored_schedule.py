@@ -53,7 +53,12 @@ RESOURCE_PROFILES = {
     # the allocation's CPUs and usable memory explicitly after the first replay.
     "scitas": {
         "maximum_workers": 72, "maximum_private_memory_gib": 384.0,
-        "marginal_min_memory_gib": 0.5, "marginal_max_memory_gib": 3.0,
+        # Empirical private-RSS contract from the enwik9 V=65536 OOM gate:
+        # the former 3-GiB ceiling admitted 40+ late MY jobs and exhausted a
+        # 440-GiB allocation.  A full-V late marginal is therefore reserved
+        # at 16 GiB.  Smaller natural alphabets scale proportionally, while
+        # the 1-GiB floor covers process/runtime overhead at early prefixes.
+        "marginal_min_memory_gib": 1.0, "marginal_max_memory_gib": 16.0,
         "pair_memory_gib": 3.5, "assembly_memory_gib": 3.0,
         "topology_memory_gib": 6.0, "fitting_memory_gib": 1.0,
         "scoring_memory_gib": 0.75, "pair_workers": 4,
@@ -144,8 +149,14 @@ def main() -> None:
         if previous is not None: merge += ["--previous", str(previous)]
         add(uid, "U", build, merge, [did] + ([] if build == 0 else [f"U{build-1}"]), [counts / "manifest.json"])
         fraction = min(1.0, prefix / int(plan["n"]))
-        marginal_memory = a.marginal_min_memory_gib + (a.marginal_max_memory_gib-a.marginal_min_memory_gib)*math.sqrt(fraction)
         for symbol in "yab":
+            symbol_alphabet = {"y": v, "a": a.m1 + 1, "b": a.m2 + 1}[symbol]
+            alphabet_fraction = symbol_alphabet / v
+            marginal_memory = (
+                a.marginal_min_memory_gib
+                + (a.marginal_max_memory_gib-a.marginal_min_memory_gib)
+                * alphabet_fraction * math.sqrt(fraction)
+            )
             add(mids[symbol], "M", anchor_id, [a.python, "-u", "scripts/estimate_unequal_checkpoint_unigram.py",
                 "--counts", str(counts), "--symbol", symbol, "--jobs", "1", "--out", str(marg[symbol])],
                 [uid], [marg[symbol] / "manifest.json"], memory=marginal_memory)
