@@ -24,11 +24,11 @@ EXPECTED_TABLE_MANIFEST="cf0449a4b704174890f0a1fb95f20954839dd7266ae307e799d1dc6
 
 case "${SLURM_ARRAY_TASK_ID:?submit as --array=0-7}" in
   0) CORPUS=text8;  V=16384; M1=16384; M2=16384;
-     STREAM="$SCRATCH/production_bpe_text8_v32768_stream";
-     STREAM_HASH=b8fa7bd6e88b3e2c215780a6456acf5ba8583e9f93880db770fa7df493e433d9 ;;
+     STREAM="$SCRATCH/production_bpe_text8_v16384_stream";
+     STREAM_HASH=0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade ;;
   1) CORPUS=text8;  V=16384; M1=16384; M2=8192;
-     STREAM="$SCRATCH/production_bpe_text8_v32768_stream";
-     STREAM_HASH=b8fa7bd6e88b3e2c215780a6456acf5ba8583e9f93880db770fa7df493e433d9 ;;
+     STREAM="$SCRATCH/production_bpe_text8_v16384_stream";
+     STREAM_HASH=0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade ;;
   2) CORPUS=text8;  V=32768; M1=16384; M2=16384;
      STREAM="$SCRATCH/production_bpe_text8_v32768_stream";
      STREAM_HASH=b8fa7bd6e88b3e2c215780a6456acf5ba8583e9f93880db770fa7df493e433d9 ;;
@@ -70,6 +70,7 @@ echo "$STREAM_HASH  $STREAM/stream.npy" | sha256sum -c -
 echo "$EXPECTED_ANCHORS  $PMM_UNIVERSAL_TABLES/anchors.json" | sha256sum -c -
 echo "$EXPECTED_TABLE_MANIFEST  $PMM_UNIVERSAL_TABLES/manifest.json" | sha256sum -c -
 "$PY" -c 'from product_model_with_memory.production_coding import require_production_reduced_stream as r; import sys; r(sys.argv[1])' "$STREAM/stream.npy"
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); actual=int(p["vocabulary_size"]); expected=int(sys.argv[2]); assert actual == expected, f"stream V={actual}, campaign V={expected}"' "$STREAM/manifest.json" "$V"
 
 echo "host=$(hostname) commit=$actual_commit task=$SLURM_ARRAY_TASK_ID tag=$TAG"
 echo "python=$($PY --version 2>&1) cpus=$SLURM_CPUS_PER_TASK memory=440G"
