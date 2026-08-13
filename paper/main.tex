@@ -75,7 +75,8 @@ LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.7646$ & $2.0838$ & $1.8286$ \\
 second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.7646$ & $2.0838$ & $1.7306$ \\
 context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $2.0223$ & $\mathbf{1.6392}$ \\
-pairwise constraint model (Sec.~\ref{sec:pairwise}) & pending & pending & pending \\
+pairwise continuous-update potential (Sec.~\ref{sec:pairwise})
+                                         & $\mathbf{1.7248}$ & pending & pending \\
 \midrule
 best published (see Table~\ref{tab:files}) & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -744,8 +745,44 @@ checkpoint-free first-order code with the same representation, reduced
 alphabet and complete overhead.  Earlier numerical rows were withdrawn after
 a provenance audit found that their anchored streams did not use the paper's
 fixed \texttt{cl100k\_base} representation.  Fresh complete-stream BPE runs
-are in progress; no numerical result is reported until its source manifest,
-baseline and original-byte denominator agree.
+are reported only after their source manifest, baseline and original-byte
+denominator agree.
+
+The first validated run is shown in Table~\ref{tab:pairwise-potential}.  Its
+exact honest first-order reference is $1.76456248$ bpc.  The stratified
+estimate of the continuously refreshed graph-minus-reference increment is
+$-0.20535019$ bits per eligible token, or $-3{,}988{,}547.36$ bits over the
+eligible domain.  Dividing by the original $10^8$ bytes gives
+$-0.03988547$ bpc.  The nested second-lag retained set costs exactly
+$\log_2\binom{16{,}384}{8{,}192}=16{,}376.67$ bits, or $0.00016377$ bpc.
+Thus the estimated honest rate is
+\[
+  1.76456248-0.03988547+0.00016377=1.72484077\ \text{bpc}.
+\]
+Applying the same conversion to the analytic confidence interval for the
+predictive increment gives $[1.72029879,1.72938276]$ bpc.  This interval does
+not include uncertainty in the other terms because they are exact.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+file & $V$ & $M_1$ & $M_2$ & first order & graph increment & honest bpc \\
+\midrule
+\texttt{text8} & $16{,}384$ & $16{,}384$ & $8{,}192$
+ & $1.764562$ & $-0.039885$ & $1.724841$ \\
+\bottomrule
+\end{tabular}
+\caption{Estimated continuous-update potential of the calibrated pairwise
+  predictor, in bits per character of the original file.  The graph increment
+  is the stratified estimate relative to the exact checkpoint-free first-order
+  code.  The honest total also includes the exact $0.000164$ bpc nested-state
+  subset charge; its analytic 95\% interval is
+  $[1.720299,1.729383]$ bpc.  This is an intrinsic continuously refreshed
+  potential, not yet the codelength of a particular chunked implementation.}
+\label{tab:pairwise-potential}
+\end{table}
+\FloatBarrier
 
 \subsection{The calibrated pairwise predictor}
 \label{sec:calibration}
