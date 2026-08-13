@@ -75,7 +75,7 @@ LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.7646$ & $2.0838$ & $1.8286$ \\
 second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.7646$ & $2.0838$ & $1.7306$ \\
 context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $2.0223$ & $\mathbf{1.6392}$ \\
-pairwise constraint model (Sec.~\ref{sec:pairwise}) & $\mathbf{1.7086}$ & $\mathbf{1.8946}$ & pending \\
+pairwise constraint model (Sec.~\ref{sec:pairwise}) & pending & pending & pending \\
 \midrule
 best published (see Table~\ref{tab:files}) & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
@@ -673,11 +673,8 @@ can be reached while \emph{learning} only pairwise objects --- the
 three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
 $(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
 it is the first measured step of the constraint-model route of
-Appendix~\ref{app:routes}.  Table~\ref{tab:anchored-potential-text8} reports
-the current \texttt{text8} and \texttt{enwik8} absolute measurements.  On
-\texttt{enwik9}, one earlier 64-anchor prefix diagnostic is reported below;
-the full-corpus measurements and their absolute-rate conversion remain in
-progress.
+Appendix~\ref{app:routes}.  The complete-corpus measurements are being rerun
+on the fixed \texttt{cl100k\_base} token streams for all three corpora.
 
 \paragraph{The predictors.}  Every table any rule consumes is
 estimated by the layered predictor --- the only estimator in this
@@ -736,85 +733,19 @@ alphabet additionally pays for its nested retained-state subset.  The
 confidence interval applies only to the estimated predictive increment; all
 other components are charged exactly.
 
-\paragraph{Continuous-update results.}
+\paragraph{Continuous-update experiments.}
 The newer anchored experiment fixes the complete layered $YA$ law, fits the
 $YB$ and $AB$ laws as relaxed constraints by cold-started SGD, and retains
 the complete layered $AB$ background rather than falling back on unobserved
-context pairs.  Table~\ref{tab:anchored-potential-text8} gives its first
-full-file-scale estimate.  This is deliberately an incremental result: it
-estimates the continuously refreshed graph code minus the continuously
-refreshed first-order code.  The table converts that increment to an absolute
-honest bpc by adding it to the independently evaluated, checkpoint-free
-first-order code with the same reduced alphabet and complete overhead.
-
-\begin{table}[ht]
-\centering
-\small
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{lrrrrc}
-\toprule
-corpus & $V$ & $M_1$ & $M_2$ & sampled positions &
-estimated honest bpc ($95\%$ CI) \\
-\midrule
-\texttt{text8} & $1{,}024$ & $1{,}024$ & $1{,}024$ &
-$64\times4{,}096$ & $1.780497\;[1.771270,1.789724]$ \\
-\texttt{text8} & $4{,}096$ & $4{,}096$ & $4{,}096$ &
-$64\times4{,}096$ & $1.741533\;[1.731680,1.751385]$ \\
-\texttt{text8} & $16{,}384$ & $16{,}384$ & $8{,}192$ &
-$64\times4{,}096$ & $1.717425\;[1.707044,1.727806]$ \\
-\texttt{text8} & $16{,}384$ & $16{,}384$ & $16{,}384$ &
-$64\times4{,}096$ & $1.710948\;[1.701111,1.720784]$ \\
-\texttt{text8} & $32{,}768$ & $16{,}384$ & $16{,}384$ &
-$64\times4{,}096$ & $\mathbf{1.708550}\;[1.698311,1.718790]$ \\
-\texttt{enwik8} & $32{,}768$ & $32{,}768$ & $32{,}768$ &
-$64\times4{,}096$ & $\mathbf{1.894562}\;[1.884280,1.904844]$ \\
-\bottomrule
-\end{tabular}
-\caption{Estimated continuous-update potential on the complete
-  corpus streams.  Each row uses 64 paired stratified prefix positions
-  and scores 4,096 following tokens at each position.  Values are honest bits
-  per character of the original file; brackets are stratified analytic 95\%
-  confidence intervals.}
-\label{tab:anchored-potential-text8}
-\end{table}
-
-At $V=16{,}384$, retaining the full alphabet at both lags gives an estimated
-$1.710948$ honest bpc, compared with $1.717425$ when only the second-lag
-alphabet is reduced to $8{,}192$.  Raising the emission alphabet to
-$V=32{,}768$ while retaining $M_1=M_2=16{,}384$ gives the best point estimate,
-$1.708550$ honest bpc.  The three analytic intervals overlap substantially:
-the current evidence supports a small advantage for the larger emission
-alphabet, not a sharply located optimum.
-
-For \texttt{enwik8}, the exact honest first-order baseline at
-$V=M=32{,}768$ is $2.083819340$ bpc.  The anchored experiment estimates a
-graph-minus-Markov increment of $-0.733926651$ bit per eligible reduced-stream
-token over $25{,}786{,}940$ eligible positions, or $-18{,}925{,}722.5$ bits
-in total.  Dividing this increment by the original $100{,}000{,}000$ bytes
-and adding it to the complete first-order code gives $1.894562$ bpc.  Applying
-the same conversion to the stratified analytic interval gives
-$[1.884280,1.904844]$.  All vocabulary, retained-subset, escape-payload and
-initial-symbol charges are already present in the exact baseline and are
-therefore retained unchanged.
-
-For \texttt{enwik9}, an earlier equal-alphabet diagnostic sets all three
-alphabets to $65{,}536$.  It covers the first $303{,}147{,}905$ tokens of the
-$434{,}000{,}723$-token \texttt{ours\_enwik9} stream, about $69.85\%$ of the
-tokens.  Across 64 stratified anchors and $4{,}096$ following tokens per
-anchor, its estimated continuously refreshed
-graph-minus-first-order increment is $-0.912148$ bit per eligible
-reduced-stream token.  Its stratified analytic 95\% interval is
-$[-0.979219,-0.845076]$; the bootstrap interval is
-$[-0.959983,-0.865673]$.  The delete-one-stratum estimates range only from
-$-0.923886$ to $-0.891626$, and changing from linear to quadratic
-zero-staleness extrapolation changes the estimate by $-0.007505$ bit per
-token.  All 64 anchor results and all 578 required job manifests are present.
-This is evidence for substantial pairwise-constraint potential on the
-measured prefix, but it is neither a full-corpus estimate nor an honest
-whole-file bpc.  We therefore do not include it in the table of
-complete-corpus rates.  The full-stream production campaigns use fresh anchor
-plans spanning all $434{,}000{,}723$ tokens and a matching exact first-order
-evaluation.
+context pairs.  Each experiment estimates the continuously refreshed graph
+code minus the continuously refreshed first-order code, then converts that
+increment to absolute honest bpc by adding it to the independently evaluated,
+checkpoint-free first-order code with the same representation, reduced
+alphabet and complete overhead.  Earlier numerical rows were withdrawn after
+a provenance audit found that their anchored streams did not use the paper's
+fixed \texttt{cl100k\_base} representation.  Fresh complete-stream BPE runs
+are in progress; no numerical result is reported until its source manifest,
+baseline and original-byte denominator agree.
 
 \subsection{The calibrated pairwise predictor}
 \label{sec:calibration}
@@ -889,9 +820,10 @@ The sparse factorization, intersection representation, solver, checkpoint
 workflow, and numerical validation are described in
 Appendix~\ref{app:calibration-implementation}.
 
-The controlled \texttt{text8} measurements are reported in
-Table~\ref{tab:anchored-potential-text8}.  Their implementation and complete-code
-accounting are specified in Appendix~\ref{app:calibration-implementation}.
+The implementation and complete-code accounting of the controlled corpus
+measurements are specified in
+Appendix~\ref{app:calibration-implementation}.  Their BPE reruns are in
+progress.
 
 \appendix
 
@@ -901,18 +833,9 @@ accounting are specified in Appendix~\ref{app:calibration-implementation}.
 \label{app:calibration-implementation}
 
 \subsection*{Potential-estimation diagnostics}
-At $V=1{,}024$ the graph-minus-Markov increment is $-0.3764$ bit per
-eligible reduced token, with stratified analytic 95\% interval
-$[-0.4035,-0.3492]$.  The two balanced one-position-per-stratum halves give
-$-0.3853$ and $-0.3675$.  Across scoring windows of 256, 512, 1,024, 2,048,
-and 4,096 tokens, the estimate ranges from $-0.4033$ to $-0.3666$.  The exact
-first-order endpoint audit gives sampled-minus-exact error $-0.0059$ bit per
-eligible token.  At $V=4{,}096$ the increment is $-0.4931$, with analytic
-interval $[-0.5221,-0.4641]$ and stratified-bootstrap interval
-$[-0.5138,-0.4728]$.  Leave-one-stratum-out estimates range from $-0.4973$
-to $-0.4848$; quadratic instead of linear zero-age extrapolation gives
-$-0.4825$.  These are diagnostics of the estimation procedure, not separate
-compression results.
+The numerical diagnostics previously printed here were withdrawn in the same
+provenance audit as the Section~\ref{sec:pairwise} results.  They are being
+recomputed on the complete \texttt{cl100k\_base} streams.
 
 Each anchor uses a cold fit with 500 relaxed-SGD steps, minibatches of 64,
 learning rate $0.03$, and a fixed independent 4,096-sample validation set for
