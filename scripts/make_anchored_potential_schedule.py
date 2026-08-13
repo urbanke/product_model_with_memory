@@ -29,6 +29,11 @@ RESOURCE_PROFILES = {
     },
     "scitas": {
         "maximum_workers": 72, "maximum_private_memory_gib": 384.0,
+        # Same measured late-marginal contract as the unequal scheduler.
+        # The former 1.5-GiB ceiling admitted dozens of full-V M jobs and
+        # exhausted a 440-GiB Jed allocation (task 66107314_7, M57).
+        "unigram_min_private_memory_gib": 1.0,
+        "unigram_private_memory_gib": 16.0,
         "fitting_private_memory_gib": 1.0,
         "scoring_private_memory_gib": 0.75,
     },

@@ -86,3 +86,16 @@ def test_random_anchor_ids_are_constructed_in_sorted_prefix_order(tmp_path):
     assert unigram_memory[0] >= int(0.5 * 1024 ** 3)
     assert unigram_memory[-1] <= int(1.5 * 1024 ** 3)
     assert pair["private_memory_bytes"] == int(3.5 * 1024 ** 3)
+
+
+def test_scitas_profile_reserves_measured_full_v_unigram_memory():
+    import importlib.util
+    source = REPOSITORY / "scripts/make_anchored_potential_schedule.py"
+    spec = importlib.util.spec_from_file_location("anchored_profiles", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    profile = module.RESOURCE_PROFILES["scitas"]
+    assert profile["maximum_workers"] == 72
+    assert profile["maximum_private_memory_gib"] == 384.0
+    assert profile["unigram_min_private_memory_gib"] == 1.0
+    assert profile["unigram_private_memory_gib"] == 16.0
