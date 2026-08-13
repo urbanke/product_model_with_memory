@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=72
 #SBATCH --mem=440G
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=/scratch/urbanke/product_model_with_memory/logs/anchored-wave1-%A_%a.out
 
 set -euo pipefail
@@ -29,18 +29,20 @@ case "${SLURM_ARRAY_TASK_ID:?submit as an array}" in
      STREAM="$SCRATCH/production_enwik8_v32768_stream";
      STREAM_HASH=2625ffc58442b10eef825536d72d3830be2350f466b9c6d3296f7077e69c3131 ;;
   2) CORPUS=enwik9; V=65536; M1=32768; M2=32768;
-     STREAM="$SCRATCH/replay_enwik9_v65536_stream";
-     STREAM_HASH=c87fd073b923052dbe9a379e69aea2ee90d63968091f91b78dcc4fdbf317ce9b ;;
+     STREAM="$SCRATCH/production_enwik9_v65536_stream";
+     STREAM_HASH=be33b46bcb70b9fc8fb64c128bc7d291b0036fd3a69c3784a9a1715cce4dbeb3 ;;
   3) CORPUS=enwik9; V=65536; M1=65536; M2=32768;
-     STREAM="$SCRATCH/replay_enwik9_v65536_stream";
-     STREAM_HASH=c87fd073b923052dbe9a379e69aea2ee90d63968091f91b78dcc4fdbf317ce9b ;;
+     STREAM="$SCRATCH/production_enwik9_v65536_stream";
+     STREAM_HASH=be33b46bcb70b9fc8fb64c128bc7d291b0036fd3a69c3784a9a1715cce4dbeb3 ;;
   4) CORPUS=enwik9; V=65536; M1=65536; M2=65536;
-     STREAM="$SCRATCH/replay_enwik9_v65536_stream";
-     STREAM_HASH=c87fd073b923052dbe9a379e69aea2ee90d63968091f91b78dcc4fdbf317ce9b ;;
+     STREAM="$SCRATCH/production_enwik9_v65536_stream";
+     STREAM_HASH=be33b46bcb70b9fc8fb64c128bc7d291b0036fd3a69c3784a9a1715cce4dbeb3 ;;
   *) echo "invalid array index $SLURM_ARRAY_TASK_ID"; exit 2 ;;
 esac
 
-TAG="${CORPUS}_v${V}_m1_${M1}_m2_${M2}_gate64_w4096_seed44117"
+scope=complete
+[[ "$CORPUS" != enwik9 ]] || scope=full434000723
+TAG="${CORPUS}_${scope}_v${V}_m1_${M1}_m2_${M2}_gate64_w4096_seed44117"
 ROOT="$SCRATCH/anchored_wave1/$TAG"
 PLAN="$ROOT/anchors.json"
 SCHEDULE="$ROOT/schedule.json"

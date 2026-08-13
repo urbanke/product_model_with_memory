@@ -674,8 +674,10 @@ three tables $(x_t, x_{t-1})$, $(x_t, x_{t-2})$ and
 $(x_{t-1}, x_{t-2})$, roughly $3V^2$ numbers against $V^3$ --- and
 it is the first measured step of the constraint-model route of
 Appendix~\ref{app:routes}.  Table~\ref{tab:anchored-potential-text8} reports
-the current \texttt{text8} and \texttt{enwik8} measurements.  The
-\texttt{enwik9} production grid remains in progress.
+the current \texttt{text8} and \texttt{enwik8} absolute measurements.  On
+\texttt{enwik9}, one earlier 64-anchor prefix diagnostic is reported below;
+the full-corpus measurements and their absolute-rate conversion remain in
+progress.
 
 \paragraph{The predictors.}  Every table any rule consumes is
 estimated by the layered predictor --- the only estimator in this
@@ -794,6 +796,25 @@ the same conversion to the stratified analytic interval gives
 $[1.884280,1.904844]$.  All vocabulary, retained-subset, escape-payload and
 initial-symbol charges are already present in the exact baseline and are
 therefore retained unchanged.
+
+For \texttt{enwik9}, an earlier equal-alphabet diagnostic sets all three
+alphabets to $65{,}536$.  It covers the first $303{,}147{,}905$ tokens of the
+$434{,}000{,}723$-token \texttt{ours\_enwik9} stream, about $69.85\%$ of the
+tokens.  Across 64 stratified anchors and $4{,}096$ following tokens per
+anchor, its estimated continuously refreshed
+graph-minus-first-order increment is $-0.912148$ bit per eligible
+reduced-stream token.  Its stratified analytic 95\% interval is
+$[-0.979219,-0.845076]$; the bootstrap interval is
+$[-0.959983,-0.865673]$.  The delete-one-stratum estimates range only from
+$-0.923886$ to $-0.891626$, and changing from linear to quadratic
+zero-staleness extrapolation changes the estimate by $-0.007505$ bit per
+token.  All 64 anchor results and all 578 required job manifests are present.
+This is evidence for substantial pairwise-constraint potential on the
+measured prefix, but it is neither a full-corpus estimate nor an honest
+whole-file bpc.  We therefore do not include it in the table of
+complete-corpus rates.  The full-stream production campaigns use fresh anchor
+plans spanning all $434{,}000{,}723$ tokens and a matching exact first-order
+evaluation.
 
 \subsection{The calibrated pairwise predictor}
 \label{sec:calibration}
