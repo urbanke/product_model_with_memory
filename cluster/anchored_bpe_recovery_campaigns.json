@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tokenizer": {"representation": "bpe", "encoding": "cl100k_base"},
+  "campaigns": [
+    {"task": 0, "corpus": "text8", "n": 19429294, "v": 16384, "m1": 16384, "m2": 16384, "stream": "production_bpe_text8_v16384_stream", "stream_sha256": "0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade"},
+    {"task": 1, "corpus": "text8", "n": 19429294, "v": 16384, "m1": 16384, "m2": 8192, "stream": "production_bpe_text8_v16384_stream", "stream_sha256": "0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade"},
+    {"task": 2, "corpus": "text8", "n": 19429294, "v": 32768, "m1": 16384, "m2": 16384, "stream": "production_bpe_text8_v32768_stream", "stream_sha256": "b8fa7bd6e88b3e2c215780a6456acf5ba8583e9f93880db770fa7df493e433d9"},
+    {"task": 3, "corpus": "enwik8", "n": 25793085, "v": 32768, "m1": 16384, "m2": 16384, "stream": "production_bpe_enwik8_v32768_stream", "stream_sha256": "7317d05ed3e8016ae3e28001899e08e0c1916c76da34b7bfd7aa0ebc6706ff43"},
+    {"task": 4, "corpus": "enwik8", "n": 25793085, "v": 32768, "m1": 32768, "m2": 16384, "stream": "production_bpe_enwik8_v32768_stream", "stream_sha256": "7317d05ed3e8016ae3e28001899e08e0c1916c76da34b7bfd7aa0ebc6706ff43"},
+    {"task": 5, "corpus": "enwik9", "n": 273662103, "v": 65536, "m1": 32768, "m2": 32768, "stream": "production_bpe_enwik9_v65536_stream", "stream_sha256": "3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc"},
+    {"task": 6, "corpus": "enwik9", "n": 273662103, "v": 65536, "m1": 65536, "m2": 32768, "stream": "production_bpe_enwik9_v65536_stream", "stream_sha256": "3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc"},
+    {"task": 7, "corpus": "enwik9", "n": 273662103, "v": 65536, "m1": 65536, "m2": 65536, "stream": "production_bpe_enwik9_v65536_stream", "stream_sha256": "3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc"}
+  ]
+}

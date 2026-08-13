@@ -21,34 +21,12 @@ PY="$HOME/venvs/product-model-memory/bin/python"
 EXPECTED_COMMIT="${PMM_EXPECTED_COMMIT:?submit with the audited commit}"
 EXPECTED_ANCHORS="5c409244487deeba8d597ad66fa13479a8d15476d55d4509c33b2ec797b07c68"
 EXPECTED_TABLE_MANIFEST="cf0449a4b704174890f0a1fb95f20954839dd7266ae307e799d1dc6d0234ffb5"
-
-case "${SLURM_ARRAY_TASK_ID:?submit as --array=0-7}" in
-  0) CORPUS=text8;  V=16384; M1=16384; M2=16384;
-     STREAM="$SCRATCH/production_bpe_text8_v16384_stream";
-     STREAM_HASH=0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade ;;
-  1) CORPUS=text8;  V=16384; M1=16384; M2=8192;
-     STREAM="$SCRATCH/production_bpe_text8_v16384_stream";
-     STREAM_HASH=0ae5d896371d652ff05cfe37a13a972c00702dc3af34fc52f6c470f09ab6cade ;;
-  2) CORPUS=text8;  V=32768; M1=16384; M2=16384;
-     STREAM="$SCRATCH/production_bpe_text8_v32768_stream";
-     STREAM_HASH=b8fa7bd6e88b3e2c215780a6456acf5ba8583e9f93880db770fa7df493e433d9 ;;
-  3) CORPUS=enwik8; V=32768; M1=16384; M2=16384;
-     STREAM="$SCRATCH/production_bpe_enwik8_v32768_stream";
-     STREAM_HASH=7317d05ed3e8016ae3e28001899e08e0c1916c76da34b7bfd7aa0ebc6706ff43 ;;
-  4) CORPUS=enwik8; V=32768; M1=32768; M2=16384;
-     STREAM="$SCRATCH/production_bpe_enwik8_v32768_stream";
-     STREAM_HASH=7317d05ed3e8016ae3e28001899e08e0c1916c76da34b7bfd7aa0ebc6706ff43 ;;
-  5) CORPUS=enwik9; V=65536; M1=32768; M2=32768;
-     STREAM="$SCRATCH/production_bpe_enwik9_v65536_stream";
-     STREAM_HASH=3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc ;;
-  6) CORPUS=enwik9; V=65536; M1=65536; M2=32768;
-     STREAM="$SCRATCH/production_bpe_enwik9_v65536_stream";
-     STREAM_HASH=3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc ;;
-  7) CORPUS=enwik9; V=65536; M1=65536; M2=65536;
-     STREAM="$SCRATCH/production_bpe_enwik9_v65536_stream";
-     STREAM_HASH=3d97af5bb80994c9de4858c9a2adbdbde9a9c6e8cdcd8035d0bcfc1d01e748dc ;;
-  *) echo "invalid array index $SLURM_ARRAY_TASK_ID"; exit 2 ;;
-esac
+TASK="${SLURM_ARRAY_TASK_ID:?submit as --array=0-7}"
+IFS=$'\t' read -r CORPUS N V M1 M2 STREAM_NAME STREAM_HASH < <(
+  "$PY" -c 'import json,sys; rows=json.load(open(sys.argv[1]))["campaigns"]; task=int(sys.argv[2]); matches=[r for r in rows if r["task"] == task]; assert len(matches) == 1, f"invalid/duplicate task {task}"; r=matches[0]; print(*(r[k] for k in ("corpus","n","v","m1","m2","stream","stream_sha256")),sep="\t")' \
+    "$REPOSITORY/cluster/anchored_bpe_recovery_campaigns.json" "$TASK"
+)
+STREAM="$SCRATCH/$STREAM_NAME"
 
 TAG="bpe_${CORPUS}_v${V}_m1_${M1}_m2_${M2}_gate64_w4096_seed44117"
 ROOT="$SCRATCH/anchored_bpe_recovery/$TAG"
@@ -70,7 +48,8 @@ echo "$STREAM_HASH  $STREAM/stream.npy" | sha256sum -c -
 echo "$EXPECTED_ANCHORS  $PMM_UNIVERSAL_TABLES/anchors.json" | sha256sum -c -
 echo "$EXPECTED_TABLE_MANIFEST  $PMM_UNIVERSAL_TABLES/manifest.json" | sha256sum -c -
 "$PY" -c 'from product_model_with_memory.production_coding import require_production_reduced_stream as r; import sys; r(sys.argv[1])' "$STREAM/stream.npy"
-"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); actual=int(p["vocabulary_size"]); expected=int(sys.argv[2]); assert actual == expected, f"stream V={actual}, campaign V={expected}"' "$STREAM/manifest.json" "$V"
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); actual=(int(p["n"]),int(p["vocabulary_size"])); expected=(int(sys.argv[2]),int(sys.argv[3])); assert actual == expected, f"stream (n,V)={actual}, campaign (n,V)={expected}"' "$STREAM/manifest.json" "$N" "$V"
+(( M1 <= V && M2 <= V )) || { echo "ERROR: lag alphabet exceeds V"; exit 1; }
 
 echo "host=$(hostname) commit=$actual_commit task=$SLURM_ARRAY_TASK_ID tag=$TAG"
 echo "python=$($PY --version 2>&1) cpus=$SLURM_CPUS_PER_TASK memory=440G"
@@ -82,6 +61,7 @@ if [[ ! -f "$PLAN" ]]; then
     --early-strata 8 --late-strata 24 --samples-per-stratum 2 \
     --seed 44117 --out "$PLAN"
 fi
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); assert p["production_eligible"] is True; assert p["stream_sha256"] == sys.argv[2]; assert int(p["n"]) == int(sys.argv[3]); t=p["tokenizer_provenance"]; assert (t["representation"],t["encoding"],t["complete_source"]) == ("bpe","cl100k_base",True)' "$PLAN" "$STREAM_HASH" "$N"
 
 if [[ "$M1" == "$V" && "$M2" == "$V" ]]; then
   "$PY" scripts/make_anchored_potential_schedule.py \
@@ -96,10 +76,13 @@ else
     --out "$SCHEDULE"
 fi
 
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); v,m1,m2=map(int,sys.argv[2:]); assert p["production_eligible"] is True; assert p["tokenizer_provenance"]["encoding"] == "cl100k_base"; actual=(int(p.get("emission_vocabulary_size",v)),int(p.get("first_lag_parameter",v)),int(p.get("second_lag_parameter",v))); assert actual == (v,m1,m2), f"schedule (V,M1,M2)={actual}, requested={(v,m1,m2)}"' "$SCHEDULE" "$V" "$M1" "$M2"
+
 srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" "$PY" -u \
   scripts/run_fixed_checkpoint_schedule.py "$SCHEDULE" \
   --dependency-driven --working-directory "$REPOSITORY" \
   --event-log "$ROOT/events.jsonl"
 
 test -f "$ROOT/run/potential.json"
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); assert p["production_eligible"] is True; assert p["tokenizer_provenance"]["encoding"] == "cl100k_base"; assert len(p["anchors"]) == 64' "$ROOT/run/potential.json"
 echo "production complete: $ROOT/run/potential.json"
