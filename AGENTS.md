@@ -62,9 +62,12 @@ measurements, but the policy must not depend on vocabulary size.
 The anchored schedule generators expose named resource profiles.  `laptop`
 uses 13 workers and 12 GiB on the current 24-GiB Mac; `m4pro` uses 14 workers
 and 24 GiB on the 36-GiB M4 Pro; `cpu64` initially uses 64 workers and 192 GiB
-on node 14's 256-GiB Slurm allocation; `scitas` is a conservative 72-worker
-starting point whose CPU and memory limits must be overridden to match the
-actual Jed Slurm allocation.
+on node 14's 256-GiB Slurm allocation; `scitas` uses 72 workers and a 384-GiB
+private-memory scheduling budget inside the current 440-GiB Jed Slurm
+allocation.  On SCITAS, prefix-scaled marginal jobs reserve between 1 and
+16 GiB each.  The former 3-GiB ceiling admitted too many late enwik9 marginals
+and caused measured OOM failures at roughly 440 GiB RSS; do not reduce the
+corrected reservations without a utilization and peak-memory replay.
 Keep the mathematical DAG identical across profiles.  Distinct anchors are
 independent after their prefix-count snapshots exist, so topology, fitting,
 and scoring must run across anchors concurrently.  Tail work (score, fit,

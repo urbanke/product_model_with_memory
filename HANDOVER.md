@@ -94,15 +94,24 @@ full joint alphabet 253,854² ≈ 6.4·10^10 — sparse, but no longer hopeless.
 
 ## Next steps
 
-- Re-verify Stage A under the corrected evaluator (out-dirs `output/v4_*`,
-  compare against PUBLISHED, not v3): `ctree_fullvocab` and `pooled_v1024`
-  first --- they are the two that moved. `state256` already confirmed
-  (3.7198465 vs published 3.719846).
-- Then unblock Stage B (`bash scripts/rerun_paper.sh stage_b`).
-- Freeze the reference store: `chmod -R a-w tables/probe_exact`.
-- Open correctness items: right-series certificate (unexplained, live in
-  read path at 1e-10); kernel curvature arithmetic (bypassed, not removed);
-  NARROW-peak refinement (unimplemented, none observed yet).
+- Let the three active SCITAS enwik9 BPE campaigns finish.  They are the
+  restarted tasks 5 and 6 in array job `66110975` and the restarted equal-
+  alphabet task 7 in job `66107913`.  Do not disturb healthy jobs merely
+  because the laptop disconnects; Slurm owns them.
+- Validate each completed campaign fail-closed: production BPE provenance,
+  `layered_depth_averaged_product_simplex_v1`, 64 anchors, every required job
+  manifest, equal launched/finished event counts, and no failed events.
+- Convert each enwik9 aggregate to honest bpc using the exact checkpoint-free
+  first-order reference with the same `(V,M1)`, the original-byte denominator,
+  and only the additional nested `M2` subset charge.  Do not substitute an
+  estimator or accounting convention if a reference is missing.
+- Add the validated enwik9 rows to Section 7 and the first-page scoreboard.
+  The five completed text8/enwik8 BPE rows are already reported in
+  `paper/main.tex`.
+- After the numerical campaign is complete, archive the SCITAS logs and
+  compact result manifests needed to reproduce the paper rows; retain raw
+  scientific outputs unless their provenance is explicitly diagnostic or
+  rejected.
 
 ## Log
 
@@ -5645,3 +5654,45 @@ anchor plan and schedule, and refuses to execute a schedule without that
 provenance. Obsolete `ours` Slurm and shell launchers were deleted. Generic
 cross-tokenizer utilities remain only as explicitly marked diagnostics, and
 creating a non-BPE stream requires `--diagnostic-only`.
+
+### 14 August 2026: BPE recovery campaign and current SCITAS state
+
+The replacement Section 7 campaign uses only complete `cl100k_base` streams
+whose provenance is enforced from reduced-stream preparation through the
+aggregate.  The source token counts are 19,429,294 for text8, 25,793,085 for
+enwik8, and 273,662,103 for enwik9.  The SCITAS launcher is
+`cluster/job_anchored_bpe_recovery_jed.sbatch`; the frozen eight-member matrix
+is `cluster/anchored_bpe_recovery_campaigns.json`.  Each production run uses
+64 paired stratified anchors, seed 44117, windows through 4096, cold starts,
+500 fitting steps, and the dependency-driven scheduler.
+
+Five campaigns have completed and passed provenance, manifest, event-log, and
+aggregate validation.  Their continuous-update graph increments and honest
+rates are:
+
+| corpus | V | M1 | M2 | graph increment (bpc) | honest bpc | analytic 95% interval |
+|---|---:|---:|---:|---:|---:|---:|
+| text8 | 16,384 | 16,384 | 16,384 | -0.042979 | 1.721584 | [1.716394, 1.726773] |
+| text8 | 16,384 | 16,384 | 8,192 | -0.039885 | 1.724841 | [1.720299, 1.729383] |
+| text8 | 32,768 | 16,384 | 16,384 | -0.044883 | 1.727562 | [1.722133, 1.732991] |
+| enwik8 | 32,768 | 16,384 | 16,384 | -0.105995 | 2.000769 | [1.989551, 2.011988] |
+| enwik8 | 32,768 | 32,768 | 16,384 | -0.100877 | 1.983270 | [1.972297, 1.994243] |
+
+The exact first-order reference already pays for the selected M1 states.  An
+additional `log2 choose(M1,M2)` charge is added only when `M2 < M1`; it is
+0.000164 bpc for text8 `(16384,16384,8192)` and 0.000328 bpc for enwik8
+`(32768,32768,16384)`.  The intervals cover only the stratified predictive
+increment because all other terms are exact.  These are continuously
+refreshed potentials, not realized chunked codelengths.  `paper/main.tex` and
+its first-page scoreboard report this distinction explicitly.
+
+The initial enwik9 unequal task 5 and equal task 7 hit the 440-GiB Slurm
+allocation because late marginal jobs were reserved at only 3 GiB.  Measured
+peak RSS was about 461 million KiB.  Both schedule generators now scale
+SCITAS marginal reservations from 1 to 16 GiB within a 384-GiB scheduler
+budget, leaving headroom inside the 440-GiB allocation.  Completed artifacts
+are resumable.  Task 7 was restarted as `66107913_7`; task 6 was proactively
+stopped before the same failure; tasks 5 and 6 were restarted as array job
+`66110975`.  At the last check all three were healthy, using the corrected
+contracts and filling available CPU capacity.  Consult `sacct`/`squeue` for
+current state rather than treating this snapshot as live.

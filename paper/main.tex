@@ -33,19 +33,23 @@ The layered product-simplex predictor of~\cite{layered2026} is extended
 from exchangeable (memoryless) sources to sources with memory.  The past
 is summarized in a state and the scheme predicts from (state, next
 token) pairs; the simplest instance is a first-order Markov model whose
-state is the previous token.  Every number reported here is the exact
-codelength of a complete scheme, produced by a script in the
-repository.
+state is the previous token.  Every realized rate reported here is the exact
+codelength of a complete scheme, produced by a script in the repository.  The
+non-telescoping continuous-update results are explicitly identified as
+stratified estimates, with exact complete-code overhead and reported
+uncertainty.
 \end{abstract}
 
 \section*{The scoreboard}
 \label{sec:scoreboard}
 
-Every number in this paper is the honest codelength of a complete
-scheme --- the whole file reproduced exactly, every model choice and
-the vocabulary paid for --- in bits per character of the original
-file, the same accounting under which the published records are set.
-This table is the state of the program; each section either moves a
+Every realized rate in this paper is the honest codelength of a complete
+scheme --- the whole file reproduced exactly, every model choice and the
+vocabulary paid for --- in bits per character of the original file, the same
+accounting under which the published records are set.  A row explicitly
+labelled as a potential instead estimates the predictive component under
+continuous updating and combines it with the same exact complete-code
+overhead.  This table is the state of the program; each section either moves a
 number here or says plainly that it does not.
 
 \paragraph{One accounting convention throughout.}
@@ -75,16 +79,18 @@ LLM tokenizer, no memory        & $2.1716$ & $2.9552$ & $2.9775$ \\
 first order (Sec.~\ref{sec:firstorder})   & $1.7646$ & $2.0838$ & $1.8286$ \\
 second-order Markov (Sec.~\ref{sec:ordertwo}) & $1.7646$ & $2.0838$ & $1.7306$ \\
 context tree (Sec.~\ref{sec:ctree})       & $1.7503$ & $2.0223$ & $\mathbf{1.6392}$ \\
-pairwise continuous-update potential (Sec.~\ref{sec:pairwise})
-                                         & $\mathbf{1.7248}$ & pending & pending \\
+estimated pairwise continuous-update potential (Sec.~\ref{sec:pairwise})
+                                         & $\mathbf{1.7216}$ & $\mathbf{1.9833}$ & pending \\
 \midrule
 best published (see Table~\ref{tab:files}) & $1.398$  & $1.170$  & $0.858$ \\
 \bottomrule
 \end{tabular}
 \caption{Best honest bits per character achieved by each construction in
   this paper.  The published records use the same complete-code convention;
-  the relevant sections give the construction and accounting details.
-  Bold entries are the current best results of this paper.}
+  the relevant sections give the construction and accounting details.  The
+  pairwise row is an estimated continuously refreshed potential; all other
+  rows are realized codelengths.  Bold entries are the current best results or
+  potentials in this paper.}
 \label{tab:scoreboard}
 \end{table}
 
@@ -748,8 +754,10 @@ fixed \texttt{cl100k\_base} representation.  Fresh complete-stream BPE runs
 are reported only after their source manifest, baseline and original-byte
 denominator agree.
 
-The first validated run is shown in Table~\ref{tab:pairwise-potential}.  Its
-exact honest first-order reference is $1.76456248$ bpc.  The stratified
+The five validated runs completed so far are shown in
+Table~\ref{tab:pairwise-potential}.  As an explicit accounting example,
+the $V=M_1=16{,}384$, $M_2=8{,}192$ \texttt{text8} run has exact honest
+first-order reference $1.76456248$ bpc.  The stratified
 estimate of the continuously refreshed graph-minus-reference increment is
 $-0.20535019$ bits per eligible token, or $-3{,}988{,}547.36$ bits over the
 eligible domain.  Dividing by the original $10^8$ bytes gives
@@ -763,23 +771,46 @@ Applying the same conversion to the analytic confidence interval for the
 predictive increment gives $[1.72029879,1.72938276]$ bpc.  This interval does
 not include uncertainty in the other terms because they are exact.
 
+Across the completed configurations, the best estimated rates are
+$1.72158358$ bpc on \texttt{text8}, attained with
+$(V,M_1,M_2)=(16{,}384,16{,}384,16{,}384)$, and $1.98327023$ bpc on
+\texttt{enwik8}, attained with
+$(32{,}768,32{,}768,16{,}384)$.  These improve on their respective exact
+first-order references by $0.04297893$ and $0.10054911$ bpc after all
+additional state-subset charges.  The three \texttt{enwik9} configurations
+are still in progress and are therefore not included here.
+
 \begin{table}[ht]
 \centering
-\begin{tabular}{lrrrrrr}
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lrrrrrrl}
 \toprule
-file & $V$ & $M_1$ & $M_2$ & first order & graph increment & honest bpc \\
+file & $V$ & $M_1$ & $M_2$ & first order & graph increment & honest bpc
+  & analytic 95\% interval \\
 \midrule
+\texttt{text8} & $16{,}384$ & $16{,}384$ & $16{,}384$
+ & $1.764563$ & $-0.042979$ & $1.721584$ & $[1.716394,1.726773]$ \\
 \texttt{text8} & $16{,}384$ & $16{,}384$ & $8{,}192$
- & $1.764562$ & $-0.039885$ & $1.724841$ \\
+ & $1.764562$ & $-0.039885$ & $1.724841$ & $[1.720299,1.729383]$ \\
+\texttt{text8} & $32{,}768$ & $16{,}384$ & $16{,}384$
+ & $1.772446$ & $-0.044883$ & $1.727562$ & $[1.722133,1.732991]$ \\
+\texttt{enwik8} & $32{,}768$ & $16{,}384$ & $16{,}384$
+ & $2.106764$ & $-0.105995$ & $2.000769$ & $[1.989551,2.011988]$ \\
+\texttt{enwik8} & $32{,}768$ & $32{,}768$ & $16{,}384$
+ & $2.083819$ & $-0.100877$ & $1.983270$ & $[1.972297,1.994243]$ \\
 \bottomrule
 \end{tabular}
 \caption{Estimated continuous-update potential of the calibrated pairwise
   predictor, in bits per character of the original file.  The graph increment
   is the stratified estimate relative to the exact checkpoint-free first-order
-  code.  The honest total also includes the exact $0.000164$ bpc nested-state
-  subset charge; its analytic 95\% interval is
-  $[1.720299,1.729383]$ bpc.  This is an intrinsic continuously refreshed
-  potential, not yet the codelength of a particular chunked implementation.}
+  code with the same $V$ and $M_1$.  That reference already includes the
+  retained $M_1$-state subset charge.  Where $M_2<M_1$, the honest total also
+  includes the exact nested $M_2$-subset charge: $0.000164$ bpc for the second
+  row and $0.000328$ bpc for the last row.  The intervals propagate only the
+  analytic uncertainty of the stratified predictive increment; all other
+  terms are exact.  These are intrinsic continuously refreshed potentials,
+  not yet codelengths of particular chunked implementations.}
 \label{tab:pairwise-potential}
 \end{table}
 \FloatBarrier
