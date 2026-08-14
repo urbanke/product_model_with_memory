@@ -28,10 +28,12 @@ RESOURCE_PROFILES = {
         "scoring_private_memory_gib": 0.75,
     },
     "scitas": {
-        "maximum_workers": 72, "maximum_private_memory_gib": 384.0,
+        "maximum_workers": 72, "maximum_private_memory_gib": 300.0,
         # Same measured late-marginal contract as the unequal scheduler.
         # The former 1.5-GiB ceiling admitted dozens of full-V M jobs and
-        # exhausted a 440-GiB Jed allocation (task 66107314_7, M57).
+        # exhausted a 440-GiB Jed allocation (task 66107314_7, M57).  A later
+        # 384-GiB nominal load also reached roughly 440 GiB RSS, so retain
+        # aggregate headroom for mapped/runtime memory that is not private.
         "unigram_min_private_memory_gib": 1.0,
         "unigram_private_memory_gib": 16.0,
         "fitting_private_memory_gib": 1.0,

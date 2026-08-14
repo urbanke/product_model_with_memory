@@ -54,12 +54,14 @@ RESOURCE_PROFILES = {
     # Conservative portable Slurm starting point.  Slurm wrappers should pass
     # the allocation's CPUs and usable memory explicitly after the first replay.
     "scitas": {
-        "maximum_workers": 72, "maximum_private_memory_gib": 384.0,
+        "maximum_workers": 72, "maximum_private_memory_gib": 300.0,
         # Empirical private-RSS contract from the enwik9 V=65536 OOM gate:
         # the former 3-GiB ceiling admitted 40+ late MY jobs and exhausted a
-        # 440-GiB allocation.  A full-V late marginal is therefore reserved
-        # at 16 GiB.  Smaller natural alphabets scale proportionally, while
-        # the 1-GiB floor covers process/runtime overhead at early prefixes.
+        # 440-GiB allocation.  A full-V late marginal is therefore reserved at
+        # 16 GiB.  A later 384-GiB nominal schedule still reached 440 GiB RSS,
+        # so the aggregate budget is 300 GiB to cover mapped/runtime memory
+        # omitted by additive private contracts.  Smaller natural alphabets
+        # scale proportionally; the 1-GiB floor covers early-prefix overhead.
         "marginal_min_memory_gib": 1.0, "marginal_max_memory_gib": 16.0,
         "pair_memory_gib": 3.5, "assembly_memory_gib": 3.0,
         "topology_memory_gib": 6.0, "fitting_memory_gib": 1.0,

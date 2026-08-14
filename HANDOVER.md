@@ -5689,10 +5689,12 @@ its first-page scoreboard report this distinction explicitly.
 The initial enwik9 unequal task 5 and equal task 7 hit the 440-GiB Slurm
 allocation because late marginal jobs were reserved at only 3 GiB.  Measured
 peak RSS was about 461 million KiB.  Both schedule generators now scale
-SCITAS marginal reservations from 1 to 16 GiB within a 384-GiB scheduler
-budget, leaving headroom inside the 440-GiB allocation.  Completed artifacts
-are resumable.  Task 7 was restarted as `66107913_7`; task 6 was proactively
-stopped before the same failure; tasks 5 and 6 were restarted as array job
-`66110975`.  At the last check all three were healthy, using the corrected
-contracts and filling available CPU capacity.  Consult `sacct`/`squeue` for
-current state rather than treating this snapshot as live.
+SCITAS marginal reservations from 1 to 16 GiB.  A first restart of unequal
+task 5 nevertheless reached the 440-GiB limit again with a 384-GiB nominal
+schedule while 13 late full-Y marginals and other work overlapped; `MY56` was
+killed.  The aggregate scheduler budget is therefore now 300 GiB, leaving
+140 GiB for mapped/runtime memory omitted by additive private contracts.
+Completed artifacts are resumable.  Task 7 was restarted as `66107913_7`;
+task 6 is running safely as `66110975_6`; task 5 must be resumed from its
+preserved manifests only after pulling the 300-GiB fix.  Consult
+`sacct`/`squeue` for current state rather than treating this snapshot as live.

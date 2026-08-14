@@ -96,6 +96,6 @@ def test_scitas_profile_reserves_measured_full_v_unigram_memory():
     spec.loader.exec_module(module)
     profile = module.RESOURCE_PROFILES["scitas"]
     assert profile["maximum_workers"] == 72
-    assert profile["maximum_private_memory_gib"] == 384.0
+    assert profile["maximum_private_memory_gib"] == 300.0
     assert profile["unigram_min_private_memory_gib"] == 1.0
     assert profile["unigram_private_memory_gib"] == 16.0
