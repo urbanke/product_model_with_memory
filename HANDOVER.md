@@ -5692,9 +5692,10 @@ peak RSS was about 461 million KiB.  Both schedule generators now scale
 SCITAS marginal reservations from 1 to 16 GiB.  A first restart of unequal
 task 5 nevertheless reached the 440-GiB limit again with a 384-GiB nominal
 schedule while 13 late full-Y marginals and other work overlapped; `MY56` was
-killed.  The aggregate scheduler budget is therefore now 300 GiB, leaving
-140 GiB for mapped/runtime memory omitted by additive private contracts.
-Completed artifacts are resumable.  Task 7 was restarted as `66107913_7`;
-task 6 is running safely as `66110975_6`; task 5 must be resumed from its
-preserved manifests only after pulling the 300-GiB fix.  Consult
+killed.  The general aggregate scheduler budget is therefore 300 GiB.
+Unequal task 5 subsequently reached 438 GiB actual RSS even under that
+nominal budget, so its frozen campaign entry now uses a task-specific
+220-GiB budget; measured tasks 6 and 7 retain 300 GiB.  The launcher passes
+and verifies the frozen per-task value when regenerating a resumable schedule.
+Completed artifacts are resumable.  Consult
 `sacct`/`squeue` for current state rather than treating this snapshot as live.

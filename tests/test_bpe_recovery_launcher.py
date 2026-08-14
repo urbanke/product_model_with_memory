@@ -27,6 +27,7 @@ def test_every_recovery_entry_matches_its_verified_stream_manifest():
         assert (row["n"], row["v"], row["stream_sha256"]) == (n, v, digest)
         assert row["m1"] <= row["v"] and row["m2"] <= row["v"]
         assert row["corpus"] in row["stream"]
+        assert row["memory_budget_gib"] == (220 if row["task"] == 5 else 300)
 
 
 def test_launcher_checks_plan_schedule_and_result_provenance():
@@ -35,3 +36,6 @@ def test_launcher_checks_plan_schedule_and_result_provenance():
     assert 'p["stream_sha256"] == sys.argv[2]' in source
     assert 'schedule (V,M1,M2)' in source
     assert 'len(p["anchors"]) == 64' in source
+    assert 'maximum-private-memory-gib "$MEMORY_BUDGET_GIB"' in source
+    assert 'schedule_budget=${MEMORY_BUDGET_GIB}GiB' in source
+    assert 'p["maximum_private_memory_bytes"] == int(budget*2**30)' in source
