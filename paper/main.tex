@@ -754,7 +754,7 @@ fixed \texttt{cl100k\_base} representation.  Fresh complete-stream BPE runs
 are reported only after their source manifest, baseline and original-byte
 denominator agree.
 
-The seven validated runs completed so far are shown in
+The eight validated runs are shown in
 Table~\ref{tab:pairwise-potential}.  As an explicit accounting example,
 the $V=M_1=16{,}384$, $M_2=8{,}192$ \texttt{text8} run has exact honest
 first-order reference $1.76456248$ bpc.  The stratified
@@ -777,14 +777,16 @@ $(V,M_1,M_2)=(16{,}384,16{,}384,16{,}384)$, and $1.98327023$ bpc on
 \texttt{enwik8}, attained with
 $(32{,}768,32{,}768,16{,}384)$.  These improve on their respective exact
 first-order references by $0.04297893$ and $0.10054911$ bpc after all
-additional state-subset charges.  On \texttt{enwik9}, the best completed
+additional state-subset charges.  On \texttt{enwik9}, the best
 configuration is $(65{,}536,65{,}536,65{,}536)$ at $1.64404267$ bpc; the
-configuration $(65{,}536,65{,}536,32{,}768)$ gives $1.64755911$ bpc.
-Both start from the exact $1.828580231$-bpc first-order reference.  Their
-estimated predictive reductions are respectively $0.18453756$ and
-$0.18108665$ bpc on the original-file denominator; the latter then pays the
-exact $0.00006553$-bpc nested second-lag subset charge.  The remaining
-$(65{,}536,32{,}768,32{,}768)$ configuration is still in progress.
+configuration $(65{,}536,65{,}536,32{,}768)$ gives $1.64755911$ bpc, and
+$(65{,}536,32{,}768,32{,}768)$ gives $1.65904236$ bpc.  The first two start
+from the exact $1.828580231$-bpc first-order reference, whereas the third
+starts from the exact $1.842635100$-bpc reference for $M_1=32{,}768$.
+Their estimated predictive reductions are respectively $0.18453756$,
+$0.18108665$, and $0.18359274$ bpc on the original-file denominator.  The
+middle configuration then pays the exact $0.00006553$-bpc nested second-lag
+subset charge; the other two have $M_2=M_1$ and require no such charge.
 
 \begin{table}[ht]
 \centering
@@ -805,6 +807,8 @@ file & $V$ & $M_1$ & $M_2$ & first order & graph increment & honest bpc
  & $2.106764$ & $-0.105995$ & $2.000769$ & $[1.989551,2.011988]$ \\
 \texttt{enwik8} & $32{,}768$ & $32{,}768$ & $16{,}384$
  & $2.083819$ & $-0.100877$ & $1.983270$ & $[1.972297,1.994243]$ \\
+\texttt{enwik9} & $65{,}536$ & $32{,}768$ & $32{,}768$
+ & $1.842635$ & $-0.183593$ & $1.659042$ & $[1.647953,1.670132]$ \\
 \texttt{enwik9} & $65{,}536$ & $65{,}536$ & $32{,}768$
  & $1.828580$ & $-0.181087$ & $1.647559$ & $[1.636649,1.658469]$ \\
 \texttt{enwik9} & $65{,}536$ & $65{,}536$ & $65{,}536$
@@ -817,11 +821,12 @@ file & $V$ & $M_1$ & $M_2$ & first order & graph increment & honest bpc
   code with the same $V$ and $M_1$.  That reference already includes the
   retained $M_1$-state subset charge.  Where $M_2<M_1$, the honest total also
   includes the exact nested $M_2$-subset charge: $0.000164$ bpc for the second
-  second row, $0.000328$ bpc for the last \texttt{enwik8} row, and
-  $0.000066$ bpc for the first \texttt{enwik9} row.  The intervals propagate only the
-  analytic uncertainty of the stratified predictive increment; all other
-  terms are exact.  These are intrinsic continuously refreshed potentials,
-  not yet codelengths of particular chunked implementations.}
+  row, $0.000328$ bpc for the last \texttt{enwik8} row, and $0.000066$ bpc
+  for the $(65{,}536,65{,}536,32{,}768)$ \texttt{enwik9} row.  The intervals
+  propagate only the analytic uncertainty of the stratified predictive
+  increment; all other terms are exact.  These are intrinsic continuously
+  refreshed potentials, not yet codelengths of particular chunked
+  implementations.}
 \label{tab:pairwise-potential}
 \end{table}
 \FloatBarrier
