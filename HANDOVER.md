@@ -94,24 +94,22 @@ full joint alphabet 253,854² ≈ 6.4·10^10 — sparse, but no longer hopeless.
 
 ## Next steps
 
-- Let the three active SCITAS enwik9 BPE campaigns finish.  They are the
-  restarted tasks 5 and 6 in array job `66110975` and the restarted equal-
-  alphabet task 7 in job `66107913`.  Do not disturb healthy jobs merely
-  because the laptop disconnects; Slurm owns them.
-- Validate each completed campaign fail-closed: production BPE provenance,
-  `layered_depth_averaged_product_simplex_v1`, 64 anchors, every required job
-  manifest, equal launched/finished event counts, and no failed events.
-- Convert each enwik9 aggregate to honest bpc using the exact checkpoint-free
-  first-order reference with the same `(V,M1)`, the original-byte denominator,
-  and only the additional nested `M2` subset charge.  Do not substitute an
-  estimator or accounting convention if a reference is missing.
-- Add the validated enwik9 rows to Section 7 and the first-page scoreboard.
-  The five completed text8/enwik8 BPE rows are already reported in
-  `paper/main.tex`.
-- After the numerical campaign is complete, archive the SCITAS logs and
-  compact result manifests needed to reproduce the paper rows; retain raw
-  scientific outputs unless their provenance is explicitly diagnostic or
-  rejected.
+- Begin the longer-memory study, initially targeting order four.  Before
+  implementing a large run, state precisely which lag marginals, interactions,
+  state maps, and subset-description charges define the model.  Do not assume
+  that merely adding two lags to the order-two calibrated graph gives a
+  computationally feasible or scientifically identified order-four model.
+- Reuse the completed order-two BPE campaign as the comparison baseline and
+  preserve its exact representation, estimator, accounting, anchor design, and
+  SCITAS scheduling rules.  A memory-four gain must be reported relative to an
+  honest lower-memory code on the same corpus and original-byte denominator.
+- First build and test a small exact/diagnostic instance that checks causal
+  normalization, dependency structure, provenance propagation, and accounting.
+  Then design a frozen text8 pilot grid; launch enwik8/enwik9 only after that
+  pilot validates end to end.
+- Archive the SCITAS logs and compact manifests needed to reproduce the eight
+  completed order-two paper rows.  Retain raw scientific outputs unless their
+  provenance is explicitly diagnostic or rejected.
 
 ## Log
 
@@ -5699,3 +5697,45 @@ nominal budget, so its frozen campaign entry now uses a task-specific
 and verifies the frozen per-task value when regenerating a resumable schedule.
 Completed artifacts are resumable.  Consult
 `sacct`/`squeue` for current state rather than treating this snapshot as live.
+
+### 15 August 2026: BPE recovery campaign complete; memory four is next
+
+All eight frozen recovery campaigns are complete and production-valid.  For
+resumed runs, validation is by the set of distinct expected job IDs: historical
+failed attempts are acceptable only when the same job ID has a later successful
+finish.  Requiring raw launched and finished event counts to be equal is wrong
+for a resumed campaign.  Each final aggregate has complete `cl100k_base`
+provenance, the production estimator
+`layered_depth_averaged_product_simplex_v1`, 64 anchors, and every expected job
+manifest.
+
+The final honest continuously refreshed pairwise potentials reported in
+Table~9 of `paper/main.tex` are:
+
+| corpus | V | M1 | M2 | honest bpc | analytic 95% interval |
+|---|---:|---:|---:|---:|---:|
+| text8 | 16,384 | 16,384 | 16,384 | 1.721584 | [1.716394, 1.726773] |
+| text8 | 16,384 | 16,384 | 8,192 | 1.724841 | [1.720299, 1.729383] |
+| text8 | 32,768 | 16,384 | 16,384 | 1.727562 | [1.722133, 1.732991] |
+| enwik8 | 32,768 | 16,384 | 16,384 | 2.000769 | [1.989551, 2.011988] |
+| enwik8 | 32,768 | 32,768 | 16,384 | 1.983270 | [1.972297, 1.994243] |
+| enwik9 | 65,536 | 32,768 | 32,768 | 1.659042 | [1.647953, 1.670132] |
+| enwik9 | 65,536 | 65,536 | 32,768 | 1.647559 | [1.636649, 1.658469] |
+| enwik9 | 65,536 | 65,536 | 65,536 | 1.644043 | [1.632661, 1.655424] |
+
+The best rows are therefore 1.721584 bpc on text8, 1.983270 bpc on enwik8,
+and 1.644043 bpc on enwik9.  These are estimated intrinsic continuous-update
+potentials, not realized codelengths of a particular checkpointed
+implementation.  The task-5 enwik9 run required several resumptions after OOM
+and wall-time stops; its final schedule used a 220-GiB private-memory budget,
+all 770 expected jobs finished, and the historical `MY54` and `MY56` failures
+were both superseded by later successful finishes.  Commit `66e646b` added its
+final row and completed the paper summary.
+
+The next scientific target is memory four.  Start from a model-design audit,
+not from a production launch.  Decide whether “memory four” means a direct
+order-four state, a declared family of lower-order interactions, a context
+tree, or a calibrated factor graph over four lags.  The comparison must keep
+the complete ChatGPT BPE representation and honest original-byte accounting
+fixed.  A recommended sequence is: tiny exact normalization test, text8 smoke
+run, frozen text8 pilot, then larger corpora only after the pilot passes.
